@@ -1,6 +1,6 @@
 import {test,expect} from 'bun:test';
 import {spawnSync} from 'node:child_process';
-import {mkdtempSync,mkdirSync,writeFileSync,rmSync,realpathSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,rmSync,realpathSync,statSync} from 'node:fs';
 import {join,dirname,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {formatSetupCommand} from '../src/setup/command.ts';
@@ -45,20 +45,30 @@ test('packaged runtime guides reuse the managed entry or matching package execut
   expect(build.success).toBe(true);
   const env={HOME:dir,USERPROFILE:dir,PATH:dirname(process.execPath),SystemRoot:process.env.SystemRoot,XDG_DATA_HOME:data,XDG_CACHE_HOME:join(dir,'cache'),OPENCRAWL_CONFIG_HOME:join(dir,'config'),OPENCRAWL_INSTALL_DIR:installDir};
   const invoke=(script=runtime)=>{const run=spawnSync(process.execPath,[script],{env,encoding:'utf8',timeout:5000});expect(run.status).toBe(0);expect(run.stderr).toBe('');return JSON.parse(run.stdout);};
+  // Windows may preserve an 8.3 alias in fs.realpathSync while Bun argv uses
+  // the long spelling. Verify each executable/script is the same actual file.
+  const expectInvocation=(actual:string[],expected:string[])=>{
+   expect(actual).toHaveLength(expected.length);
+   for(let index=0;index<expected.length;index++){
+    const observed=statSync(actual[index]),wanted=statSync(expected[index]);
+    expect(observed.ino).toBeGreaterThan(0);expect(wanted.ino).toBeGreaterThan(0);
+    expect({dev:observed.dev,ino:observed.ino}).toEqual({dev:wanted.dev,ino:wanted.ino});
+   }
+  };
   const fallback=[process.execPath,runtime];
   writeFileSync(manifest,JSON.stringify({name:'@getopencrawl/cli',version:release}));writeFileSync(executable,'fixture executable',{mode:0o755});
-  expect(invoke()).toEqual([executable]);
+  expectInvocation(invoke(),[executable]);
   writeFileSync(manifest,JSON.stringify({name:'@getopencrawl/cli-'+process.platform+'-'+process.arch,version:release}));writeFileSync(platformExecutable,'fixture executable',{mode:0o755});
-  expect(invoke()).toEqual([platformExecutable]);
-  writeFileSync(manifest,JSON.stringify({name:'unrelated-package',version:release}));expect(invoke()).toEqual(fallback);
-  writeFileSync(manifest,JSON.stringify({name:'@getopencrawl/cli',version:'0.4.62'}));expect(invoke()).toEqual(fallback);
-  writeFileSync(manifest,JSON.stringify({name:'@getopencrawl/cli',version:release}));rmSync(executable);expect(invoke()).toEqual(fallback);
+  expectInvocation(invoke(),[platformExecutable]);
+  writeFileSync(manifest,JSON.stringify({name:'unrelated-package',version:release}));expectInvocation(invoke(),fallback);
+  writeFileSync(manifest,JSON.stringify({name:'@getopencrawl/cli',version:'0.4.62'}));expectInvocation(invoke(),fallback);
+  writeFileSync(manifest,JSON.stringify({name:'@getopencrawl/cli',version:release}));rmSync(executable);expectInvocation(invoke(),fallback);
   const managed=join(installDir,process.platform==='win32'?'opencrawl.cmd':'opencrawl'),receipt=join(data,'opencrawl','installation.json');
   writeFileSync(managed,'fixture private launcher',{mode:0o755});
   writeFileSync(receipt,JSON.stringify({managed:true,version:release,entry:managed}));expect(invoke()).toEqual([managed]);
   // A source checkout must not silently turn into the installed released CLI.
-  expect(invoke(entry)).toEqual([process.execPath,entry]);
-  writeFileSync(receipt,JSON.stringify({managed:true,version:'0.4.62',entry:managed}));expect(invoke()).toEqual(fallback);
-  writeFileSync(receipt,JSON.stringify({managed:true,version:release,entry:join(dir,'unrelated')}));expect(invoke()).toEqual(fallback);
+  expectInvocation(invoke(entry),[process.execPath,entry]);
+  writeFileSync(receipt,JSON.stringify({managed:true,version:'0.4.62',entry:managed}));expectInvocation(invoke(),fallback);
+  writeFileSync(receipt,JSON.stringify({managed:true,version:release,entry:join(dir,'unrelated')}));expectInvocation(invoke(),fallback);
  }finally{rmSync(dir,{recursive:true,force:true});}
 });
