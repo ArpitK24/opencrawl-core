@@ -18,7 +18,7 @@ import {historyJob,startHistoryWorker,runHistoryWorker} from './history-worker.t
 import {chooseSetupItems} from './select.ts';
 import {verifyInstallation} from '../verify-installation.ts';
 type Values=Record<string,unknown>;
-type Dependencies={login?:()=>Promise<unknown>;installPlugins?:typeof installSetupPlugins;launchHistory?:typeof startHistoryWorker;choose?:typeof chooseSetupItems;interactive?:boolean};
+type Dependencies={login?:()=>Promise<unknown>;installPlugins?:typeof installSetupPlugins;launchHistory?:typeof startHistoryWorker;choose?:typeof chooseSetupItems;interactive?:boolean;inspectHooks?:typeof inspectCodexHooks};
 function historyFiles(api:string):HistoryFile[]{const previous=readCaptureConfig();return inventory(previous?.api===api?previous:{roots:{'claude-code':process.env.CLAUDE_CONFIG_DIR||join(homedir(),'.claude'),codex:process.env.CODEX_HOME||join(homedir(),'.codex'),antigravity:process.env.ANTIGRAVITY_HOME||join(homedir(),'.gemini')},claudeDesktopSessionsRoot:defaultClaudeDesktopSessionsRoot()},'all').files;}
 const list=(values:string[])=>values.length?values.join(','):'none';
 function preserveRecordingOff(selections:SetupSelections,scope:SetupScope):SetupSelections{
@@ -34,14 +34,23 @@ function preserveRecordingOff(selections:SetupSelections,scope:SetupScope):Setup
 }
 
 const planDigest=(scope:SetupScope,selections:SetupSelections,files:HistoryFile[])=>createHash('sha256').update(selectionDigest(scope,selections)+JSON.stringify(files)).digest('hex');
-async function tasks(server:SetupServerStatus,state:SetupState|null):Promise<SetupHumanTask[]>{
+async function tasks(server:SetupServerStatus,state:SetupState|null,inspectHooks:typeof inspectCodexHooks):Promise<SetupHumanTask[]>{
  const row=server.installations.find(row=>row.installationId===state?.installationId);
  const found=row?[...(state?.humanTasks??[]).filter(task=>{const client=row.clients.find(client=>client.client===task.client);if(task.kind==='plugin_install')return !client?.installed;if(task.kind==='restart')return Boolean(task.client&&state?.selections.plugins[task.client]&&!client?.captureObservedAt&&client?.mcp?.state!=='authenticated'&&client?.proof?.state!=='verified');return false;}),...row.clients.flatMap(client=>client.humanTasks)]:state?.humanTasks??[];
- const config=readCaptureConfig();
- if(!state||!config||config.api!==state.scope.api||config.owner.tenantId!==state.scope.tenantId||config.owner.userId!==state.scope.userId||!state.selections.plugins.codex&&!state.selections.forward.codex)return found;
- const review=await inspectCodexHooks(config.roots.codex),instruction=codexHookReviewMessage(review);
- if(review.state==='not_applicable')return found;
  const others=found.filter(task=>task.client!=='codex'||task.kind!=='hook_trust');
+ if(!state)return found;
+ // Plugin installation does not consent to recording. Respect saved and local opt-outs.
+ if(!preserveRecordingOff(state.selections,state.scope).forward.codex)return others;
+ const config=readCaptureConfig();
+ if(!config||config.api!==state.scope.api||config.owner.tenantId!==state.scope.tenantId||config.owner.userId!==state.scope.userId)return found;
+ const review=await inspectHooks(config.roots.codex);
+ if(review.state==='not_applicable')return found;
+ const client=row?.clients.find(client=>client.client==='codex');
+ const captureProven=config.installationId===state.installationId&&Boolean(client?.captureObservedAt||client?.proof?.state==='verified');
+ // Missing inspection and disabled opt-outs cannot undo server-owned capture proof.
+ // A positively observed new or changed definition still needs the person's review.
+ if(captureProven&&!(review.state==='observed'&&(review.pending??0)>0))return others;
+ const instruction=codexHookReviewMessage(review);
  return instruction?[{id:'codex-hook-review',kind:'hook_trust',client:'codex',title:'Review OpenCrawl hooks in Codex',instruction},...others]:others;
 }
 async function confirmScope(scope:SetupScope){if(scopeKey(serverScope(scope.api,await readServerSetup(scope.api)))!==scopeKey(scope))throw new CliError('SETUP_SCOPE_CHANGED','The signed-in workspace changed. Review setup again.');}
@@ -68,12 +77,12 @@ async function applyHistory(scope:SetupScope,selections:SetupSelections,files:Hi
  const state=await updateSetupState(scope,current=>{if(!current?.installationId)throw new CliError('SETUP_NOT_STARTED','Confirm client setup before history.');return {...current,selections,historyJob:historyJob(current,chosen(selections,'history'),files)};});
  await publishSetup(state);return state;
 }
-async function result(state:SetupState,launchHistory:typeof startHistoryWorker,start=true){
+async function result(state:SetupState,launchHistory:typeof startHistoryWorker,inspectHooks:typeof inspectCodexHooks,start=true){
  const history=start?launchHistory(state):{state:state.historyJob?.state??'not_started'};
  const server=await readServerSetup(state.scope.api);
- return {status:state.pluginResults?.some(row=>['error','pending'].includes(row.status))?'needs_attention':'configured',scope:state.scope,installationId:state.installationId,selections:state.selections,plugins:state.pluginResults,history,humanTasks:await tasks(server,state),historyBenefit,agentPrompt:`Finish OpenCrawl setup. Run opencrawl setup status --api ${state.scope.api} --json and guide me through one returned human task at a time.`,nextStep:'Use setup status --json for history progress. Installation is not proof that a session is searchable.'};
+ return {status:state.pluginResults?.some(row=>['error','pending'].includes(row.status))?'needs_attention':'configured',scope:state.scope,installationId:state.installationId,selections:state.selections,plugins:state.pluginResults,history,humanTasks:await tasks(server,state,inspectHooks),historyBenefit,agentPrompt:`Finish OpenCrawl setup. Run opencrawl setup status --api ${state.scope.api} --json and guide me through one returned human task at a time.`,nextStep:'Use setup status --json for history progress. Installation is not proof that a session is searchable.'};
 }
-export async function setupCommand(action:string,api:string,values:Values,{login,installPlugins=installSetupPlugins,launchHistory=startHistoryWorker,choose=chooseSetupItems,interactive=Boolean(process.stdin.isTTY&&process.stderr.isTTY&&!values.json)}:Dependencies={}){
+export async function setupCommand(action:string,api:string,values:Values,{login,installPlugins=installSetupPlugins,launchHistory=startHistoryWorker,choose=chooseSetupItems,inspectHooks=inspectCodexHooks,interactive=Boolean(process.stdin.isTTY&&process.stderr.isTTY&&!values.json)}:Dependencies={}){
  if(action==='worker'){if(typeof values['scope-key']!=='string')throw new CliError('INVALID_USAGE','Missing history scope.',64);const state=readStateKey(values['scope-key']);if(state?.scope.api!==api)throw new CliError('SETUP_SCOPE_CHANGED','History worker API does not match its approved scope.');await runHistoryWorker(values['scope-key']);return null;}
  if(!['run','plan','status','apply','resume','verify'].includes(action))throw new CliError('INVALID_USAGE','Use setup, setup --json, setup apply, setup status, setup resume, or setup verify.',64);
  let server;
@@ -84,7 +93,7 @@ export async function setupCommand(action:string,api:string,values:Values,{login
   }else throw error;
  }
  const scope=serverScope(api,server),previous=readSetupState(scope);
- if(action==='status')return {status:'status',scope,selections:previous?.selections??null,history:previous?.historyJob??null,server,humanTasks:await tasks(server,previous)};
+ if(action==='status')return {status:'status',scope,selections:previous?.selections??null,history:previous?.historyJob??null,server,humanTasks:await tasks(server,previous,inspectHooks)};
  if(action==='verify'){
   const client=Array.isArray(values.client)?values.client[0]:values.client;
   if(!previous?.installationId||typeof client!=='string')throw new CliError('INVALID_USAGE','Run setup first, then setup verify --client CLIENT.',64);
@@ -95,13 +104,13 @@ export async function setupCommand(action:string,api:string,values:Values,{login
   const selected=preserveRecordingOff(previous.selections,scope);
   const resumed=await updateSetupState(scope,current=>({...current!,selections:selected}));
   const repaired=previous.pluginResults?.some(row=>previous.selections.plugins[row.client]&&['error','pending'].includes(row.status))?await applyClients(scope,selected,installPlugins):resumed;
-  await publishSetup(repaired);return result(repaired,launchHistory);
+  await publishSetup(repaired);return result(repaired,launchHistory,inspectHooks);
  }
  const clients=setupInventory({api}),existing=readCaptureConfig(),legacyForward=existing?.api===api&&existing.owner.tenantId===scope.tenantId&&existing.owner.userId===scope.userId?(existing.disabled?[]:existing.harnesses??['claude-code','codex']):undefined;
  let selections=preserveRecordingOff(defaultSelections(clients,previous?.selections,legacyForward),scope);
  for(const group of ['plugins','forward','history'] as const)selections[group]=selectGroup(values[group]===undefined?undefined:String(values[group]),group,clients,selections);
  const files=historyFiles(api).filter(file=>selections.history[file.harness]),planId=planDigest(scope,selections,files);
- const plan={status:'confirmation_required',scope,clients,selections,historyBenefit,history:{files:files.length,bytes:files.reduce((n,f)=>n+f.bytes,0)},planId,humanTasks:await tasks(server,previous),applyCommand:`opencrawl setup apply --api ${api} --plugins ${list(chosen(selections,'plugins'))} --forward ${list(chosen(selections,'forward'))} --history ${list(chosen(selections,'history'))} --plan-id ${planId} --yes --json`};
+ const plan={status:'confirmation_required',scope,clients,selections,historyBenefit,history:{files:files.length,bytes:files.reduce((n,f)=>n+f.bytes,0)},planId,humanTasks:await tasks(server,previous,inspectHooks),applyCommand:`opencrawl setup apply --api ${api} --plugins ${list(chosen(selections,'plugins'))} --forward ${list(chosen(selections,'forward'))} --history ${list(chosen(selections,'history'))} --plan-id ${planId} --yes --json`};
  if(action==='run'&&interactive){
   const selected=await choose({title:'Choose your agent plugins',description:'Selected clients record new sessions as shown. Messages, tool results and attachments are shared with your signed-in workspace. Use ←/→ to change plugin and recording choices independently.',secondaryLabel:'Record new',items:clients.filter(client=>client.plugin||client.forward).map(client=>({id:client.id,label:client.label+(client.detected?'':' (not detected)'),selected:selections.plugins[client.id]===true,...(client.forward?{secondary:selections.forward[client.id]===true}:{})}))});
   if(selected===null)return {status:'cancelled',humanTasks:[]};
@@ -111,16 +120,16 @@ export async function setupCommand(action:string,api:string,values:Values,{login
   let state=await applyClients(scope,selections,installPlugins);
   const available=historyFiles(api),historyClients=clients.filter(client=>client.history&&available.some(file=>file.harness===client.id));
   const selectedHistory=await choose({title:'Choose past sessions to import',description:historyBenefit+'\nSelected history is shared with your signed-in workspace. Import continues in the background.',emptyMessage:'No local history found. Continuing without an import.',items:historyClients.map(client=>({id:client.id,label:client.label+` (${available.filter(file=>file.harness===client.id).length} files)`,selected:prospectiveHistory[client.id]===true}))});
-  if(selectedHistory===null)return {...await result(state,launchHistory,false),historyDecision:'unchanged'};
+  if(selectedHistory===null)return {...await result(state,launchHistory,inspectHooks,false),historyDecision:'unchanged'};
   selections={...selections,history:Object.fromEntries(clients.map(client=>[client.id,selectedHistory.some(row=>row.id===client.id&&row.selected)]))};
-  state=await applyHistory(scope,selections,available.filter(file=>selections.history[file.harness]));return result(state,launchHistory);
+  state=await applyHistory(scope,selections,available.filter(file=>selections.history[file.harness]));return result(state,launchHistory,inspectHooks);
  }
  if(action!=='apply')return plan;
  if(values.yes!==true)return plan;
  if(values['plan-id']!==undefined&&values['plan-id']!==planId)throw new CliError('SETUP_PLAN_CHANGED','The workspace, choices or available history changed. Review setup --json again before applying.',2);
  if(values['plan-id']===undefined&&!['plugins','forward','history'].every(group=>typeof values[group]==='string'))throw new CliError('SETUP_CONFIRMATION_REQUIRED','Use the applyCommand after the user confirms its choices, or specify all three selections with --yes.',64);
  await applyClients(scope,selections,installPlugins);
- return result(await applyHistory(scope,selections,files),launchHistory);
+ return result(await applyHistory(scope,selections,files),launchHistory,inspectHooks);
 }
 export function formatSetupOutput(data:unknown):string{
  const value=data as {status?:string;humanTasks?:SetupHumanTask[];applyCommand?:string;agentPrompt?:string;history?:{state?:string}};

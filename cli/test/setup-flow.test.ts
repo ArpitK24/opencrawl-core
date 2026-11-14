@@ -1,20 +1,22 @@
 import {test,expect} from 'bun:test';
 import {createServer} from 'node:http';
-import {mkdtempSync,mkdirSync,writeFileSync,rmSync,existsSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync,existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {publishSetup} from '../src/setup/api.ts';
+import {publishSetup,type SetupServerStatus} from '../src/setup/api.ts';
+import {inspectCodexHooks,type CodexHookReview} from '../src/capture/codex-hooks.ts';
 import {setupCommand,formatSetupOutput} from '../src/setup/command.ts';
 import {readSetupState,historyBenefit,type SetupState} from '../src/setup/state.ts';
-import {readCaptureConfig} from '../src/capture/runtime.ts';
+import {readCaptureConfig,captureDir} from '../src/capture/runtime.ts';
 import {applySelectionKey,type SelectionCursor} from '../src/setup/select.ts';
 import type {SelectionScreen} from '../src/setup/select.ts';
-async function fixture(run:(api:string,dir:string,observations:unknown[])=>Promise<void>){
- const dir=mkdtempSync(join(tmpdir(),'opencrawl-setup-flow-')),saved={...process.env},observations:unknown[]=[];let installations:unknown[]=[];
+type ClientStatus=SetupServerStatus['installations'][number]['clients'][number];
+async function fixture(run:(api:string,dir:string,observations:unknown[],setCodex:(patch:Partial<ClientStatus>)=>void)=>Promise<void>){
+ const dir=mkdtempSync(join(tmpdir(),'opencrawl-setup-flow-')),saved={...process.env},observations:unknown[]=[];let installations:SetupServerStatus['installations']=[],codexPatch:Partial<ClientStatus>={};
  const server=createServer(async(req,res)=>{
   const chunks=[];for await(const chunk of req)chunks.push(chunk);const body=chunks.length?JSON.parse(Buffer.concat(chunks).toString()):{};
   let data:unknown;
-  if(req.url==='/api/setup')data={schemaVersion:1,scope:{tenantId:'tenant',userId:'user'},firstWin:null,installations};
+  if(req.url==='/api/setup')data={schemaVersion:1,scope:{tenantId:'tenant',userId:'user'},firstWin:null,installations:installations.map(row=>({...row,clients:row.clients.map(client=>client.client==='codex'?{...client,...codexPatch}:client)}))};
   else if(req.url==='/api/setup/installation'){observations.push(body);installations=[{...body,clients:body.clients.map((client:Record<string,unknown>)=>({...client,humanTasks:[]}))}];data=installations[0];}
   else if(req.url==='/api/sessions/identity')data={principal:{tenantId:'tenant',userId:'user'},capabilities:{harnesses:['claude-code','codex','cursor','antigravity']}};
   else {res.writeHead(404);res.end();return;}
@@ -24,7 +26,7 @@ async function fixture(run:(api:string,dir:string,observations:unknown[])=>Promi
  try{
   Object.assign(process.env,{HOME:dir,USERPROFILE:dir,PATH:dir,OPENCRAWL_CONFIG_HOME:join(dir,'config'),OPENCRAWL_API_URL:api,OPENCRAWL_TOKEN:'fixture-access-token-0123456789',OPENCRAWL_SESSIONS_TOKEN:'fixture-upload-token-0123456789',CLAUDE_DESKTOP_CONFIG_DIR:join(dir,'desktop'),CLAUDE_CONFIG_DIR:join(dir,'claude'),CODEX_HOME:join(dir,'codex'),CURSOR_CONFIG_DIR:join(dir,'cursor'),ANTIGRAVITY_HOME:join(dir,'agy')});
   const file=join(dir,'codex','sessions','one.jsonl');mkdirSync(join(file,'..'),{recursive:true});writeFileSync(file,JSON.stringify({type:'session_meta',payload:{id:'one',source:'cli'}})+'\n'+JSON.stringify({type:'response_item',payload:{type:'message',role:'user',content:'approved historical content'}})+'\n');
-  await run(api,dir,observations);
+  await run(api,dir,observations,patch=>{codexPatch=patch;});
  }finally{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));for(const key of Object.keys(process.env))if(!(key in saved))delete process.env[key];Object.assign(process.env,saved);rmSync(dir,{recursive:true,force:true});}
 }
 test('keyboard multiselect toggles plugins and recording independently with all/none shortcuts',()=>{
@@ -73,4 +75,61 @@ test('setup observations request native hook trust only for clients with a trust
  await publishSetup({schemaVersion:1,scope:{api,tenantId:'tenant',userId:'user'},installationId:'fixture-installation',machine:{id:'fixture-machine',label:'fixture'},acceptedAt:new Date().toISOString(),selections:{plugins:selected,forward:selected,history:{}}});
  const clients=(observations[0] as {clients:{client:string;hookTrust:string}[]}).clients;
  expect(Object.fromEntries(clients.map(client=>[client.client,client.hookTrust]))).toEqual({'claude-code':'not_required',codex:'pending',cursor:'not_required',antigravity:'not_required'});
+}));
+
+const nativeUnknown=async(root:string)=>inspectCodexHooks(root,async()=>{throw new Error('native inventory unavailable');});
+const nativeDisabled=async():Promise<CodexHookReview>=>({state:'observed',total:8,pending:0,disabled:8});
+const nativeChanged=async():Promise<CodexHookReview>=>({state:'observed',total:8,pending:2,disabled:1});
+const setupCodex:NonNullable<Parameters<typeof setupCommand>[3]>={installPlugins:async()=>({results:[{client:'codex',status:'installed'}],humanTasks:[]}),launchHistory:()=>({state:'not_started'}),inspectHooks:nativeUnknown};
+
+test('captured or verified Codex setup stays quiet when native inspection is unavailable or hooks are intentionally disabled',async()=>fixture(async(api,_dir,_observations,setCodex)=>{
+ await setupCommand('apply',api,{yes:true,plugins:'codex',forward:'codex',history:'none'},setupCodex);
+ for(const evidence of [{captureObservedAt:new Date().toISOString()}, {proof:{state:'verified'}}]){
+  setCodex({...evidence,humanTasks:[]});
+  for(const inspectHooks of [nativeUnknown,nativeDisabled])for(const action of ['status','resume']){
+   const result=await setupCommand(action,api,{json:true},{...setupCodex,inspectHooks});
+   expect(result).toMatchObject({humanTasks:[]});
+  }
+ }
+}));
+
+test('a search-only Codex plugin never adds capture trust, including stale server tasks and unrelated startup hooks',async()=>fixture(async(api,dir,_observations,setCodex)=>{
+ writeFileSync(join(dir,'codex','hooks.json'),JSON.stringify({hooks:{SessionStart:[{hooks:[{type:'command',command:'echo unused fixture',statusMessage:'OpenCrawl session startup'}]}]}}));
+ let inspections=0;const inspectHooks=async():Promise<CodexHookReview>=>{inspections++;return {state:'observed',total:1,pending:1,disabled:0};};
+ await setupCommand('apply',api,{yes:true,plugins:'codex',forward:'none',history:'none'},{...setupCodex,inspectHooks});
+ setCodex({humanTasks:[{id:'stale-capture-trust',kind:'hook_trust',client:'codex',title:'Old recording choice',instruction:'Stale task'}, {id:'mcp-auth',kind:'mcp_auth',client:'codex',title:'Connect MCP',instruction:'Complete native sign-in'}]});
+ for(const action of ['status','resume']){
+  const result=await setupCommand(action,api,{json:true},{...setupCodex,inspectHooks});
+  expect(result).toMatchObject({humanTasks:[{id:'mcp-auth'}],selections:{forward:{codex:false}}});
+ }
+ expect(inspections).toBe(0);
+}));
+
+test('a local recording opt-out suppresses capture trust before saved setup choices are refreshed',async()=>fixture(async(api,_dir,_observations,setCodex)=>{
+ await setupCommand('apply',api,{yes:true,plugins:'codex',forward:'codex',history:'none'},setupCodex);
+ const path=join(captureDir(),'config.json'),config=JSON.parse(readFileSync(path,'utf8'));writeFileSync(path,JSON.stringify({...config,disabled:true}));
+ setCodex({humanTasks:[{id:'stale-capture-trust',kind:'hook_trust',client:'codex',title:'Old recording choice',instruction:'Stale task'}]});
+ const inspectHooks=async():Promise<CodexHookReview>=>{throw new Error('Recording opt-out must not inspect native hooks');};
+ expect(await setupCommand('status',api,{json:true},{...setupCodex,inspectHooks})).toMatchObject({humanTasks:[]});
+ expect(await setupCommand('resume',api,{json:true},{...setupCodex,inspectHooks})).toMatchObject({humanTasks:[],selections:{forward:{codex:false}}});
+}));
+
+test('positively observed changed hooks still require review after a previous capture proof',async()=>fixture(async(api,_dir,_observations,setCodex)=>{
+ await setupCommand('apply',api,{yes:true,plugins:'codex',forward:'codex',history:'none'},setupCodex);
+ setCodex({captureObservedAt:new Date().toISOString(),proof:{state:'verified'},humanTasks:[]});
+ for(const action of ['status','resume']){
+  const result=await setupCommand(action,api,{json:true},{...setupCodex,inspectHooks:nativeChanged});
+  expect(result).toMatchObject({humanTasks:[{id:'codex-hook-review',kind:'hook_trust',client:'codex'}]});
+  const instruction=(result as {humanTasks:{instruction:string}[]}).humanTasks[0].instruction;
+  expect(instruction).toContain('Codex will not run 2 OpenCrawl hooks');
+  expect(instruction).toContain('keep intentional opt-outs');
+ }
+}));
+
+test('an older installation proof cannot suppress review for a replacement local installation',async()=>fixture(async(api,_dir,_observations,setCodex)=>{
+ await setupCommand('apply',api,{yes:true,plugins:'codex',forward:'codex',history:'none'},setupCodex);
+ setCodex({captureObservedAt:new Date().toISOString(),proof:{state:'verified'},humanTasks:[]});
+ const path=join(captureDir(),'config.json'),config=JSON.parse(readFileSync(path,'utf8'));writeFileSync(path,JSON.stringify({...config,installationId:'replacement-installation'}));
+ const result=await setupCommand('status',api,{json:true},setupCodex);
+ expect(result).toMatchObject({humanTasks:[{id:'codex-hook-review',kind:'hook_trust',client:'codex'}]});
 }));

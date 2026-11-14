@@ -79,6 +79,6 @@ export async function inspectCodexHooks(root:string,query=nativeCodexHooks):Prom
 }
 export function codexHookReviewMessage(review:CodexHookReview):string|null{
  if(review.state==='unknown')return 'Codex hook trust could not be verified. Open /hooks (or desktop Settings > Hooks) to review OpenCrawl session capture and session startup; trust any new or changed definitions you approve, then start a new session.';
- if(review.disabled)return `${review.disabled} OpenCrawl hook${review.disabled===1?' is':'s are'} disabled in Codex. Review /hooks (or desktop Settings > Hooks); keep intentional opt-outs, or enable the hooks you want to use.`;
- return review.pending?`Codex will not run ${review.pending} OpenCrawl hook${review.pending===1?'':'s'} until you review and trust their current definitions: open /hooks (or desktop Settings > Hooks), review OpenCrawl session capture and session startup, then start a new session.`:null;
+ if(review.pending)return `Codex will not run ${review.pending} OpenCrawl hook${review.pending===1?'':'s'} until you review and trust their current definitions: open /hooks (or desktop Settings > Hooks), review OpenCrawl session capture and session startup, then start a new session.${review.disabled?` Another ${review.disabled} OpenCrawl hook${review.disabled===1?' is':'s are'} disabled; keep intentional opt-outs.`:''}`;
+ return review.disabled?`${review.disabled} OpenCrawl hook${review.disabled===1?' is':'s are'} disabled in Codex. Review /hooks (or desktop Settings > Hooks); keep intentional opt-outs, or enable the hooks you want to use.`:null;
 }
