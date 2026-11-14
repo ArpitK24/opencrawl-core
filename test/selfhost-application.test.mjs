@@ -15,7 +15,7 @@ import {valueReportKey} from '../dist/src/application/value-report.mjs';
 import {createOnboardingStatus} from '../dist/src/onboarding-status.mjs';
 const org='org_selfhost',setup='setup-token-for-tests';
 async function fixture(t,options={}){
-  const {search:searchOptions,replicasBindings,setupInstallCommand,...appOptions}=options;
+  const {search:searchOptions,replicasBindings,setupStartCommand,setupCliCommand,...appOptions}=options;
   const dir=await mkdtemp(join(tmpdir(),'opencrawl-selfhost-app-'));
   const store=createLocalSessionStore(dir),prefix='sessions/selfhost/v1';
   let app;const server=createServer((req,res)=>app(req,res));
@@ -23,7 +23,7 @@ async function fixture(t,options={}){
   const origin='http://localhost:'+server.address().port;
   const identity=await createLocalIdentity({url:origin,secret:randomBytes(32).toString('hex'),databasePath:join(dir,'identity.sqlite'),organizationId:org});
   await identity.ready();t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));identity.close();await rm(dir,{recursive:true,force:true});});
-  const settings={replicasBindings,setupInstallCommand,organizationId:org,url:origin,authOrigin:origin+'/api/auth',clientId:'opencrawl-cli',authSecret:'x'.repeat(32),identityPath:join(dir,'identity.sqlite'),setupToken:setup,search:{endpoint:'http://127.0.0.1:1',environment:'selfhost',tenantId:org,...searchOptions}};
+  const settings={replicasBindings,setupStartCommand,setupCliCommand,organizationId:org,url:origin,authOrigin:origin+'/api/auth',clientId:'opencrawl-cli',authSecret:'x'.repeat(32),identityPath:join(dir,'identity.sqlite'),setupToken:setup,search:{endpoint:'http://127.0.0.1:1',environment:'selfhost',tenantId:org,...searchOptions}};
   app=selfhostApplication({settings,store,prefix,identity,readAsset:async file=>'asset:'+file,...appOptions});
   const jars=new Map();
   const request=async(path,who=null,options={})=>{
@@ -490,9 +490,9 @@ test('admin connects Replicas through the product before onboarding; native fork
 });
 
 
-test('operator-pinned setup installer reaches authenticated bootstrap unchanged',async t=>{
- const command='curl --fail https://candidate.example/immutable/install.sh | sh';
- const f=await fixture(t,{setupInstallCommand:command});await f.admin();
+test('operator-pinned setup commands reach authenticated bootstrap unchanged',async t=>{
+ const setupStartCommand='sh /private/candidate/install.sh && /private/candidate/opencrawl setup',setupCliCommand='/private/candidate/opencrawl';
+ const f=await fixture(t,{setupStartCommand,setupCliCommand});await f.admin();
  const boot=await(await f.request('/api/console/bootstrap','admin')).json();
- assert.equal(boot.setupInstallCommand,command);
+ assert.equal(boot.setupStartCommand,setupStartCommand);assert.equal(boot.setupCliCommand,setupCliCommand);
 });

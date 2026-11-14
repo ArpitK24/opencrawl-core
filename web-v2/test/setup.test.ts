@@ -1,5 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {spawnSync} from 'node:child_process';
 import {clientSummary,historyLabel,setupCommands} from '../src/application/setup.tsx';
 import type {SetupStatus} from '../../src/application/types.mjs';
 
@@ -22,16 +26,60 @@ test('setup and agent handoff target the selected server with shell-safe argumen
   assert.equal(commands.setup,"opencrawl setup --api 'http://[::1]:4310'");
   assert.ok(commands.handoff.includes("--api 'http://[::1]:4310' --json"));
   assert.ok(!commands.setup.includes('app.getopencrawl.com'));
-  assert.ok(setupCommands('https://team.example/mcp',true).install.startsWith('irm '));
+  assert.ok(commands.handoff.includes('opencrawl setup status'));
+  assert.ok(commands.handoff.includes('--client CLIENT --json'));
+  assert.ok(commands.handoff.includes('expect not_selected with no capture required'));
 });
 
-test('a preview installer override completely replaces main distribution commands',()=>{
-  const pinned='sh /private/preview/install-012345.sh';
+test('explicit start and CLI overrides stay paired and replace every executable handoff',()=>{
+  const start='sh /private/preview/install-012345.sh && "/private/preview/opencrawl" setup';
   for(const windows of [false,true]){
-    const commands=setupCommands('https://preview.example/mcp',windows,pinned);
-    assert.equal(commands.start,pinned+"\nopencrawl setup --api 'https://preview.example'");
-    assert.ok(!commands.start.includes('raw.githubusercontent.com'));
-    assert.ok(!commands.start.includes('/main/'));
-    assert.ok(!commands.start.includes('latest'));
+    const commands=setupCommands('https://preview.example/mcp',windows,start,'"/private/preview/opencrawl"');
+    assert.equal(commands.start,start);
+    assert.equal(commands.setup,'"/private/preview/opencrawl" setup --api \'https://preview.example\'');
+    assert.ok(commands.handoff.includes('"/private/preview/opencrawl" setup status'));
+    assert.ok(commands.handoff.includes('"/private/preview/opencrawl" verify-installation'));
+    assert.ok(commands.handoff.includes('--client CLIENT --json'));
+    assert.doesNotMatch(commands.start,/raw\.githubusercontent\.com|\/main\/|latest/);
+  }
+  assert.equal(setupCommands('https://preview.example/mcp',false,'  ',' ').setup,"opencrawl setup --api 'https://preview.example'");
+  assert.throws(()=>setupCommands('https://preview.example/mcp',false,start),/configured together/);
+  assert.throws(()=>setupCommands('https://preview.example/mcp',false,undefined,'private-cli'),/configured together/);
+});
+
+function shellFixture(run:(directory:string,env:NodeJS.ProcessEnv,trace:string)=>void) {
+  const directory=mkdtempSync(join(tmpdir(),'opencrawl-setup-command-')),bin=join(directory,'bin'),trace=join(directory,'trace');mkdirSync(bin);
+  writeFileSync(join(bin,'opencrawl'),'#!/bin/sh\nprintf "released %s\n" "$*" >> "$TRACE"\n',{mode:0o700});
+  try{run(directory,{...process.env,HOME:directory,PATH:bin+':/usr/bin:/bin',TRACE:trace},trace);}finally{rmSync(directory,{recursive:true,force:true});}
+}
+test('failed installer download or execution never invokes a preexisting CLI',{skip:process.platform==='win32'},()=>{
+  for(const curl of ['printf "exit 0\n"; exit 22','printf "exit 7\n"'])shellFixture((directory,env,trace)=>{
+    writeFileSync(join(directory,'bin/curl'),'#!/bin/sh\n'+curl+'\n',{mode:0o700});
+    const result=spawnSync('/bin/sh',['-c',setupCommands('https://selected.example/mcp').start],{env,encoding:'utf8'});
+    assert.notEqual(result.status,0);assert.equal(existsSync(trace),false,'an existing CLI must not run after installation failure');
+  });
+});
+test('successful default installation invokes setup exactly once',{skip:process.platform==='win32'},()=>shellFixture((directory,env,trace)=>{
+  writeFileSync(join(directory,'bin/curl'),'#!/bin/sh\nprintf "exit 0\n"\n',{mode:0o700});
+  const result=spawnSync('/bin/sh',['-c',setupCommands('https://selected.example/mcp').start],{env,encoding:'utf8'});
+  assert.equal(result.status,0,result.stderr);assert.equal(readFileSync(trace,'utf8'),'released setup --api https://selected.example\n');
+}));
+test('private full start executes exactly once and never falls through to the released CLI',{skip:process.platform==='win32'},()=>shellFixture((directory,env,trace)=>{
+  const privateCli=join(directory,'private-cli');writeFileSync(privateCli,'#!/bin/sh\nprintf "private %s\n" "$*" >> "$TRACE"\n',{mode:0o700});
+  const prefix="'"+privateCli.replace(/'/g,"'\\''")+"'",start=prefix+' setup --api https://preview.example';
+  const command=setupCommands('https://preview.example/mcp',false,start,prefix);
+  const result=spawnSync('/bin/sh',['-c',command.start],{env,encoding:'utf8'});assert.equal(result.status,0,result.stderr);assert.equal(readFileSync(trace,'utf8'),'private setup --api https://preview.example\n');
+  rmSync(trace);const failure=setupCommands('https://preview.example/mcp',false,'false && '+start,prefix);
+  assert.notEqual(spawnSync('/bin/sh',['-c',failure.start],{env}).status,0);assert.equal(existsSync(trace),false);
+}));
+const powershellAvailable=spawnSync('pwsh',['--version'],{stdio:'ignore'}).status===0;
+test('PowerShell download and installer failures stop before setup',{skip:!powershellAvailable},()=>{
+  for(const download of ["throw 'fixture download failed'","return '$global:LASTEXITCODE = 7'"]){
+    const directory=mkdtempSync(join(tmpdir(),'opencrawl-setup-powershell-')),trace=join(directory,'trace'),literal="'"+trace.replace(/'/g,"''")+"'";
+    try{
+      const script=`function Invoke-RestMethod { ${download} }\nfunction opencrawl { [System.IO.File]::WriteAllText(${literal}, 'ran') }\n${setupCommands('https://selected.example/mcp',true).start}`;
+      const result=spawnSync('pwsh',['-NoProfile','-NonInteractive','-Command',script],{encoding:'utf8'});
+      assert.notEqual(result.status,0);assert.equal(existsSync(trace),false);
+    }finally{rmSync(directory,{recursive:true,force:true});}
   }
 });

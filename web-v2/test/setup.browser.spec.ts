@@ -49,7 +49,7 @@ test('Setup keeps each client and history selection independent after the first 
   await antigravity.getByText('Connection and import status').click();
   await expect(antigravity.getByText('Connection observed, client verification pending',{exact:true})).toBeVisible();
   await expect(antigravity.getByText('Capture observed',{exact:true})).toBeVisible();
-  await expect(page.getByLabel('Agent handoff',{exact:true})).toHaveValue(/opencrawl verify-installation.*--json/);
+  await expect(page.getByLabel('Agent handoff',{exact:true})).toHaveValue(/opencrawl setup status.*--json/);
   await expect(page.getByRole('button',{name:/Test MCP|Finish setup|Install on Replicas/})).toHaveCount(0);
 });
 
@@ -75,11 +75,13 @@ test('self-host Setup commands keep the selected server and contain no cloud fal
   await page.route('**/api/console/bootstrap',async route=>{const response=await route.fetch();const body:unknown=await response.json();if(typeof body!=='object'||body===null)throw Error('Invalid fixture');await route.fulfill({json:{...body,mcpUrl:'https://knowledge.example.test/mcp'}});});
   await start(page,partial);
   await expect(page.getByLabel('Setup command',{exact:true})).toHaveValue("opencrawl setup --api 'https://knowledge.example.test'");
-  await expect(page.getByLabel('Agent handoff',{exact:true})).toHaveValue(/verify-installation --api 'https:\/\/knowledge.example.test' --json/);
+  await expect(page.getByLabel('Agent handoff',{exact:true})).toHaveValue(/verify-installation --api 'https:\/\/knowledge.example.test' --client CLIENT --json/);
 });
 
 test('mobile Setup stays within the viewport and navigation is keyboard accessible',async({page})=>{
   await page.setViewportSize({width:390,height:844});await start(page,partial);
+  await expect(page.getByLabel('Install and set up',{exact:true})).toBeVisible();
+  await expect(page.getByLabel('Install and set up',{exact:true})).toHaveValue(/opencrawl_installer=\$\(curl/);
   await page.getByRole('button',{name:'Open workspace navigation'}).click();
   await expect(page.getByRole('navigation',{name:'Workspace navigation'})).toBeVisible();
   await expect(page.getByRole('link',{name:'Setup',exact:true})).toBeFocused();
@@ -94,7 +96,7 @@ test('agent handoff copies one stable instruction and supports manual copy when 
   await page.getByRole('button',{name:'Continue with your agent',exact:true}).click();
   const handoff=page.getByLabel('Agent handoff',{exact:true});
   await expect(handoff).toBeVisible();await expect(handoff).toBeFocused();
-  await expect(handoff).toHaveValue(/opencrawl verify-installation.*--json/);
+  await expect(handoff).toHaveValue(/opencrawl setup status.*--json/);
   await page.request.post('/__test/state',{data:{setup:{...partial,firstWin:null}}});
   await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
   await expect(handoff).toBeFocused();
@@ -144,9 +146,13 @@ test('recording-off clients still offer the agent for pending sign-in or a faile
 });
 
 test('preview bootstrap uses its pinned installer instead of released CLI distribution',async({page})=>{
-  await page.route('**/api/console/bootstrap',async route=>{const response=await route.fetch();const body:unknown=await response.json();if(typeof body!=='object'||body===null)throw Error('Invalid fixture');await route.fulfill({json:{...body,mcpUrl:'https://preview.example/mcp',setupInstallCommand:'sh /private/preview/install-012345.sh'}});});
+  await page.route('**/api/console/bootstrap',async route=>{const response=await route.fetch();const body:unknown=await response.json();if(typeof body!=='object'||body===null)throw Error('Invalid fixture');await route.fulfill({json:{...body,mcpUrl:'https://preview.example/mcp',setupStartCommand:'sh /private/preview/install-012345.sh && \"/private/preview/opencrawl\" setup',setupCliCommand:'\"/private/preview/opencrawl\"'}});});
   await start(page);
   const command=page.getByLabel('Install and set up',{exact:true});
-  await expect(command).toHaveValue("sh /private/preview/install-012345.sh\nopencrawl setup --api 'https://preview.example'");
+  await expect(command).toHaveValue('sh /private/preview/install-012345.sh && "/private/preview/opencrawl" setup');
+  await page.getByText('CLI already installed', {exact:true}).click();
+  await expect(page.getByLabel('Setup command',{exact:true})).toHaveValue('"/private/preview/opencrawl" setup --api \'https://preview.example\'');
   expect(await command.inputValue()).not.toMatch(/raw\.githubusercontent\.com|\/main\/|latest/);
+  await start(page,partial);
+  await expect(page.getByLabel('Agent handoff',{exact:true})).toHaveValue(/\"\/private\/preview\/opencrawl\" setup status.*--client CLIENT --json/);
 });

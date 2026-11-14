@@ -1,7 +1,7 @@
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {Button, CopyField, EmptyState, LinkButton, LoadingState, Notice, Page, Section, StatusBadge} from '../design/components.tsx';
 import {consoleResourceKey, useConsoleResource} from '../data.tsx';
-import {nativeInstallCommand, nativePathCommand} from '../../../src/sessions/cli-installation.mjs';
+import {NATIVE_INSTALL_SH, nativeInstallCommand, nativePathCommand} from '../../../src/sessions/cli-installation.mjs';
 import type {SetupStatus} from '../../../src/application/types.mjs';
 import type {ProductApi} from './api.ts';
 import {copyText} from '../onboarding/copy.tsx';
@@ -9,15 +9,19 @@ import {copyText} from '../onboarding/copy.tsx';
 type Client = SetupStatus['installations'][number]['clients'][number];
 const clientNames: Readonly<Record<string,string>> = {'claude-code':'Claude Code',codex:'Codex',cursor:'Cursor',antigravity:'Antigravity',agy:'Antigravity'};
 export const clientName = (client:string) => clientNames[client] ?? client;
-export function setupCommands(mcpUrl:string, windows=false, setupInstallCommand?:string) {
+export function setupCommands(mcpUrl:string, windows=false, setupStartCommand?:string, setupCliCommand?:string) {
+  const startOverride=setupStartCommand?.trim()||undefined,cliOverride=setupCliCommand?.trim()||undefined;
+  if(Boolean(startOverride)!==Boolean(cliOverride))throw new Error('Setup start and CLI commands must be configured together.');
   const endpoint=new URL(mcpUrl).origin;
   const quoted="'"+endpoint.replace(/'/g,windows?"''":"'\\''")+"'";
-  const suffix=` --api ${quoted}`;
-  const setup=`opencrawl setup${suffix}`;
-  const install=setupInstallCommand??`${nativeInstallCommand(windows)}\n${nativePathCommand(windows)}`;
+  const suffix=` --api ${quoted}`,cli=cliOverride??'opencrawl';
+  const setup=`${cli} setup${suffix}`;
+  const install=windows
+    ? `$ErrorActionPreference = 'Stop'\n$global:LASTEXITCODE = 0\n${nativeInstallCommand(true)}\nif (-not $? -or $LASTEXITCODE -ne 0) { throw 'OpenCrawl installation failed' }\n${nativePathCommand(true)}`
+    : `opencrawl_installer=$(curl -fsSL ${NATIVE_INSTALL_SH}) &&\nprintf '%s' "$opencrawl_installer" | sh &&\n${nativePathCommand(false)}`;
   return {
-    setup,install,start:`${install}\n${setup}`,
-    handoff:`Run opencrawl verify-installation${suffix} --json on this machine. Use my saved choices and guide me through any remaining hook trust and MCP sign-in steps in the selected agents. Verify a new session is captured and searchable for each participating agent.`,
+    setup,install,start:startOverride??(windows?`& {\n${install}\n${setup}\nif ($LASTEXITCODE -ne 0) { throw 'OpenCrawl setup failed' }\n}`:`${install} &&\n${setup}`),
+    handoff:`Continue my OpenCrawl setup in this conversation. Run ${cli} setup status${suffix} --json and reuse my saved choices. Use ${cli} for every OpenCrawl command. For each client selected for a plugin or future recording, run ${cli} verify-installation${suffix} --client CLIENT --json, replacing CLIENT with that client's exact ID from setup status, to read its proof and status. Require a new searchable session only when future recording is enabled. When future recording is off, preserve that choice, complete only MCP sign-in and tool proof, and expect not_selected with no capture required. Preserve skipped history and let history-only imports continue in the background. Guide only the next required native human action without repeating completed steps.`,
   };
 }
 export function clientSummary(client:Client):{label:string;tone:'neutral'|'success'|'warning'|'danger'} {
@@ -65,10 +69,10 @@ function ClientRow({client}: {client:Client}) {
   </li>;
 }
 /** Persistent setup status. Native agents own human trust and authentication steps. */
-export function SetupPage({api,mcpUrl,setupInstallCommand}: {api:Pick<ProductApi,'setupStatus'>;mcpUrl:string;setupInstallCommand?:string}) {
+export function SetupPage({api,mcpUrl,setupStartCommand,setupCliCommand}: {api:Pick<ProductApi,'setupStatus'>;mcpUrl:string;setupStartCommand?:string;setupCliCommand?:string}) {
   const key=useMemo(()=>consoleResourceKey(api,'setup'),[api]);
   const resource=useConsoleResource(key,signal=>api.setupStatus(signal),{autoRefreshMilliseconds:5_000,staleMilliseconds:5_000});
-  const commands=setupCommands(mcpUrl,typeof navigator!=='undefined'&&/Windows/.test(navigator.userAgent),setupInstallCommand);
+  const commands=setupCommands(mcpUrl,typeof navigator!=='undefined'&&/Windows/.test(navigator.userAgent),setupStartCommand,setupCliCommand);
   const status=resource.data;
   const hasInstallations=Boolean(status?.installations.length);
   const needsAgent=Boolean(status?.installations.some(installation=>installation.clients.some(client=>client.humanTasks.length>0||client.history==='import'&&client.historyProgress.state==='failed'||client.installed&&client.mcp.state==='pending'||client.forward&&client.proof.state!=='verified')));

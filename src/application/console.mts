@@ -12,7 +12,8 @@ export interface ConsoleContext {principal: Principal; user: User; member: Membe
 export interface ConsoleServices {
   url: string;
   setupPrompt: string;
-  setupInstallCommand?: string;
+  setupStartCommand?: string;
+  setupCliCommand?: string;
   invitationPolicy?: InvitationPolicy;
   replicas?: {issue(principal: Principal, member: Membership): Promise<{code: string; expiresAt: string}>};
   organization: (id: string) => Promise<Organization>;
@@ -73,6 +74,7 @@ export interface ConsoleExtensions {
   routes?: Record<string, (context: ConsoleContext) => Promise<unknown>>;
 }
 export function createConsoleApi(services: ConsoleServices, extensions: ConsoleExtensions = {}) {
+  if(Boolean(services.setupStartCommand?.trim())!==Boolean(services.setupCliCommand?.trim()))throw new Error('Setup start and CLI commands must be configured together.');
   return async (req: IncomingMessage, path: string, context: ConsoleContext): Promise<{status: number; body: unknown}> => {
     const {principal,user,member,revalidate} = context;
     try {
@@ -89,7 +91,7 @@ export function createConsoleApi(services: ConsoleServices, extensions: ConsoleE
       } else if (path === '/api/console/bootstrap') {
         const [organization, progress, extension] = await Promise.all([services.organization(principal.tenantId), services.progress(principal), extensions.bootstrap?.(context)]);
         const completed = hasCompletedOnboarding(progress);
-        body = {...extension,...(services.invitationPolicy?{invitationPolicy:services.invitationPolicy}:{}),cacheScope:context.cacheScope || [principal.tenantId,principal.userId,admin(member)?'admin':'member'].join(':'),workspace:{name:organization.name,userName:name(user),email:user.email,role:admin(member) ? 'admin' : 'member'}, mcpUrl:services.url + '/mcp',setupPrompt:services.setupPrompt,...(services.setupInstallCommand?{setupInstallCommand:services.setupInstallCommand}:{}),...(admin(member)?{replicasSetupPrompt:replicasSetupPrompt(services.url),canInstallReplicas:Boolean(services.replicas)}:{}),canInvite:admin(member),onboarding:{completed,next:completed ? '/' : await services.next(principal)}};
+        body = {...extension,...(services.invitationPolicy?{invitationPolicy:services.invitationPolicy}:{}),cacheScope:context.cacheScope || [principal.tenantId,principal.userId,admin(member)?'admin':'member'].join(':'),workspace:{name:organization.name,userName:name(user),email:user.email,role:admin(member) ? 'admin' : 'member'}, mcpUrl:services.url + '/mcp',setupPrompt:services.setupPrompt,...(services.setupStartCommand?{setupStartCommand:services.setupStartCommand,setupCliCommand:services.setupCliCommand}:{}),...(admin(member)?{replicasSetupPrompt:replicasSetupPrompt(services.url),canInstallReplicas:Boolean(services.replicas)}:{}),canInvite:admin(member),onboarding:{completed,next:completed ? '/' : await services.next(principal)}};
       } else if (path === '/api/console/usage') {
         body = await services.usage(principal);
       } else if (path === '/api/console/sources') {

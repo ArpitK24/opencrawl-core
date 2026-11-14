@@ -53,8 +53,9 @@ export interface SettingsData {
 
 export interface InvitationPolicy {delivery: 'email' | 'link'; beforeAgentSetup: boolean}
 export interface Bootstrap extends SettingsData {
-  /** Preview runtimes may supply a complete pinned CLI installation/PATH command. */
-  setupInstallCommand?: string;
+  /** Operator-owned complete start command and matching shell-quoted CLI prefix; configure both together. */
+  setupStartCommand?: string;
+  setupCliCommand?: string;
   cacheScope: string; canInvite: boolean; invitationPolicy?: InvitationPolicy; onboarding: {completed: boolean; next: string}}
 
 export type * from './reports.mjs';

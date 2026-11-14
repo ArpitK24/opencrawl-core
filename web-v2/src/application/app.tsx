@@ -65,7 +65,7 @@ function ConsoleApp<B extends Bootstrap>({api, extensions}: {api: ProductApi<B>;
     setData(next); navigate(next.onboarding.completed ? '/' : '/setup');
   };
   const routes: ConsoleRoute[] = [
-    {path:'/setup',label:'Setup',icon:'settings',element:data ? <SetupPage api={api} mcpUrl={data.mcpUrl} setupInstallCommand={data.setupInstallCommand}/> : null,pending:feedback => <PendingPage title="Setup" description="Manage your agent connections and history imports.">{feedback}</PendingPage>},
+    {path:'/setup',label:'Setup',icon:'settings',element:data ? <SetupPage api={api} mcpUrl={data.mcpUrl} setupStartCommand={data.setupStartCommand} setupCliCommand={data.setupCliCommand}/> : null,pending:feedback => <PendingPage title="Setup" description="Manage your agent connections and history imports.">{feedback}</PendingPage>},
     {path:'/',label:'Usage',icon:'usage',element:<UsagePage adapter={dataAdapter}/>,pending:feedback => <PendingPage bodyClassName="usage-report" title="Usage" description="Workspace usage">{feedback}</PendingPage>},
     {path:'/sessions',label:'Sessions',icon:'sessions',element:<SessionsPage adapter={libraryAdapter}/>,pending:feedback => <PendingPage bodyClassName="oc-library" title="Sessions" description="Agent sessions captured across your workspace. Private sessions are visible only to the person who captured them.">{feedback}</PendingPage>},
     {path:'/memories',label:'Memories',icon:'memories',element:<MemoriesPage adapter={libraryAdapter}/>,pending:feedback => <PendingPage bodyClassName="oc-library" title="Memories" description="Memory files your agents keep, captured so teammates’ agents can use them. Private memories are visible only to the person who captured them.">{feedback}</PendingPage>},
