@@ -22,7 +22,7 @@ test('standalone verification infers only the authenticated local installation a
  try{
   const inferred=await run();expect(inferred.code).toBe(0);expect(inferred.stderr).toBe('');expect(JSON.parse(inferred.stdout).data).toEqual(row);expect(requests).toEqual([{installationId:state.installationId,client:'codex'}]);
   const explicit=await run(['--installation-id','fixture-explicit-installation']);expect(explicit.code).toBe(0);expect(requests[1]).toEqual({installationId:'fixture-explicit-installation',client:'codex'});
-  tenantId='another-workspace';const mismatch=await run();expect(mismatch.code).toBe(64);expect(mismatch.stderr+mismatch.stdout).toContain('Run setup first');expect(requests).toHaveLength(2);
+  tenantId='another-workspace';const mismatch=await run();expect(mismatch.code).toBe(64);expect(mismatch.stderr).toBe('');const failure=JSON.parse(mismatch.stdout);expect(failure).toMatchObject({schemaVersion:1,error:{code:'INVALID_USAGE'}});expect(failure.error.message).toContain(process.execPath);expect(failure.error.message).toContain(resolve(import.meta.dir,'../src/cli.ts'));expect(failure.error.message).toContain('setup --api '+api);expect(failure.error.message).toContain('setup verify --api '+api+' --client CLIENT');expect(requests).toHaveLength(2);
   const multiple=await run(['--client','cursor']);expect(multiple.code).toBe(64);expect(requests).toHaveLength(2);
  }finally{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));rmSync(dir,{recursive:true,force:true});}
 },15000);

@@ -17,18 +17,12 @@ import {readServerSetup,serverScope,publishSetup,type SetupServerStatus} from '.
 import {historyJob,startHistoryWorker,runHistoryWorker} from './history-worker.ts';
 import {chooseSetupItems} from './select.ts';
 import {verifyInstallation} from '../verify-installation.ts';
+import {formatSetupCommand} from './invocation.ts';
+export {formatSetupCommand} from './invocation.ts';
 type Values=Record<string,unknown>;
 type Dependencies={command?:string[];login?:()=>Promise<unknown>;installPlugins?:typeof installSetupPlugins;launchHistory?:typeof startHistoryWorker;choose?:typeof chooseSetupItems;interactive?:boolean;inspectHooks?:typeof inspectCodexHooks};
 function historyFiles(api:string):HistoryFile[]{const previous=readCaptureConfig();return inventory(previous?.api===api?previous:{roots:{'claude-code':process.env.CLAUDE_CONFIG_DIR||join(homedir(),'.claude'),codex:process.env.CODEX_HOME||join(homedir(),'.codex'),antigravity:process.env.ANTIGRAVITY_HOME||join(homedir(),'.gemini')},claudeDesktopSessionsRoot:defaultClaudeDesktopSessionsRoot()},'all').files;}
 const list=(values:string[])=>values.length?values.join(','):'none';
-// Preserve the managed launcher: it may carry a private installation's environment.
-// Windows handoffs use PowerShell; POSIX handoffs work in sh, bash and zsh.
-export function formatSetupCommand(args:string[],command=commandForSelf(),platform=process.platform):string{
- const literal=(value:string)=>"'"+value.replaceAll("'",platform==='win32'?"''":"'\\''")+"'";
- const safe=platform==='win32'?/^[A-Za-z0-9_./:-]+$/:/^[A-Za-z0-9_@%+=:,./-]+$/;
- const words=[...command,...args].map((value,index)=>platform==='win32'&&index===0?literal(value):safe.test(value)?value:literal(value));
- return (platform==='win32'?'& ':'')+words.join(' ');
-}
 
 function preserveRecordingOff(selections:SetupSelections,scope:SetupScope):SetupSelections{
  const config=readCaptureConfig();if(!config||config.api!==scope.api||config.owner.tenantId!==scope.tenantId||config.owner.userId!==scope.userId)return selections;

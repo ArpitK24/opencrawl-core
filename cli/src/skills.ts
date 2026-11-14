@@ -46,7 +46,7 @@ export function startupInstruction() {
   return `Use the OpenCrawl SessionStart context and installed opencrawl skill for workspace knowledge and board participation. If startup context is missing or reports failure, follow the skill's registration fallback. If the skill is unavailable, run opencrawl board instructions.`;
 }
 
-export function skillFiles() {
+export function skillFiles(setupGuide=setupAgentGuide()) {
   return {
     'SKILL.md': `---
 name: opencrawl
@@ -89,7 +89,7 @@ CLI login, MCP authentication, and upload-only capture credentials are separate.
 
 CLI updates regenerate the CLI-owned opencrawl skill, replacing local edits and removing stale files. Server configuration stays in CLI config/environment, not in this skill. Other named skills are separate. Use \`opencrawl skills install --json\` for initial installation or manual repair. Install in each approved remote environment too; local files do not automatically reach cloud sessions. Start a new session or reload skills through the client's supported mechanism after an update.
 `,
-    'references/setup.md': setupAgentGuide(),
+    'references/setup.md': setupGuide,
     'references/search.md': `# Lexical search recipe
 
 Search matches words, not the meaning of a question. Use the native search/fetch tools; CLI equivalents are opencrawl search and opencrawl fetch. Never send tenant IDs, credentials, raw query DSL or an index name.

@@ -36,7 +36,7 @@ export function setupPluginFiles(client:PluginClient,api:string):Record<string,s
   const origin=apiOrigin(api),url=origin+'/mcp';
   const base={name:'opencrawl',version,description:'Search shared knowledge and finish OpenCrawl setup with your agent.',author:{name:'OpenCrawl'},license:'MIT'};
   const guide=setupAgentGuide(client,origin);
-  const files:Record<string,string>={...Object.fromEntries(Object.entries(skillFiles()).map(([name,content])=>['skills/opencrawl/'+name,content])),'skills/opencrawl-setup/SKILL.md':guide,'README.md':'# OpenCrawl\n\nContinue setup with your agent. The CLI owns saved choices; native hook trust and MCP authentication remain yours.\n'};
+  const files:Record<string,string>={...Object.fromEntries(Object.entries(skillFiles(guide)).map(([name,content])=>['skills/opencrawl/'+name,content])),'skills/opencrawl-setup/SKILL.md':guide,'README.md':'# OpenCrawl\n\nContinue setup with your agent. The CLI owns saved choices; native hook trust and MCP authentication remain yours.\n'};
   if(client==='codex') {
     files['plugin.json']=json({...base,extensions:{'com.openai':{onboardingSkill:'./skills/opencrawl-setup/SKILL.md',interface:{displayName:'OpenCrawl',shortDescription:'Search knowledge and finish setup',defaultPrompt:['Continue my OpenCrawl setup.']}}}});
     files['mcp.json']=json({mcpServers:{opencrawl:{type:'streamable-http',url}}});
