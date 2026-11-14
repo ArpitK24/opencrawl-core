@@ -1,6 +1,6 @@
 import {test,expect} from 'bun:test';
 import {spawnSync} from 'node:child_process';
-import {mkdtempSync,mkdirSync,writeFileSync,rmSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,rmSync,realpathSync} from 'node:fs';
 import {join,dirname,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {formatSetupCommand} from '../src/setup/command.ts';
@@ -35,7 +35,7 @@ test('displayed command runs its launcher with exact arguments despite another o
 
 
 test('packaged runtime guides reuse the managed entry or matching package executable and leave source runs intact',async()=>{
- const dir=mkdtempSync(join(tmpdir(),'opencrawl-setup-runtime-'));
+ const dir=realpathSync(mkdtempSync(join(tmpdir(),'opencrawl-setup-runtime-')));
  try{
   const root=join(dir,"runtime package's"),runtime=join(root,'runtime','opencrawl.js'),entry=join(dir,'resolver.ts'),installDir=join(dir,"private launcher's bin"),data=join(dir,'data');
   mkdirSync(dirname(runtime),{recursive:true});mkdirSync(join(root,'bin'));mkdirSync(installDir);mkdirSync(join(data,'opencrawl'),{recursive:true});
