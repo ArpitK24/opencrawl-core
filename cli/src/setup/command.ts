@@ -4,7 +4,7 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {CliError} from '../oauth.ts';
 import {atomicJson,withSessionLock} from '../session.ts';
-import {readCaptureConfig,captureDir,refreshCaptureIdentity,commandForSelf,HOOK_MODE} from '../capture/runtime.ts';
+import {readCaptureConfig,captureDir,refreshCaptureIdentity,HOOK_MODE} from '../capture/runtime.ts';
 import {installCapture} from '../capture/install.ts';
 import {inspectCodexHooks,codexHookReviewMessage} from '../capture/codex-hooks.ts';
 import {inventory,type HistoryFile} from '../capture/backfill.ts';
@@ -17,7 +17,7 @@ import {readServerSetup,serverScope,publishSetup,type SetupServerStatus} from '.
 import {historyJob,startHistoryWorker,runHistoryWorker} from './history-worker.ts';
 import {chooseSetupItems} from './select.ts';
 import {verifyInstallation} from '../verify-installation.ts';
-import {formatSetupCommand} from './invocation.ts';
+import {formatSetupCommand,setupCommandForSelf} from './invocation.ts';
 export {formatSetupCommand} from './invocation.ts';
 type Values=Record<string,unknown>;
 type Dependencies={command?:string[];login?:()=>Promise<unknown>;installPlugins?:typeof installSetupPlugins;launchHistory?:typeof startHistoryWorker;choose?:typeof chooseSetupItems;interactive?:boolean;inspectHooks?:typeof inspectCodexHooks};
@@ -85,7 +85,7 @@ async function result(state:SetupState,launchHistory:typeof startHistoryWorker,i
  const server=await readServerSetup(state.scope.api),statusCommand=formatSetupCommand(['setup','status','--api',state.scope.api,'--json'],command);
  return {status:state.pluginResults?.some(row=>['error','pending'].includes(row.status))?'needs_attention':'configured',scope:state.scope,installationId:state.installationId,selections:state.selections,plugins:state.pluginResults,history,humanTasks:await tasks(server,state,inspectHooks),historyBenefit,agentPrompt:`Continue OpenCrawl setup in this conversation. Use \`${formatSetupCommand([],command)}\` for every OpenCrawl command${process.platform==='win32'?' in PowerShell':''}. Start with \`${statusCommand}\` and guide me through one returned human task at a time. Reuse my saved choices. For clients with recording off (forward=false), complete the MCP connection without requiring a new session capture.`,nextStep:`Use \`${statusCommand}\` for history progress. Installation is not proof that a session is searchable.`};
 }
-export async function setupCommand(action:string,api:string,values:Values,{command=commandForSelf(),login,installPlugins=installSetupPlugins,launchHistory=startHistoryWorker,choose=chooseSetupItems,inspectHooks=inspectCodexHooks,interactive=Boolean(process.stdin.isTTY&&process.stderr.isTTY&&!values.json)}:Dependencies={}){
+export async function setupCommand(action:string,api:string,values:Values,{command=setupCommandForSelf(),login,installPlugins=installSetupPlugins,launchHistory=startHistoryWorker,choose=chooseSetupItems,inspectHooks=inspectCodexHooks,interactive=Boolean(process.stdin.isTTY&&process.stderr.isTTY&&!values.json)}:Dependencies={}){
  if(action==='worker'){if(typeof values['scope-key']!=='string')throw new CliError('INVALID_USAGE','Missing history scope.',64);const state=readStateKey(values['scope-key']);if(state?.scope.api!==api)throw new CliError('SETUP_SCOPE_CHANGED','History worker API does not match its approved scope.');await runHistoryWorker(values['scope-key']);return null;}
  if(!['run','plan','status','apply','resume','verify'].includes(action))throw new CliError('INVALID_USAGE','Use setup, setup --json, setup apply, setup status, setup resume, or setup verify.',64);
  let server;

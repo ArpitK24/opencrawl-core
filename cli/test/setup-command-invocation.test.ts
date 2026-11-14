@@ -1,7 +1,7 @@
 import {test,expect} from 'bun:test';
 import {spawnSync} from 'node:child_process';
 import {mkdtempSync,mkdirSync,writeFileSync,rmSync} from 'node:fs';
-import {join} from 'node:path';
+import {join,dirname,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {formatSetupCommand} from '../src/setup/command.ts';
 import {commandForSelf} from '../src/capture/runtime.ts';
@@ -30,5 +30,35 @@ test('displayed command runs its launcher with exact arguments despite another o
   const run=spawnSync(shell,windows?['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',formatted]:['-c',formatted],{encoding:'utf8',env:{...process.env,PATH:otherDir},timeout:5000});
   expect(run.error).toBeUndefined();expect(run.status).toBe(0);
   expect(windows?JSON.parse(run.stdout):run.stdout.split('\0').slice(0,-1)).toEqual(args);
+ }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+
+test('packaged runtime guides reuse the managed entry or matching package executable and leave source runs intact',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'opencrawl-setup-runtime-'));
+ try{
+  const root=join(dir,"runtime package's"),runtime=join(root,'runtime','opencrawl.js'),entry=join(dir,'resolver.ts'),installDir=join(dir,"private launcher's bin"),data=join(dir,'data');
+  mkdirSync(dirname(runtime),{recursive:true});mkdirSync(join(root,'bin'));mkdirSync(installDir);mkdirSync(join(data,'opencrawl'),{recursive:true});
+  const release='0.4.63',manifest=join(root,'package.json'),executable=join(root,'bin','opencrawl.exe'),platformExecutable=join(root,'bin',process.platform==='win32'?'opencrawl.exe':'opencrawl');
+  writeFileSync(entry,'import {setupCommandForSelf} from '+JSON.stringify(resolve(import.meta.dir,'../src/setup/invocation.ts'))+'; console.log(JSON.stringify(setupCommandForSelf()));\n');
+  const build=await Bun.build({entrypoints:[entry],outdir:dirname(runtime),naming:'opencrawl.js',target:'bun',define:{OPENCRAWL_VERSION:JSON.stringify(release)}});
+  expect(build.success).toBe(true);
+  const env={HOME:dir,USERPROFILE:dir,PATH:dirname(process.execPath),SystemRoot:process.env.SystemRoot,XDG_DATA_HOME:data,XDG_CACHE_HOME:join(dir,'cache'),OPENCRAWL_CONFIG_HOME:join(dir,'config'),OPENCRAWL_INSTALL_DIR:installDir};
+  const invoke=(script=runtime)=>{const run=spawnSync(process.execPath,[script],{env,encoding:'utf8',timeout:5000});expect(run.status).toBe(0);expect(run.stderr).toBe('');return JSON.parse(run.stdout);};
+  const fallback=[process.execPath,runtime];
+  writeFileSync(manifest,JSON.stringify({name:'@getopencrawl/cli',version:release}));writeFileSync(executable,'fixture executable',{mode:0o755});
+  expect(invoke()).toEqual([executable]);
+  writeFileSync(manifest,JSON.stringify({name:'@getopencrawl/cli-'+process.platform+'-'+process.arch,version:release}));writeFileSync(platformExecutable,'fixture executable',{mode:0o755});
+  expect(invoke()).toEqual([platformExecutable]);
+  writeFileSync(manifest,JSON.stringify({name:'unrelated-package',version:release}));expect(invoke()).toEqual(fallback);
+  writeFileSync(manifest,JSON.stringify({name:'@getopencrawl/cli',version:'0.4.62'}));expect(invoke()).toEqual(fallback);
+  writeFileSync(manifest,JSON.stringify({name:'@getopencrawl/cli',version:release}));rmSync(executable);expect(invoke()).toEqual(fallback);
+  const managed=join(installDir,process.platform==='win32'?'opencrawl.cmd':'opencrawl'),receipt=join(data,'opencrawl','installation.json');
+  writeFileSync(managed,'fixture private launcher',{mode:0o755});
+  writeFileSync(receipt,JSON.stringify({managed:true,version:release,entry:managed}));expect(invoke()).toEqual([managed]);
+  // A source checkout must not silently turn into the installed released CLI.
+  expect(invoke(entry)).toEqual([process.execPath,entry]);
+  writeFileSync(receipt,JSON.stringify({managed:true,version:'0.4.62',entry:managed}));expect(invoke()).toEqual(fallback);
+  writeFileSync(receipt,JSON.stringify({managed:true,version:release,entry:join(dir,'unrelated')}));expect(invoke()).toEqual(fallback);
  }finally{rmSync(dir,{recursive:true,force:true});}
 });
