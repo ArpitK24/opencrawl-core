@@ -12,7 +12,8 @@ const sourceRoot = new URL('../src/', import.meta.url);
 // or security sandbox. Review network/configuration coupling independently.
 function checkImports(source, file, root = sourceRoot) {
   assert.doesNotMatch(source, /\b(?:import|require(?:\.resolve)?)\s*\(\s*(?!\s*["'])\S/, 'Computed imports need boundary review');
-  for (const match of source.matchAll(/\b(?:from\s*|import\s*(?:\(\s*)?|require(?:\.resolve)?\s*\(\s*)["']([^"']+)["']/g)) {
+  // A quoted option named 'import' is not an import declaration.
+  for (const match of source.matchAll(/(?<![\w'"`])(?:from\s*|import\s*(?:\(\s*)?|require(?:\.resolve)?\s*\(\s*)["']([^"']+)["']/g)) {
     const specifier = match[1];
     assert.ok(!specifier.includes('\\'), `Escaped dependency needs review: ${specifier}`);
     if (specifier.startsWith('node:') || ['@modelcontextprotocol/server', '@modelcontextprotocol/node', 'zod'].includes(specifier)) continue;
@@ -75,6 +76,7 @@ test('core runtime imports stay inside src, Node builtins, or reviewed portable 
 
 test('boundary lint rejects common reverse dependencies and permits internal nesting', () => {
   const nested = new URL('feature/run.mjs', sourceRoot);
+  assert.doesNotThrow(()=>checkImports("const history=['skip','import']; const fields=['from','to'];",nested));
   for (const source of [
     `import '@workos-inc/node';`,
     `import sdk from '@workos-inc/node';`,

@@ -3,6 +3,8 @@ import type {Principal} from '../sessions/types.mjs';
 import {serviceError} from '../sessions/types.mjs';
 import type {createWorkspaceSearch} from '../search/workspace.mjs';
 import type {createBoard} from '../board/board.mjs';
+import type {createSetupStatus} from '../setup/status.mjs';
+import {setupMcpVerifySchema} from '../setup/status.mjs';
 export interface McpExchange {method: string; tool: string | null}
 export interface McpClientInfo {name?: unknown; version?: unknown}
 interface RpcEnvelope {method?: string; params?: {name?: unknown; clientInfo?: McpClientInfo; _meta?: Record<string, McpClientInfo>}}
@@ -15,6 +17,7 @@ export interface McpOptions {
  onObservationError?: (event: McpExchange & {event: string; reason: string}) => unknown | Promise<unknown>;
  board?: ReturnType<typeof createBoard>;
  search?: ReturnType<typeof createWorkspaceSearch>;
+ setup?: Pick<ReturnType<typeof createSetupStatus>, 'mcp'>;
  /** Runtime-owned tools share this transport's authentication and request-local principal. */
  registerTools?: (server: McpServer, principal: () => Principal) => void;
 }
@@ -32,7 +35,7 @@ const overview = await readFile(new URL('./overview.md', import.meta.url), 'utf8
 // Authentication belongs to the runtime adapter. No account or tenant data is
 // exposed by this initial surface; every MCP request still requires a principal.
 export function createOpenCrawlMcp({authenticate, origin, revision = 'development', onAuthenticated, onConnectionTest,
-  observationTimeoutMs = 1000, onObservationError = event => console.error(JSON.stringify(event)), board, search, registerTools}: McpOptions) {
+  observationTimeoutMs = 1000, onObservationError = event => console.error(JSON.stringify(event)), board, search, setup, registerTools}: McpOptions) {
   if (typeof authenticate !== 'function' || new URL(origin).origin !== origin) throw new Error('MCP requires authentication and a canonical origin');
   if (!Number.isInteger(observationTimeoutMs) || observationTimeoutMs < 1 || observationTimeoutMs > 10000) throw new Error('Invalid MCP observation timeout');
   const handler = createMcpHandler(() => {
@@ -55,6 +58,15 @@ export function createOpenCrawlMcp({authenticate, origin, revision = 'developmen
       const result = {connected: true, server: 'opencrawl', serverTime: new Date().toISOString(), revision};
       if (onConnectionTest) await onConnectionTest(context.getStore()!);
       return {content: [{type: 'text', text: JSON.stringify(result)}], structuredContent: result};
+    });
+    if (setup) server.registerTool('verify_installation', {
+      title:'Verify this OpenCrawl installation',
+      description:'Bind this authenticated MCP call to one installation and client proof issued by opencrawl verify-installation. Call from that client’s native conversation. The server waits for its native captured tool result and an authorized search/fetch of a new message; this call alone does not establish success. Never use another client’s proof or write synthetic capture files.',
+      inputSchema:setupMcpVerifySchema,
+      annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
+    },async input=>{
+      try {const result=await setup.mcp(context.getStore()!,input);return {content:[{type:'text',text:JSON.stringify(result)}],structuredContent:result};}
+      catch(failure) {const error=serviceError(failure);return {isError:true,content:[{type:'text',text:[400,409].includes(error.status??0)?error.message:'Installation proof unavailable or access denied.'}]};}
     });
     if (search) server.registerTool('search', {
       title: 'Search workspace knowledge',

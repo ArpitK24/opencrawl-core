@@ -52,8 +52,12 @@ export interface SettingsData {
 }
 
 export interface InvitationPolicy {delivery: 'email' | 'link'; beforeAgentSetup: boolean}
-export interface Bootstrap extends SettingsData {cacheScope: string; canInvite: boolean; invitationPolicy?: InvitationPolicy; onboarding: {completed: boolean; next: string}}
+export interface Bootstrap extends SettingsData {
+  /** Preview runtimes may supply a complete pinned CLI installation/PATH command. */
+  setupInstallCommand?: string;
+  cacheScope: string; canInvite: boolean; invitationPolicy?: InvitationPolicy; onboarding: {completed: boolean; next: string}}
 
 export type * from './reports.mjs';
 export type * from './library-types.mjs';
 export type * from './onboarding-types.mjs';
+export type * from '../setup/types.mjs';

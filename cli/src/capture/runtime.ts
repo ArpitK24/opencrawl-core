@@ -1,4 +1,4 @@
-import {readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, lstatSync, realpathSync, openSync, readSync, closeSync, unlinkSync, createReadStream, createWriteStream} from 'node:fs';
+import {readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, fstatSync, lstatSync, realpathSync, openSync, readSync, closeSync, unlinkSync, createReadStream, createWriteStream} from 'node:fs';
 import {createZstdDecompress,gzip} from 'node:zlib';
 import {promisify} from 'node:util';
 import {Transform} from 'node:stream';
@@ -31,7 +31,7 @@ export const captureDir = () => join(configDir(),'capture');
 const read = (p:string, fallback:any=null) => {try{return JSON.parse(readFileSync(p,'utf8'));}catch(e:any){if(e.code==='ENOENT')return fallback;throw e;}};
 /** Bump when installed hook entries change so the next hook rewrites existing installs. */
 export const HOOK_MODE='native-v4';
-export type CaptureConfig = {disabled?:boolean,authPending?:boolean,exclusions?:CaptureExclusions,schemaVersion:1,hookMode?:typeof HOOK_MODE|'managed-v3'|'managed-v2'|'managed',harnesses?:Harness[],api:string,installationId:string,owner:{tenantId:string,userId:string,name?:string,email?:string},installedAt:string,roots:{'claude-code':string,codex:string,'grok-bot'?:string,cursor?:string,antigravity?:string},claudeDesktopSessionsRoot?:string,command:string[]};
+export type CaptureConfig = {disabled?:boolean,authPending?:boolean,exclusions?:CaptureExclusions,schemaVersion:1,hookMode?:typeof HOOK_MODE|'managed-v3'|'managed-v2'|'managed',harnesses?:Harness[],historyHarnesses?:TranscriptHarness[],api:string,installationId:string,owner:{tenantId:string,userId:string,name?:string,email?:string},installedAt:string,roots:{'claude-code':string,codex:string,'grok-bot'?:string,cursor?:string,antigravity?:string},claudeDesktopSessionsRoot?:string,command:string[]};
 export const readCaptureConfig = ():CaptureConfig|null => read(join(captureDir(),'config.json'));
 /** Installations made before a harness existed have no directory for it. */
 export function harnessRoot(config:CaptureConfig,harness:Harness) {
@@ -303,7 +303,7 @@ function readCaptureAttachment(sha256:string) {
   return bytes;
 }
 /** The cursor advances only after its records and attachment bytes are durably spooled. */
-export async function captureTranscript(config:CaptureConfig,harness:TranscriptHarness,file:string,hook:any={},reconcileHistory=false,onEnqueued?:()=>Promise<void>) {
+export async function captureTranscript(config:CaptureConfig,harness:TranscriptHarness,file:string,hook:any={},reconcileHistory=false,onEnqueued?:()=>Promise<void>,approvedFile?:{bytes:number;ino:number;mtimeMs:number}) {
   return withSessionLock('capture:spool',async()=>{
   if(readCaptureConfig()?.disabled)throw new CliError('CAPTURE_DISABLED','Capture is uninstalled. Reinstall before importing transcripts.');
   ensureDirectories();
@@ -316,6 +316,7 @@ export async function captureTranscript(config:CaptureConfig,harness:TranscriptH
   const stateFile=join(captureDir(),'state',hash(harness+path)+'.json');
   return withSessionLock('capture:'+stateFile,async()=>{
     const source=statSync(path),old=read(stateFile,{offset:0});
+    if(approvedFile&&(source.ino!==approvedFile.ino||source.size<approvedFile.bytes||path.endsWith('.zst')&&(source.size!==approvedFile.bytes||source.mtimeMs!==approvedFile.mtimeMs)))throw new CliError('BACKFILL_SOURCE_CHANGED','An approved history file was replaced or changed. Review a new import plan.');
     const compressed=path.endsWith('.jsonl.zst');
     let readPath=path;
     if(compressed) {
@@ -336,8 +337,9 @@ export async function captureTranscript(config:CaptureConfig,harness:TranscriptH
         }}),createWriteStream(readPath,{mode:0o600,flags:'wx'}));
       } catch(e) {try{unlinkSync(readPath);}catch{}throw e;}
     }
-    const st=statSync(readPath);
+    const actual=statSync(readPath),st={size:approvedFile&&!compressed?Math.min(actual.size,approvedFile.bytes):actual.size};
     let offset=old.offset;
+    if(old.forwardBoundary&&compressed&&!reconcileHistory)return old.meta;
     if(st.size<offset || (old.ino && old.ino!==source.ino) || compressed)offset=0;
     // Parser upgrades must not silently start a historical import in hooks/sync.
     // An explicitly approved backfill may reread older cursors to recover newly
@@ -346,6 +348,7 @@ export async function captureTranscript(config:CaptureConfig,harness:TranscriptH
     const parserVersion=offset===0?2:old.parserVersion??1;
     const nativeIds=desktopAudit&&offset<st.size?desktopNativeMessageIds(path):new Set<string>();
     const fd=openSync(readPath,'r');
+    if(approvedFile&&!compressed&&fstatSync(fd).ino!==approvedFile.ino){closeSync(fd);throw new CliError('BACKFILL_SOURCE_CHANGED','An approved history file changed before reading.');}
     const agyPath=harness==='antigravity'?antigravityPathMeta(path):null;
     const agyHook=harness==='antigravity'?antigravityHookFields(hook):null;
     let meta:any=(offset>0?old.meta:null)??(agyPath
@@ -388,6 +391,14 @@ export async function captureTranscript(config:CaptureConfig,harness:TranscriptH
       if(p.cli_version || r.version)meta.harnessVersion=p.cli_version??r.version;
     }
     try {
+      // A future-only enrollment starts at its saved byte boundary. Read only
+      // the native header to recover identity, never enqueue earlier messages.
+      if(old.forwardBoundary&&!reconcileHistory&&offset>0&&harness==='codex'&&!meta.sessionId){
+        const header=Buffer.alloc(Math.min(st.size,1024*1024));readSync(fd,header,0,header.length,0);const end=header.indexOf(10);
+        if(end<0)throw new CliError('CAPTURE_SESSION_UNKNOWN','The native session header is incomplete. Start a new session.');
+        metadata(JSON.parse(header.subarray(0,end).toString('utf8')));
+      }
+      let skipPartial=old.forwardBoundary&&!reconcileHistory&&old.skipPartial;
       // Apply metadata in record order. Looking ahead at a later working
       // directory could incorrectly allow earlier records from an excluded project.
       while(offset<st.size) {
@@ -409,6 +420,7 @@ export async function captureTranscript(config:CaptureConfig,harness:TranscriptH
         const events:any[]=[],attachments:any[]=[];
         let position=offset,linesSinceYield=0,eventBytes=0;
         for(const line of bytes.toString('utf8').split('\n').slice(0,-1)){
+          if(skipPartial){skipPartial=false;position+=Buffer.byteLength(line)+1;continue;}
           if(line.trim()){
             let record;try{record=JSON.parse(line);}catch{throw new CliError('CAPTURE_INVALID_RECORD','Invalid transcript record; cursor retained');}
             const auditMessage=!desktopAudit||['user','assistant'].includes(record.type)&&!nativeIds.has(record.uuid);
@@ -551,6 +563,7 @@ export async function refreshCapturedTitles() {
 export async function captureHook(harness:Harness,event:any) {
   return withSessionLock('capture:configuration',async()=>{
   const config=readCaptureConfig();if(!config||config.disabled)return;
+  if(config.harnesses&&!config.harnesses.includes(harness))return;
   ensureDirectories();
   const id=randomUUID(),at=new Date().toISOString();
   if(harness==='grok-bot'||harness==='cursor') {

@@ -1,0 +1,22 @@
+import {existsSync} from 'node:fs';
+import {join} from 'node:path';
+import {homedir} from 'node:os';
+import {inventory} from '../capture/backfill.ts';
+import {antigravityDetected} from '../capture/install.ts';
+import {defaultClaudeDesktopSessionsRoot} from '../capture/desktop-history.ts';
+import {readCaptureConfig} from '../capture/runtime.ts';
+import type {SetupClient} from './state.ts';
+import {pluginInventory} from './plugins.ts';
+
+export function setupInventory({home=homedir(),env=process.env,which=Bun.which,api}:{home?:string;env?:NodeJS.ProcessEnv;which?:(name:string)=>string|null;api:string}):SetupClient[]{
+  const previous=readCaptureConfig();
+  const roots=previous?.api===api?previous.roots:{'claude-code':env.CLAUDE_CONFIG_DIR||join(home,'.claude'),codex:env.CODEX_HOME||join(home,'.codex'),cursor:env.CURSOR_CONFIG_DIR||join(home,'.cursor'),antigravity:env.ANTIGRAVITY_HOME||join(home,'.gemini')};
+  const histories=inventory({roots,claudeDesktopSessionsRoot:previous?.api===api?previous.claudeDesktopSessionsRoot:defaultClaudeDesktopSessionsRoot(home)},'all').sources;
+  const plugins=pluginInventory({home,env,which});
+  const native=[{id:'claude-code',label:'Claude Code',detected:existsSync(roots['claude-code'])||Boolean(which('claude'))||env.CLAUDE_CODE_REMOTE==='true'},
+    {id:'codex',label:'Codex',detected:existsSync(roots.codex)||Boolean(which('codex'))},
+    {id:'cursor',label:'Cursor',detected:Boolean(roots.cursor&&existsSync(roots.cursor))||Boolean(which('cursor'))||Boolean(which('cursor-agent'))},
+    {id:'antigravity',label:'Antigravity',detected:antigravityDetected(home,env)||Boolean(which('agy'))}];
+  const ids=new Set([...native.map(c=>c.id),...plugins.map(c=>c.id)]);
+  return [...ids].map(id=>{const local=native.find(c=>c.id===id),plugin=plugins.find(c=>c.id===id),history=histories.find(c=>c.harness===id);return {id,label:plugin?.label??local?.label??id,detected:Boolean(local?.detected||plugin?.detected),plugin:plugin?.supported===true,forward:Boolean(local),history:['claude-code','codex','antigravity'].includes(id),historyFiles:history?.files??0,historyBytes:history?.bytes??0};});
+}

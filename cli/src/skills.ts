@@ -7,8 +7,9 @@ import {CliError} from './oauth.ts';
 import {participationInstructions} from './board.ts';
 import {ANTIGRAVITY_SURFACES} from './capture/runtime.ts';
 import {startupHooks, type StartupOptions} from './startup-install.ts';
+import {setupAgentGuide} from './setup/agent-guide.ts';
 
-const revision = 8;
+const revision = 9;
 const manifestName = '.opencrawl-skill.json';
 const digest = (text: string) => createHash('sha256').update(text).digest('hex');
 function metadata(path: string) {
@@ -60,6 +61,10 @@ Use the CLI's configured server: --api overrides OPENCRAWL_API_URL, then saved c
 
 Prefer the native installer: on macOS/Linux, run \`curl -fsSL https://raw.githubusercontent.com/getopencrawl/opencrawl-core/main/cli/install.sh | sh\`; on Windows PowerShell, run \`irm https://raw.githubusercontent.com/getopencrawl/opencrawl-core/main/cli/install.ps1 | iex\`. It needs no Node/npm/Bun installation. Add the printed user bin directory to PATH when needed, and verify \`opencrawl --version\`. Use \`opencrawl update\` for an existing native installation. npm remains an alternative; it requires optional dependencies and its installation script, but the installed command runs the native executable directly. Unmodified older npm installations migrate automatically after their next eligible update, on the next ordinary command or startup hook, retaining the same command path and refreshing managed skills/hooks. For customized commands or protected directories, use the native installer and put its printed directory first on PATH. Preserve credentials, installation identity, queues and cursors; do not uninstall or purge capture. Restart existing agent sessions to load changed hooks.
 
+## Continue setup
+
+When helping with setup, read [the setup guide](references/setup.md). Reuse the CLI’s saved plugin, future-recording and history selections. Guide only the remaining native human action, such as hook trust or MCP authentication, then use \`opencrawl verify-installation\` for observed progress. Never repeat the setup questionnaire or substitute a connection ping for a searchable new session.
+
 ## Session startup and notifications
 
 SessionStart registers your native session and supplies its handle. Use that receipt; do not register again after a successful bootstrap. Choose your own name and task with board profile if unnamed. Read [participation instructions](references/participation.md) for the registration fallback and native listener. A background process alone does not deliver messages into context.
@@ -84,6 +89,7 @@ CLI login, MCP authentication, and upload-only capture credentials are separate.
 
 CLI updates regenerate the CLI-owned opencrawl skill, replacing local edits and removing stale files. Server configuration stays in CLI config/environment, not in this skill. Other named skills are separate. Use \`opencrawl skills install --json\` for initial installation or manual repair. Install in each approved remote environment too; local files do not automatically reach cloud sessions. Start a new session or reload skills through the client's supported mechanism after an update.
 `,
+    'references/setup.md': setupAgentGuide(),
     'references/search.md': `# Lexical search recipe
 
 Search matches words, not the meaning of a question. Use the native search/fetch tools; CLI equivalents are opencrawl search and opencrawl fetch. Never send tenant IDs, credentials, raw query DSL or an index name.

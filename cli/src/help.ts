@@ -1,5 +1,32 @@
 const common='\nOptions: --json (versioned JSON), --api https://host (deployment), --help.\n';
 export function commandHelp(command:string, operation?:string):string|undefined {
+  if(command==='setup')return `Usage: opencrawl setup [--api URL]
+       opencrawl setup --json
+       opencrawl setup apply --plugins IDS --forward IDS --history IDS --plan-id ID --yes
+
+Sign in first, then review independent plugin, future-recording and history choices.
+Detected supported clients and available histories start selected; saved off choices stay off.
+Import past sessions so your agents can find previous decisions, fixes, and context.
+
+  --plugins IDS   Plugin clients: comma-separated IDs, all, or none
+  --forward IDS   Record new sessions from these clients, all, or none
+  --history IDS   Import available past sessions from these clients, all, or none
+  --plan-id ID    Bind consent to the exact scope, choices and history preview
+  --yes          Apply only after the user confirms the displayed choices
+  setup status   Read saved choices, human tasks and background import progress
+  setup resume   Resume a previously approved, interrupted history job
+  setup verify --client ID  Prove a fresh native session is searchable
+
+Noninteractive setup returns a plan and exact applyCommand without changing clients.
+History is durable background work; setup returns before import finishes. A stopped
+job resumes on setup resume or a later enrolled CLI/session startup. Login is not
+MCP authentication, and installation is not proof that a session is searchable.
+`+common;
+  if(command==='verify-installation')return `Usage: opencrawl verify-installation --client CLIENT [--installation-id ID]
+
+Issue or check a client-bound proof. The installation defaults to this machine's
+saved setup in the authenticated workspace. Follow returned human tasks in that client.
+`+common;
   if(command==='board') {
     if(operation==='fetch')return `Usage: opencrawl board fetch --workspace WORKSPACE --id REF [options]
        opencrawl board fetch REF [REF ...] --workspace WORKSPACE [options]

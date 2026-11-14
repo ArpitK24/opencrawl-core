@@ -23,7 +23,8 @@ import {mcpMetadata} from '../identity/mcp.mjs';
 import {teamService,isAdmin} from '../identity/team.mjs';
 import {roleWriteGuard} from '../identity/role-write.mjs';
 import {createOnboardingStatus} from '../onboarding-status.mjs';
-import {deriveOnboarding,hasCompletedOnboarding} from '../onboarding-state.mjs';
+import {createSetupStatus} from '../setup/status.mjs';
+import {createSetupHandler} from '../setup/http.mjs';
 import {createOnboardingObserver} from '../application/onboarding-observer.mjs';
 import {createGuidedOnboarding} from '../application/onboarding.mjs';
 import {smallJson} from '../application/http.mjs';
@@ -87,7 +88,7 @@ export function selfhostApplication({settings,store,eventIdentities,prefix,ident
   const accounts=localAuth({identity,url:settings.url,organizationId:settings.organizationId,setupToken:settings.setupToken,member:async browser=>(await admit(browser)).status===200});
   const credentials=createCaptureCredentials({store,prefix});
   const identifyCli=accounts.identifyToken,organizations=teamService(directory,roleWriteGuard(store,prefix),credentials.revokeAll);
-  const onboarding=createOnboardingStatus({store,prefix,onSharedReady:principal=>replicas.confirmInstallation(principal),sharedInstallations:principal=>replicas.sharedInstallations(principal,settings.replicasBindings??[])}),observe=createOnboardingObserver(onboarding);
+  const onboarding=createOnboardingStatus({store,prefix,onSharedReady:principal=>replicas.confirmInstallation(principal),sharedInstallations:principal=>replicas.sharedInstallations(principal,settings.replicasBindings??[])});
   const values=valueReports({store,prefix});
   const search=createSessionSearch({...settings.search,store,prefix});
   async function authorize(principal:Principal,requested?:unknown) {
@@ -104,13 +105,16 @@ export function selfhostApplication({settings,store,eventIdentities,prefix,ident
     async search(p:Principal,input:unknown){await authorize(p);const result=await workspace.search(p,input);await authorize(p);return result;},
     async fetch(p:Principal,input:unknown){await authorize(p);const result=await workspace.fetch(p,input);await authorize(p);return result;},
   };
+  const setup=createSetupStatus({store,prefix,search:authorizedSearch});
+  const observe=createOnboardingObserver({cli:onboarding.cli,session:async(p,b)=>{await Promise.all([onboarding.session(p,b),setup.session(p,b)]);}});
   const board=authorizedBoard({store,prefix:prefix+'/board',authorize,search:createBoardSearch(settings.search),recentSessions:createRecentSessions({store,prefix,...settings.search})});
   const identifyAgent=async(req:IncomingMessage)=>{const token=/^Bearer (.+)$/i.exec(req.headers.authorization||'')?.[1];return isReplicasToken(token)?workloads.identify(token):identifyCli(req.headers.authorization,{capture:true});};
   const authenticate=async(req:IncomingMessage)=>{const identity=await identifyAgent(req);if(identity.status!==200)throw Object.assign(new Error('Sign in required'),{status:identity.status});return identity.principal;};
+  const setupHandler=createSetupHandler({setup,authenticate});
   const query=createWorkspaceSearchHandler({search:authorizedSearch,authenticate});
   const fetchPassage=createWorkspaceSearchHandler({search:authorizedSearch,authenticate,operation:'fetch'});
   const boardHandler=createBoardHandler({board,authenticate});
-  const mcp=createOpenCrawlMcp({origin:settings.url,revision:settings.revision,search:authorizedSearch,board,authenticate:async(req,res)=>{
+  const mcp=createOpenCrawlMcp({origin:settings.url,revision:settings.revision,search:authorizedSearch,board,setup,authenticate:async(req,res)=>{
     const token=/^Bearer (.+)$/i.exec(req.headers.authorization||'')?.[1];
     if(!isReplicasToken(token))return accounts.mcpIdentity(req,res);
     const result=await workloads.identify(token);if(result.status===200)return result.principal;
@@ -161,6 +165,7 @@ export function selfhostApplication({settings,store,eventIdentities,prefix,ident
       if(url.pathname.startsWith('/api/sessions/'))return await capture(req,res);
       if(url.pathname==='/api/search')return await query(req,res);
       if(url.pathname==='/api/search/fetch')return await fetchPassage(req,res);
+      if(url.pathname.startsWith('/api/setup/')||url.pathname==='/api/setup'&&req.headers.authorization)return await setupHandler(req,res);
       if(url.pathname.startsWith('/api/board/')){if(req.headers.origin)return respond(403,'Browser request denied');return await boardHandler(req,res);}
       if(url.pathname==='/api/cli/me'){
         if(req.method!=='GET')return respond(405,'Method not allowed');
@@ -190,19 +195,20 @@ export function selfhostApplication({settings,store,eventIdentities,prefix,ident
       if(oauthCallback)return oauth?redirect(await oauth.complete(principal,url.searchParams)):respond(404,'Connector not configured');
       const revalidate=async()=>{const next=await admit(activeIdentity);return next.status===200&&(!isAdmin(member)||isAdmin(next.member));};
       const sources=(p:Principal)=>integrations?integrations.list(p):Promise.resolve([]);
-      const consoleApi=createConsoleApi({replicas,invitationPolicy:{delivery:'link',beforeAgentSetup:true},url:settings.url,setupPrompt:captureSetupPrompt(settings.url),organization:id=>directory.organizations.getOrganization(id),members,user:id=>directory.userManagement.getUser(id),
+      const consoleApi=createConsoleApi({replicas,invitationPolicy:{delivery:'link',beforeAgentSetup:true},url:settings.url,setupPrompt:captureSetupPrompt(settings.url),setupInstallCommand:settings.setupInstallCommand,organization:id=>directory.organizations.getOrganization(id),members,user:id=>directory.userManagement.getUser(id),
         invitations:(u,id,known)=>organizations.pendingInvitations(u,id,known),invite:(u,id,email)=>organizations.invite(u,id,email),changeRole:(u,id,target,role)=>organizations.changeRole(u,id,target,role),removeMember:(u,id,target)=>organizations.removeMember(u,id,target),renameOrganization:(u,id,name)=>organizations.rename(u,id,name),sources,
         usage:p=>usageReport({principal:p,directory,integrations,search,connectors,onboarding,values}),progress:guided.progress,next:guided.next,library,libraryFailure});
       const execute=async(request:IncomingMessage,target:URL,selected:Route,reply:typeof respond,rpc=false)=>{
+        if(selected.name==='/api/setup') {
+          if(target.search)return reply(400,JSON.stringify({error:'Setup status does not accept scope parameters.'}),'application/json');
+          const data=await setup.read(principal);
+          if(!rpc&&!await revalidate())return reply(403,JSON.stringify({error:'Workspace access changed.'}),'application/json');
+          return reply(200,JSON.stringify({schemaVersion:1,data}),'application/json');
+        }
         if(selected.name.startsWith('/api/console/')){
-          if(!['/api/console/bootstrap','/api/console/replicas/setup'].includes(selected.name)&&!hasCompletedOnboarding(await guided.progress(principal)))return reply(409,JSON.stringify({error:'Complete onboarding before opening the workspace.',onboardingUrl:await guided.next(principal)}),'application/json');
           const result=await consoleApi(request,selected.name,{principal,user,member,cacheScope,admitted:true,revalidate:rpc?async()=>true:revalidate});return reply(result.status,JSON.stringify(result.body),'application/json');
         }
         if(request.method==='GET'&&consolePages.has(target.pathname)){
-          const progress=await guided.progress(principal);
-          if(!target.pathname.startsWith('/onboarding')&&!hasCompletedOnboarding(progress))return redirect(await guided.next(principal));
-          // An admin can invite teammates while connecting their own agent. Other setup and workspace gates remain receipt-based.
-          if(target.pathname.startsWith('/onboarding/')&&!(target.pathname==='/onboarding/invite'&&isAdmin(member))&&!hasCompletedOnboarding(progress)&&!(progress&&deriveOnboarding(progress).complete))return redirect('/onboarding');
           return reply(200,consoleDocument(),'text/html; charset=utf-8');
         }
         if(guided.handles(selected.name))return guided.handle(request,{route:selected,principal,identity:{user},member,respond:reply});

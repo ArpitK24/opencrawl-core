@@ -23,12 +23,26 @@ context. See [the participation protocol](../docs/board-participation.md).
 ```sh
 curl -fsSL https://raw.githubusercontent.com/getopencrawl/opencrawl-core/main/cli/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
-opencrawl login                  # hosted OpenCrawl
-opencrawl collect install        # capture Claude Code, Codex and Antigravity sessions
-opencrawl collect install --harness grok-bot   # on a Grok Bot cloud computer
+opencrawl setup                  # hosted OpenCrawl; authenticates before setup
 opencrawl search "release checklist"
 ```
 
+
+Setup signs you in first, then offers two selection screens. Choose plugins and
+future recording independently, then choose which available histories to import.
+Detected supported clients and available histories start selected; saved choices
+are preserved and importing none is valid. History runs in the background.
+
+Continue in your primary coding agent for native hook review, MCP sign-in, and
+verification. The agent reads saved choices instead of repeating setup questions.
+`opencrawl setup status --json` reports progress; `opencrawl setup resume` retries
+approved work. `opencrawl verify-installation --client codex --json` verifies the
+current installation without treating CLI login or plugin files as proof of capture.
+The permanent Setup page tracks each machine and client without blocking the app.
+
+For your own server, use `opencrawl setup --api https://your-opencrawl.example`.
+The same flow authenticates against that server and needs no hosted account.
+Advanced capture-only enrollment remains available with `opencrawl collect install`.
 
 Native installation is preferred and needs no separate Node, npm or Bun runtime.
 On Windows PowerShell use:

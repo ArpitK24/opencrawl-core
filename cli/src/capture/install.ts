@@ -14,6 +14,7 @@ import {ANTIGRAVITY_SURFACES, captureDir, readCaptureConfig, commandForSelf, req
 import {captureNotice, grokBotNotice} from './policy.ts';
 import {hookRunner} from '../hook-runner.ts';
 import {defaultClaudeDesktopSessionsRoot} from './desktop-history.ts';
+import {establishForwardBoundaries} from '../setup/watermarks.ts';
 const marker='OpenCrawl session capture';
 const quote=(s:string)=>process.platform==='win32'?'"'+s.replace(/"/g,'""')+'"':"'"+s.replace(/'/g,"'\\''")+"'";
 function readJson(file:string){return existsSync(file)?JSON.parse(readFileSync(file,'utf8')):{};}
@@ -168,11 +169,11 @@ function defaultHarnesses(home:string):Harness[] {
   if(process.env.CLAUDE_CODE_REMOTE==='true')return ['claude-code'];
   return antigravityDetected(home)?['claude-code','codex','antigravity']:['claude-code','codex'];
 }
-export async function installCapture(api:string,{background=false,deferAuth=false,home=homedir(),command=commandForSelf(),harnesses:requestedHarnesses}:{background?:boolean;deferAuth?:boolean;home?:string;command?:string[];harnesses?:Harness[]}={}) {
+export async function installCapture(api:string,{background=false,deferAuth=false,home=homedir(),command=commandForSelf(),harnesses:requestedHarnesses,selectionMode='add',historyHarnesses=[],expectedOwner}:{background?:boolean;deferAuth?:boolean;home?:string;command?:string[];harnesses?:Harness[];selectionMode?:'add'|'replace';historyHarnesses?:TranscriptHarness[];expectedOwner?:{tenantId:string;userId:string}}={}) {
   let harnesses=(requestedHarnesses?requestedHarnesses.map(h=>normalizeHarness(h) as Harness):defaultHarnesses(home));
   workspaceIdentityEnabled(); // Reject mixed credentials even during image preparation.
   const receiverToken=environmentToken('OPENCRAWL_SESSIONS_TOKEN',api);
-  if(!harnesses.length||harnesses.some(h=>!HARNESSES.includes(h)))throw new CliError('INVALID_USAGE','Use --harness claude-code, codex, cursor, antigravity or grok-bot',64);
+  if((!harnesses.length&&selectionMode!=='replace')||harnesses.some(h=>!HARNESSES.includes(h))||historyHarnesses.some(h=>!readsTranscript(h)))throw new CliError('INVALID_USAGE','Use --harness claude-code, codex, cursor, antigravity or grok-bot',64);
   // Image preparation cannot access runtime secrets. First worker authenticates
   // before parsing/spooling; hooks only persist notices even on first launch.
   const {principal,capabilities}=deferAuth?{principal:{tenantId:'pending',userId:'pending'},capabilities:undefined}:await request(api,'/api/sessions/identity');
@@ -182,6 +183,7 @@ export async function installCapture(api:string,{background=false,deferAuth=fals
     harnesses=harnesses.filter(h=>h!=='antigravity');
   }
   if(!principal?.tenantId || !principal?.userId)throw new CliError('CAPTURE_IDENTITY_MISSING','Deployment does not supply capture identity');
+  if(expectedOwner&&(expectedOwner.tenantId!==principal.tenantId||expectedOwner.userId!==principal.userId))throw new CliError('SETUP_SCOPE_CHANGED','Capture credentials resolve to a different account or workspace. No recording choices were applied.');
   return withSessionLock('capture:configuration',async()=>{
   const previous=readCaptureConfig();
   // Re-running cloud preparation has no authenticated replacement identity.
@@ -191,8 +193,8 @@ export async function installCapture(api:string,{background=false,deferAuth=fals
   const changed=previous && (previous.api!==api || !deferAuth && (previous.owner.userId!==principal.userId || previous.owner.tenantId!==principal.tenantId));
   if(changed && ['queue','notices'].some(dir=>existsSync(join(captureDir(),dir)) && readdirSync(join(captureDir(),dir)).length))throw new CliError('CAPTURE_PENDING_DESTINATION','Pending capture belongs to the previous destination. Upload it there or uninstall and explicitly purge local pending data before changing destination.');
   for(const dir of ['', 'backups','queue','state','blobs'])mkdirSync(join(captureDir(),dir),{recursive:true,mode:0o700});
-  const config:CaptureConfig={schemaVersion:1,exclusions:previous?.exclusions,hookMode:HOOK_MODE,api,installationId:previous?.installationId??(deferAuth?'pending':randomUUID()),owner:preserveOwner?previous.owner:principal,...(authPending?{authPending:true}:{}),
-    harnesses:[...new Set([...(previous?.harnesses??[]),...harnesses])],installedAt:previous?.installedAt??new Date().toISOString(),roots:{
+  const config:CaptureConfig={schemaVersion:1,exclusions:previous?.exclusions,hookMode:HOOK_MODE,api,installationId:previous?.installationId&&!(previous.installationId==='pending'&&!deferAuth)?previous.installationId:(deferAuth?'pending':randomUUID()),owner:preserveOwner?previous.owner:principal,...(authPending?{authPending:true}:{}),
+    harnesses:[...new Set([...(selectionMode==='replace'?[]:previous?.harnesses??[]),...harnesses])],...(selectionMode==='replace'?{historyHarnesses}:{}),installedAt:previous?.installedAt??new Date().toISOString(),roots:{
       'claude-code':!harnesses.includes('claude-code')&&previous?.roots['claude-code']||process.env.CLAUDE_CONFIG_DIR||join(home,'.claude'),
       cursor:!harnesses.includes('cursor')&&previous?.roots.cursor||process.env.CURSOR_CONFIG_DIR||join(home,'.cursor'),
       codex:!harnesses.includes('codex')&&previous?.roots.codex||process.env.CODEX_HOME||join(home,'.codex'),
@@ -200,6 +202,7 @@ export async function installCapture(api:string,{background=false,deferAuth=fals
       antigravity:!harnesses.includes('antigravity')&&previous?.roots.antigravity||process.env.ANTIGRAVITY_HOME||join(home,'.gemini')},
     claudeDesktopSessionsRoot:previous?.claudeDesktopSessionsRoot??defaultClaudeDesktopSessionsRoot(home),command};
   const enrolled=config.harnesses!;
+  const removed=selectionMode==='replace'?(previous?.harnesses??[]).filter(h=>!enrolled.includes(h)):[];
   if(enrolled.includes('cursor')&&enrolled.includes('grok-bot')&&config.roots.cursor===config.roots['grok-bot'])
     throw new CliError('CAPTURE_HARNESS_CONFLICT','Cursor and Grok Bot share a hooks directory on this machine. Enroll the actual client in a separate profile to avoid recording it twice.');
   // Checked before the directories below are created.
@@ -214,13 +217,16 @@ export async function installCapture(api:string,{background=false,deferAuth=fals
   const toml=join(config.roots.codex,'config.toml');if(harnesses.includes('codex')&&existsSync(toml))Bun.TOML.parse(readFileSync(toml,'utf8'));
   const affected=[join(captureDir(),'config.json'),join(captureDir(),'receiver-token.json'),hookRunner('capture',command).file,
     join(config.roots['claude-code'],'settings.json'),join(config.roots.codex,'hooks.json'),toml,
-    ...(['cursor','grok-bot','antigravity'] as const).filter(h=>enrolled.includes(h)).map(h=>hookFile(config,h))];
+    ...(['cursor','grok-bot','antigravity'] as const).filter(h=>enrolled.includes(h)).map(h=>hookFile(config,h)),
+    ...(previous?removed.map(h=>hookFile(previous,h)):[])];
   const originals=new Map(affected.map(path=>[path,existsSync(path)?readFileSync(path):null]));
   try {
   atomicJson(join(captureDir(),'config.json'),config);
   if(receiverToken)atomicJson(join(captureDir(),'receiver-token.json'),{api,token:receiverToken});
+  if(previous)for(const h of removed){const file=hookFile(previous,h);if(!existsSync(file))continue;if(h==='claude-code'||h==='codex')modifyHooks(file,[],null);else if(h==='antigravity')modifyAntigravityHooks(file,null);else modifyCursorFormatHooks(file,null,h);}
   configureHooks(config,enrolled);
   if(harnesses.includes('codex'))enableCodex(config.roots.codex);
+  if(selectionMode==='replace')establishForwardBoundaries(config,enrolled.filter(h=>readsTranscript(h)&&(previous?.disabled||!(previous?.harnesses??[]).includes(h))) as TranscriptHarness[]);
   } catch(error) {
     for(const [path,bytes] of originals) {
       if(bytes===null){try{unlinkSync(path);}catch{}}
