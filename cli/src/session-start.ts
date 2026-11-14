@@ -43,6 +43,8 @@ export function sessionStart(api: string, rawHarness: 'codex' | 'claude-code', e
 export function sessionStart<H extends string>(api: string, rawHarness: H, event: any, request?: typeof boardRequest): Promise<H extends 'antigravity' | 'agy' ? AntigravityStartOutput : H extends 'cursor' ? CursorStartOutput : StandardStartOutput>;
 export async function sessionStart(api: string, rawHarness: string, event: any, request = boardRequest) {
   const harness = normalizeHarness(rawHarness);
+  if(harness==='antigravity'&&event?.hookEventName===undefined)
+    return unavailable(harness,'Antigravity startup requires agy 1.5.4 or newer, or an updated desktop/IDE with hookEventName support. Upgrade Antigravity and restart the session.');
   const validAntigravity = harness === 'antigravity' && event?.hookEventName === 'SessionStart' &&
     typeof event.conversationId === 'string' && sessionPattern.test(event.conversationId);
   const validCursor = harness === 'cursor' && event?.hook_event_name === 'sessionStart' &&

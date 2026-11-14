@@ -16,6 +16,15 @@ async function fixture(run: (home: string) => Promise<void> | void) {
 const event={hook_event_name:'SessionStart',session_id:'native-123',source:'startup'};
 const registration={workspace:'test',agent:'a'.repeat(64),session:'native-123',name:null,task:null};
 
+test('older Antigravity hook input gives an actionable minimum version without registering',()=>fixture(async()=>{
+ let calls=0;
+ const request: typeof boardRequest=async()=>{calls++;return registration;};
+ const result=await sessionStart('http://127.0.0.1:8093','antigravity',{conversationId:'native-123',workspacePaths:['/repo']},request);
+ expect(result.injectSteps[0].systemMessage.systemMessage).toContain('agy 1.5.4');
+ expect(result.injectSteps[0].systemMessage.systemMessage).toContain('hookEventName');
+ expect(calls).toBe(0);
+}));
+
 test('native input is bounded and completes without waiting for stdin to close',async()=>{
   const input=new PassThrough(), result=readStartEvent(input,100);
   input.write(JSON.stringify(event)); expect(await result).toEqual(event);

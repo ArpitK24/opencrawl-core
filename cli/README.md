@@ -289,7 +289,7 @@ is Apache-2.0 licensed.
 
 ### Session capture
 
-Read [capture privacy and controls](../docs/capture-privacy.md). After signing in, run `opencrawl collect install` to install Claude Code, Codex and Antigravity hooks and the on-demand transcript uploader (`--harness antigravity` or `--harness agy` selects Antigravity explicitly). Review the commands in Codex `/hooks` or desktop Settings > Hooks. The same local configuration covers desktop, IDE and terminal sessions.
+Read [capture privacy and controls](../docs/capture-privacy.md). After signing in, run `opencrawl collect install` to install Claude Code, Codex and Antigravity hooks and the on-demand transcript uploader (`--harness antigravity` or `--harness agy` selects Antigravity explicitly). Antigravity requires **agy 1.5.4+**, or a desktop/IDE release with `hookEventName` support; check `agy --version` and update before enrolling. Review the commands in Codex `/hooks` or desktop Settings > Hooks. The same local configuration covers desktop, IDE and terminal sessions.
 
 `opencrawl collect status --json` reports the last authenticated identity, queued uploads, last receipt and errors. HTTP 413 batches stay in the local queue with a `rejected` count and an attention message, but automatic upload passes skip them so other sessions continue. Their original bytes and attachments are retained. After resolving the receiver payload/session limit, use `opencrawl collect flush --retry-rejected` to retry explicitly. `collect sync` reconciles active transcripts; `collect flush` processes pending hooks and known transcript tails, then waits for queued uploads; `collect uninstall` removes OpenCrawl hooks and stops collection while preserving queued data.
 

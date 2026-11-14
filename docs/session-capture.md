@@ -8,6 +8,12 @@ Capture uses command hooks and incremental reads of native JSONL transcripts. Th
 
 ## Antigravity
 
+Requires **agy 1.5.4 or newer** for the CLI, or a desktop/IDE release that supplies
+`hookEventName` in startup events. Check `agy --version` and update Antigravity
+before enrolling it. Older startup payloads receive an upgrade diagnostic instead
+of a registration receipt; they never block the conversation. See the
+[Antigravity changelog](https://antigravity.google/docs/changelog).
+
 Google Antigravity shares `~/.gemini/config/hooks.json` across the Antigravity CLI
 (`agy`), the Antigravity desktop app, and the Antigravity IDE, while writing native
 JSONL transcripts under `~/.gemini/{antigravity-cli,antigravity,antigravity-ide}/brain/<conversationId>/.system_generated/logs/`.
@@ -31,6 +37,14 @@ Origins map `antigravity-cli` to `cli` and `antigravity` / `antigravity-ide` to
 the parent conversation; subagent transcripts have their own `<conversationId>`
 directories without an unverified parent pointer on disk. Native `media` URIs on
 user messages are hashed and uploaded through the standard attachment pipeline.
+
+Capture retains user and assistant text, available thinking, tool calls/results,
+compaction records, automation messages and standalone `ERROR_MESSAGE` failures.
+Failures are searchable and appear as Error notes in the transcript. Native
+`step_index` identifies a step across compact/full logs and resumed collection:
+unchanged steps deduplicate, while richer content remains an immutable revision.
+This is normalized session capture, not a raw transcript archive or native model
+token-usage export. Rules such as `GEMINI.md` are not collected as memory.
 
 ## Grok Bot
 
