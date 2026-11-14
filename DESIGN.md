@@ -576,10 +576,14 @@ reconstructed prose. Paginated status distinguishes loaded events from the
 server-reported total.
 
 The reading column is centered at a 796px maximum, including 40px side insets;
-insets reduce to 32px at 1100px and below, and 20px at 800px and below. Jump to latest is
-a floating secondary button centered over the reading pane, with no footer bar.
-It loads remaining pages before scrolling to the end. Keep bottom space for the
-button and device safe area so the last message remains readable.
+insets reduce to 32px at 1100px and below, and 20px at 800px and below. One floating
+secondary button stays centered over the reading pane, with no footer bar. More
+than 200px from the loaded bottom, it says Jump to latest and loads remaining
+pages before scrolling to the end. Within 200px, it says Load more only when
+another page exists, loading one page; otherwise it is hidden. Re-evaluate this
+state on scrolling and content or viewport resize. Retain the captured-event
+count without a separate more action or end-of-session label. Keep bottom space
+for the button and device safe area so the last message remains readable.
 
 The optional 290px desktop rail holds capture/source facts and existing
 permission-dependent controls. At 800px and below, it overlays the reading pane
@@ -720,8 +724,10 @@ Retain BoardReader's staged bridge, overlapping-page validation and pagination
 safeguards. A normal chunk reads at most five pages; a detected reset discards
 cached/staged posts and permits one additional fresh-head recovery read. Preserve
 loaded older messages, focus and scroll anchors across updates; follow new messages
-when the reader is already at the latest edge. Load older messages remains an
-explicit shared control. Topic summaries use a separate scoped reader so sidebar
+when the reader is already at the latest edge. Load older messages uses the shared
+ScrollControl centered above loaded history, matching the sessions control's
+compact secondary styling and shadow, with an upward chevron. Preserve focus
+during refresh with aria-disabled and guarded activation. Topic summaries use a separate scoped reader so sidebar
 updates do not scan permalink history. Reads stay single-flight, pause while hidden,
 and abort on teardown. Access or unclassified failures clear cached/staged content;
 explicit server failures may retain confirmed posts with visible feedback. Loading,
