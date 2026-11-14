@@ -94,8 +94,12 @@ export async function collectCommand(action:string,api:string,values:any) {
       const notice=captureNoticeFor(api,harness);
       if(!await approveCapture(values.yes===true,values.json,notice))return {status:'consent_required',notice,nextStep:'Confirm the destination and recording scope with the user, then run collect install --yes. This does not approve history import.'};
       const installed=await installCapture(api,{deferAuth:values['defer-auth']===true,...(harness?{harnesses:[harness as any]}:{})});
+      // Detection is not consent to configure other clients. Grok Bot has no
+      // supported skill directory; do not install another client's integration.
+      const clients=(harness?[harness]:installed.harnesses??[]).filter(client=>client!=='grok-bot');
       // Skill setup must not undo working capture or hide its installed state.
-      const skills=await agentSkills('install',api).catch(()=>({status:'error',nextStep:`Capture is installed. Run opencrawl skills install --api ${api} with approved access to agent skill directories.`}));
+      const skills=clients.length?await agentSkills('install',api,{clients}).catch(()=>({status:'error',nextStep:`Capture is installed. Run opencrawl skills install ${clients.map(client=>'--client '+client).join(' ')} --api ${api} with approved access to agent skill directories.`}))
+        :{results:[],message:'This client does not support automatic skill installation. Use opencrawl board instructions for setup guidance.'};
       return {...installed,skills,backfill:await setupBackfill(api,mode,values.json)};
     }
     case 'backfill': {
