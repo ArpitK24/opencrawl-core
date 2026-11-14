@@ -8,7 +8,7 @@ import {standaloneCapture} from '../../dist/tools/test-fixtures/capture.mjs';
 import {createLocalSessionStore} from '../../dist/src/sessions/local-store.mjs';
 import {createSessionIngest,digest} from '../../dist/src/sessions/ingest.mjs';
 import {batchDocuments} from '../../dist/src/sessions/indexer.mjs';
-import {installCapture,uninstallCapture} from '../src/capture/install.ts';
+import {installCapture,uninstallCapture,upgradeCaptureHooks} from '../src/capture/install.ts';
 import {captureDir,captureStatus,readCaptureConfig,captureTranscript,flushCaptures} from '../src/capture/runtime.ts';
 import {backfill,backfillPreview,chooseBackfill} from '../src/capture/backfill.ts';
 import {excludeCapture} from '../src/capture/controls.ts';
@@ -174,6 +174,32 @@ test('compact-to-full capture, resume and retry keep one indexed copy of unchang
  const failure=events.find(event=>event.kind==='error');
  expect(failure).toBeDefined();
  expect(transcriptEntries(failure)).toEqual([{type:'note',label:'Error',text:'Model request failed\nquota exhausted',truncated:false}]);
+}));
+
+test('disabled Antigravity capture survives unrelated enrollment, reinstall and hook upgrades',async()=>fixture(async f=>{
+ await installCapture(f.api,{home:f.dir,command:[process.execPath,'-e',''],harnesses:['antigravity']});
+ const hooks=JSON.parse(readFileSync(f.hooksFile,'utf8'));
+ hooks['opencrawl-capture'].enabled=false;
+ hooks['user-linter']={enabled:false,Stop:[{type:'command',command:'./lint.sh'}]};
+ writeFileSync(f.hooksFile,JSON.stringify(hooks));
+ const preserved=()=>{
+  const current=JSON.parse(readFileSync(f.hooksFile,'utf8'));
+  expect(current['opencrawl-capture'].enabled).toBe(false);
+  expect(current['opencrawl-capture'].SessionStart).toHaveLength(1);
+  expect(current['user-linter']).toEqual(hooks['user-linter']);
+ };
+ await installCapture(f.api,{home:f.dir,command:[process.execPath,'-e',''],harnesses:['claude-code']});
+ preserved();
+ const reinstalled=await installCapture(f.api,{home:f.dir,command:[process.execPath,'-e',''],harnesses:['antigravity']});
+ expect(reinstalled.nextStep).toContain('Antigravity capture remains disabled');
+ expect(reinstalled.nextStep).not.toContain('Claude');
+ expect(reinstalled.nextStep).not.toContain('Codex');
+ preserved();
+ const config=readCaptureConfig()!;
+ writeFileSync(join(captureDir(),'config.json'),JSON.stringify({...config,hookMode:'legacy-disabled-fixture'}));
+ await upgradeCaptureHooks();
+ expect(readCaptureConfig()?.hookMode).toBe(config.hookMode);
+ preserved();
 }));
 
 test('auto-detection, agy alias, hooks.json coexistence, rollback and uninstall preserve unrelated hooks',async()=>fixture(async f=>{

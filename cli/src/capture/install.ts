@@ -64,6 +64,8 @@ function modifyAntigravityHooks(file:string,commandForEvent:((event:string)=>str
   const next:Record<string,unknown>={...config};
   if(commandForEvent) {
     next['opencrawl-capture']={
+      // Refresh owned commands without reversing the user's native hook choice.
+      ...(typeof config['opencrawl-capture']?.enabled==='boolean'?{enabled:config['opencrawl-capture'].enabled}:{}),
       SessionStart:[{type:'command',command:commandForEvent('SessionStart'),timeout:30}],
       PostToolUse:[{matcher:'*',hooks:[{type:'command',command:commandForEvent('PostToolUse'),timeout:30}]}],
       PostInvocation:[{type:'command',command:commandForEvent('PostInvocation'),timeout:30}],
@@ -231,12 +233,14 @@ export async function installCapture(api:string,{background=false,deferAuth=fals
   removeLegacyService(home);
   const backgroundStatus='harness-managed';
   const steps=[
-    ...(harnesses.some(readsTranscript)?[process.env.CLAUDE_CODE_REMOTE==='true'?'Cloud hooks installed. Run a new message and check collect status for a stored receipt. Configure the environment setup script for future sessions.':[...(codexHooksAwaitingReview(config)?['Codex needs you to trust the new hooks: open Codex, run /hooks (or desktop Settings > Hooks), trust "OpenCrawl session capture" and start a new session. collect status reports any hook still awaiting review.']:[]),'Restart existing Claude sessions if hooks have not reloaded.'].join(' ')]:[]),
+    ...(harnesses.some(readsTranscript)?[process.env.CLAUDE_CODE_REMOTE==='true'?'Cloud hooks installed. Run a new message and check collect status for a stored receipt. Configure the environment setup script for future sessions.':[...(harnesses.includes('codex')&&codexHooksAwaitingReview(config)?['Codex needs you to trust the new hooks: open Codex, run /hooks (or desktop Settings > Hooks), trust "OpenCrawl session capture" and start a new session. collect status reports any hook still awaiting review.']:[]),...(harnesses.includes('claude-code')?['Restart existing Claude sessions if hooks have not reloaded.']:[])].join(' ')]:[]),
     // An agent that ran the plain command on a Bot's computer reads this and corrects itself.
     ...(absent&&!deferAuth&&!enrolled.includes('grok-bot')&&process.env.CLAUDE_CODE_REMOTE!=='true'?['Neither Claude Code nor Codex was found on this machine. If it is a Grok Bot cloud computer, capture it with opencrawl collect install --yes --harness grok-bot.']:[]),
     ...(harnesses.includes('cursor')?[`Cursor hooks installed in ${hookFile(config,'cursor')}. Start a new Cursor conversation, then check collect status and search for its new message. Existing Cursor history is not imported.`]:[]),
     ...(harnesses.includes('grok-bot')?[`Grok Bot hooks installed in ${hookFile(config,'grok-bot')}. Bots that are already running may keep the hooks they loaded earlier: from a newly created Bot, run a command, then check collect status for a stored receipt.`]:[]),
-    ...(harnesses.includes('antigravity')?[`Antigravity hooks installed in ${hookFile(config,'antigravity')}. Start a fresh Antigravity session or restart running sessions so hooks reload.`]:[])];
+    ...(harnesses.includes('antigravity')?[readJson(hookFile(config,'antigravity'))['opencrawl-capture']?.enabled===false
+      ?`Antigravity capture remains disabled in ${hookFile(config,'antigravity')}. Enable that hook explicitly when you want recording to resume.`
+      :`Antigravity hooks installed in ${hookFile(config,'antigravity')}. Start a fresh Antigravity session or restart running sessions so hooks reload.`]:[])];
   return {notice:enrolled.includes('grok-bot')?captureNotice(api)+' '+grokBotNotice:captureNotice(api),exclusions:config.exclusions??{projects:[],sessions:[]},installationId:config.installationId,owner:config.authPending?null:config.owner,background:backgroundStatus,harnesses:config.harnesses,
     nextStep:steps.join(' ')};
   });
