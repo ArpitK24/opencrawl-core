@@ -65,10 +65,13 @@ try {
     const startupCmd = agyHooks['opencrawl-startup']?.SessionStart?.[0]?.command;
     if (!captureCmd || !startupCmd) throw new Error('Missing generated Antigravity hooks');
     const runShellHook = (hookCommand: string, stdinText: string) => {
+      // cmd /s strips the outer command quotes. Preserve the generated hook's
+      // own path quotes and prevent Bun from adding C-runtime backslash escapes.
       const shell = process.platform === 'win32'
-        ? [join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe'), '/d', '/s', '/c', hookCommand]
+        ? [join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe'), '/d', '/s', '/c', '"' + hookCommand + '"']
         : ['/bin/sh', '-c', hookCommand];
       const proc = Bun.spawnSync(shell, {
+        windowsVerbatimArguments: process.platform === 'win32',
         env: {...environment, ...skillEnv, PATH: join(scratch, 'no-runtimes')},
         stdin: Buffer.from(stdinText, 'utf8'),
         stdout: 'pipe',
