@@ -58,8 +58,10 @@ test('packaged runtime guides reuse the managed entry or matching package execut
   const fallback=[process.execPath,runtime];
   writeFileSync(manifest,JSON.stringify({name:'@getopencrawl/cli',version:release}));writeFileSync(executable,'fixture executable',{mode:0o755});
   expectInvocation(invoke(),[executable]);
+  if(process.platform==='win32')expect(invoke()).toEqual([realpathSync.native(executable)]);
   writeFileSync(manifest,JSON.stringify({name:'@getopencrawl/cli-'+process.platform+'-'+process.arch,version:release}));writeFileSync(platformExecutable,'fixture executable',{mode:0o755});
   expectInvocation(invoke(),[platformExecutable]);
+  if(process.platform==='win32')expect(invoke()).toEqual([realpathSync.native(platformExecutable)]);
   writeFileSync(manifest,JSON.stringify({name:'unrelated-package',version:release}));expectInvocation(invoke(),fallback);
   writeFileSync(manifest,JSON.stringify({name:'@getopencrawl/cli',version:'0.4.62'}));expectInvocation(invoke(),fallback);
   writeFileSync(manifest,JSON.stringify({name:'@getopencrawl/cli',version:release}));rmSync(executable);expectInvocation(invoke(),fallback);
