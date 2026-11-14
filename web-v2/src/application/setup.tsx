@@ -55,7 +55,7 @@ function ClientRow({client}: {client:Client}) {
       <dl className="oc-status-facts">
         <div><dt>Plugin</dt><dd>{client.installed?'Installed':'Not installed'}</dd></div>
         <div><dt>Hook trust</dt><dd>{!client.forward?'Not required':client.captureObservedAt?'Capture observed':hookLabel}</dd></div>
-        <div><dt>MCP sign-in</dt><dd>{!client.installed?'Not selected':client.mcp.state==='authenticated'?'Connected':client.mcp.state==='observed'?'Connection observed, client verification pending':'Sign-in required'}</dd></div>
+        <div><dt>MCP sign-in</dt><dd>{!client.installed?'Not selected':client.mcp.state==='authenticated'?'Connected':client.mcp.state==='observed'?(client.forward?'Connection observed, client verification pending':'Connection observed, capture not selected'):'Sign-in required'}</dd></div>
         <div><dt>Verification</dt><dd>{proofLabel}</dd></div>
         <div><dt>History import</dt><dd>{historyLabel(client)}</dd></div>
       </dl>
@@ -71,7 +71,7 @@ export function SetupPage({api,mcpUrl,setupInstallCommand}: {api:Pick<ProductApi
   const commands=setupCommands(mcpUrl,typeof navigator!=='undefined'&&/Windows/.test(navigator.userAgent),setupInstallCommand);
   const status=resource.data;
   const hasInstallations=Boolean(status?.installations.length);
-  const needsAgent=Boolean(status?.installations.some(installation=>installation.clients.some(client=>client.humanTasks.length>0||client.history==='import'&&client.historyProgress.state==='failed'||client.installed&&client.mcp.state!=='authenticated'||client.forward&&client.proof.state!=='verified')));
+  const needsAgent=Boolean(status?.installations.some(installation=>installation.clients.some(client=>client.humanTasks.length>0||client.history==='import'&&client.historyProgress.state==='failed'||client.installed&&client.mcp.state==='pending'||client.forward&&client.proof.state!=='verified')));
   const [copied,setCopied]=useState(false),[handoffOpen,setHandoffOpen]=useState(false);
   const handoff=useRef<HTMLDetailsElement>(null);
   useEffect(()=>{if(!copied)return;const timer=setTimeout(()=>setCopied(false),2_000);return()=>clearTimeout(timer);},[copied]);

@@ -112,6 +112,37 @@ test('verified installations keep add-client setup available without asking to f
   await expect(page.getByLabel('Setup command',{exact:true})).toHaveValue(/opencrawl setup/);
 });
 
+test('search and history-only clients stop prompting once MCP is observed and recording is off',async({page})=>{
+  const installation=partial.installations[0]!;
+  const searchOnly:SetupStatus={...empty,installations:[{...installation,clients:[
+    {...installation.clients[0]!,forward:false,history:'skip',historyProgress:{state:'not_started',completed:0},mcp:{state:'observed',observedAt:now},proof:{state:'not_selected'},humanTasks:[]},
+    {...installation.clients[1]!,forward:false,history:'import',historyProgress:{state:'complete',completed:12,total:12},mcp:{state:'observed',observedAt:now},proof:{state:'not_selected'},humanTasks:[]},
+  ]}]};
+  await start(page,searchOnly);
+  await expect(page.getByRole('button',{name:'Continue with your agent',exact:true})).toHaveCount(0);
+  await expect(page.getByText('Your first session is searchable',{exact:true})).toHaveCount(0);
+  await expect(page.getByRole('heading',{name:'Add or update an installation'})).toBeVisible();
+  await expect(page.getByText('Future recording off',{exact:true})).toHaveCount(2);
+  for(const row of await page.locator('.oc-status-row').all()){
+    await row.getByText('Connection and import status').click();
+    await expect(row.getByText('Connection observed, capture not selected',{exact:true})).toBeVisible();
+    await expect(row.getByText('Connected',{exact:true})).toHaveCount(0);
+    await expect(row.getByText('Verified',{exact:true})).toHaveCount(0);
+  }
+});
+
+test('recording-off clients still offer the agent for pending sign-in or a failed selected import',async({page})=>{
+  const installation=partial.installations[0]!;
+  const client={...installation.clients[0]!,forward:false,proof:{state:'not_selected' as const},humanTasks:[]};
+  for(const pending of [
+    {...client,history:'skip' as const,mcp:{state:'pending' as const}},
+    {...client,mcp:{state:'observed' as const,observedAt:now},historyProgress:{state:'failed' as const,completed:3,total:12}},
+  ]){
+    await start(page,{...empty,installations:[{...installation,clients:[pending]}]});
+    await expect(page.getByRole('button',{name:'Continue with your agent',exact:true})).toBeVisible();
+  }
+});
+
 test('preview bootstrap uses its pinned installer instead of released CLI distribution',async({page})=>{
   await page.route('**/api/console/bootstrap',async route=>{const response=await route.fetch();const body:unknown=await response.json();if(typeof body!=='object'||body===null)throw Error('Invalid fixture');await route.fulfill({json:{...body,mcpUrl:'https://preview.example/mcp',setupInstallCommand:'sh /private/preview/install-012345.sh'}});});
   await start(page);
