@@ -1,6 +1,9 @@
+import {homedir} from 'node:os';
+import {join} from 'node:path';
+import {inspectCodexHooks} from './codex-hooks.ts';
 import {CliError} from '../oauth.ts';
 import {installCapture,uninstallCapture,upgradeCaptureHooks} from './install.ts';
-import {captureHook,captureAttentionNotice,ownedCaptureWorker,captureStatus,syncCaptures,flushCaptureWork,refreshCapturedTitles,recordError,hookFlush,bindHookIdentity} from './runtime.ts';
+import {captureHook,captureAttentionNotice,ownedCaptureWorker,captureStatus,readCaptureConfig,syncCaptures,flushCaptureWork,refreshCapturedTitles,recordError,hookFlush,bindHookIdentity} from './runtime.ts';
 import {credentialRotation} from '../session.ts';
 import {grokBotResponse} from './grok-bot.ts';
 import {normalizeHarness} from './parse.ts';
@@ -115,7 +118,7 @@ export async function collectCommand(action:string,api:string,values:any) {
     case 'exclude': return excludeCapture(values.project,values['session-id']);
     case 'purge': return purgeLocalCapture(values.yes===true);
     case 'uninstall': return uninstallCapture();
-    case 'status': return captureStatus();
+    case 'status': return captureStatus(await inspectCodexHooks(readCaptureConfig()?.roots.codex||process.env.CODEX_HOME||join(homedir(),'.codex')));
     case 'sync': try{return await syncCaptures();}catch(e){recordError(e);throw e;}
     case 'titles': try{return await refreshCapturedTitles();}catch(e){recordError(e);throw e;}
     case 'flush': try{return await flushCaptureWork({retryRejected:values['retry-rejected']===true});}catch(e){recordError(e);throw e;}

@@ -20,6 +20,7 @@ import {cursorSession,cursorTranscript,cursorMessage,cursorThoughtDuplicate} fro
 import {grokBotEvents, grokBotSession, grokBotTitleEvent, grokBotUnsupported, GROK_BOT_BOUNDARIES, GROK_BOT_MAX_HOOK_BYTES} from './grok-bot.ts';
 import {isClaudeDesktopTranscript,desktopNativeMessageIds} from './desktop-history.ts';
 import {captureExcluded, type CaptureExclusions} from './policy.ts';
+import {localCodexHookReview,codexHookReviewMessage,type CodexHookReview} from './codex-hooks.ts';
 import {codexTitle, codexTitleSignature} from './titles.ts';
 import {redactValue,redactAttachment,MAX_REDACTION_DEPTH} from './redact.ts';
 import {replicasAttribution,replicasEventAttribution,replicasTitle,type ReplicasTitle} from './replicas.ts';
@@ -1100,29 +1101,10 @@ export function captureAttentionNotice(now=Date.now()):string|null {
   atomicJson(marker,{at:new Date(now).toISOString()});
   return message;
 }
-/** OpenCrawl hooks Codex will not run until the person trusts them in /hooks.
- * Codex records trust per hook as `[hooks.state."<hooks.json>:<event>:<group>:<hook>"]`
- * with a trusted_hash; a missing entry means "new hook - review required".
- * We only read that state: trust is the person's decision, never written here. */
-export function codexHooksAwaitingReview(config:CaptureConfig|null=readCaptureConfig()):number {
-  if(!config||config.disabled||!(config.harnesses??['claude-code','codex']).includes('codex')||!config.roots.codex)return 0;
-  const file=join(config.roots.codex,'hooks.json');
-  let hooks:any,state:any;
-  try{hooks=JSON.parse(readFileSync(file,'utf8')).hooks??{};}catch{return 0;}
-  try{state=(Bun.TOML.parse(readFileSync(join(config.roots.codex,'config.toml'),'utf8')) as any)?.hooks?.state??{};}catch{state={};}
-  const snake=(event:string)=>event.replace(/([a-z0-9])([A-Z])/g,'$1_$2').toLowerCase();
-  let pending=0;
-  for(const [event,groups] of Object.entries(hooks))if(Array.isArray(groups))groups.forEach((group:any,g:number)=>{
-    if(Array.isArray(group?.hooks))group.hooks.forEach((hook:any,h:number)=>{
-      if(hook?.statusMessage==='OpenCrawl session capture'&&!state[`${file}:${snake(event)}:${g}:${h}`]?.trusted_hash)pending++;
-    });
-  });
-  return pending;
-}
-export function captureStatus() {
+export function captureStatus(nativeReview?:CodexHookReview) {
   const config=readCaptureConfig();
-  const codexReview=codexHooksAwaitingReview(config);
-  const review=codexReview?`Codex will not run ${codexReview} OpenCrawl capture hook${codexReview===1?'':'s'} until you trust them: open Codex, run /hooks (or desktop Settings > Hooks) and trust "OpenCrawl session capture", then start a new session.`:null;
+  const codexReview=nativeReview??(config?localCodexHookReview(config.roots.codex):{state:'not_applicable' as const,total:0,pending:0,disabled:0});
+  const review=codexHookReviewMessage(codexReview);
   return {installed:Boolean(config&&!config.disabled),api:config?.api,owner:config?.authPending?null:config?.owner,authenticationPending:Boolean(config?.authPending),installationId:config?.installationId,
     exclusions:config?.exclusions??{projects:[],sessions:[]},
     queued:existsSync(join(captureDir(),'queue'))?readdirSync(join(captureDir(),'queue')).filter(n=>n.endsWith('.json')).length:0,
@@ -1130,5 +1112,5 @@ export function captureStatus() {
     pendingHooks:existsSync(join(captureDir(),'notices'))?noticeNames().length:0,
     backfill:read(join(captureDir(),'backfill-progress.json')),
     lastUpload:read(join(captureDir(),'last-upload.json')),lastError:read(join(captureDir(),'last-error.json')),
-    codexHooksAwaitingReview:codexReview,attention:captureAttention()??review};
+    codexHooksAwaitingReview:codexReview.pending,codexHookReview:codexReview,attention:captureAttention()??review};
 }

@@ -10,7 +10,7 @@ import {CliError} from '../oauth.ts';
 import {retryWindowsSharing} from '../filesystem.ts';
 import {environmentToken} from '../environment-token.ts';
 import {workspaceIdentityEnabled} from '../workspace-identity.ts';
-import {ANTIGRAVITY_SURFACES, captureDir, readCaptureConfig, commandForSelf, request, harnessRoot, codexHooksAwaitingReview, HOOK_MODE, type CaptureConfig} from './runtime.ts';
+import {ANTIGRAVITY_SURFACES, captureDir, readCaptureConfig, commandForSelf, request, harnessRoot, HOOK_MODE, type CaptureConfig} from './runtime.ts';
 import {captureNotice, grokBotNotice} from './policy.ts';
 import {hookRunner} from '../hook-runner.ts';
 import {defaultClaudeDesktopSessionsRoot} from './desktop-history.ts';
@@ -239,7 +239,7 @@ export async function installCapture(api:string,{background=false,deferAuth=fals
   removeLegacyService(home);
   const backgroundStatus='harness-managed';
   const steps=[
-    ...(harnesses.some(readsTranscript)?[process.env.CLAUDE_CODE_REMOTE==='true'?'Cloud hooks installed. Run a new message and check collect status for a stored receipt. Configure the environment setup script for future sessions.':[...(harnesses.includes('codex')&&codexHooksAwaitingReview(config)?['Codex needs you to trust the new hooks: open Codex, run /hooks (or desktop Settings > Hooks), trust "OpenCrawl session capture" and start a new session. collect status reports any hook still awaiting review.']:[]),...(harnesses.includes('claude-code')?['Restart existing Claude sessions if hooks have not reloaded.']:[])].join(' ')]:[]),
+    ...(harnesses.some(readsTranscript)?[process.env.CLAUDE_CODE_REMOTE==='true'?'Cloud hooks installed. Run a new message and check collect status for a stored receipt. Configure the environment setup script for future sessions.':[...(harnesses.includes('codex')?['Review OpenCrawl hooks in Codex /hooks (or desktop Settings > Hooks), trust new or changed definitions you approve, and start a new session. collect status checks native hook readiness.']:[]),...(harnesses.includes('claude-code')?['Restart existing Claude sessions if hooks have not reloaded.']:[])].join(' ')]:[]),
     // An agent that ran the plain command on a Bot's computer reads this and corrects itself.
     ...(absent&&!deferAuth&&!enrolled.includes('grok-bot')&&process.env.CLAUDE_CODE_REMOTE!=='true'?['Neither Claude Code nor Codex was found on this machine. If it is a Grok Bot cloud computer, capture it with opencrawl collect install --yes --harness grok-bot.']:[]),
     ...(harnesses.includes('cursor')?[`Cursor hooks installed in ${hookFile(config,'cursor')}. Start a new Cursor conversation, then check collect status and search for its new message. Existing Cursor history is not imported.`]:[]),
