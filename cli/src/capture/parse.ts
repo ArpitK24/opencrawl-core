@@ -130,9 +130,18 @@ export function parseRecord(harness: Harness, record: any, offset: number) {
       kind='tool_result';data={type:'tool_result',output,...(record.status==='ERROR'?{is_error:true,...(typeof record.error==='string'?{error:record.error}:{})}:{})};
     } else if (record.type === 'CHECKPOINT' && typeof record.content === 'string' && record.content.trim()) {
       kind='compaction';data={content:record.content};
+    } else if (record.type === 'ERROR_MESSAGE') {
+      const content=typeof record.content==='string'?record.content:'';
+      const error=typeof record.error==='string'?record.error:'';
+      if(!content.trim()&&!error.trim())return null;
+      kind='error';data={...(content.trim()?{content}:{}),...(error.trim()?{error}:{})};
     }
     if (!kind) return null;
-    return {id:hash(harness+':'+offset+':'+JSON.stringify(record)), kind, sequence:offset, timestamp:record.created_at ?? record.timestamp ?? null,
+    // Compact and full transcripts describe the same native steps at different
+    // byte offsets. The final wire identity still distinguishes content revisions,
+    // after attachment extraction/redaction, without duplicating unchanged steps.
+    const step=Number.isSafeInteger(record.step_index)&&record.step_index>=0?record.step_index:null;
+    return {id:hash(step===null?harness+':'+offset+':'+JSON.stringify(record):harness+':step:'+step), kind, sequence:step??offset, timestamp:record.created_at ?? record.timestamp ?? null,
       nativeId:typeof record.step_index==='number'?String(record.step_index):(record.uuid ?? null), parentId:null,
       turnId:null, agentId:null, data};
   }

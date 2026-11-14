@@ -6,13 +6,14 @@ import {tmpdir} from 'node:os';
 import {createServer} from 'node:http';
 import {standaloneCapture} from '../../dist/tools/test-fixtures/capture.mjs';
 import {createLocalSessionStore} from '../../dist/src/sessions/local-store.mjs';
-import {createSessionIngest} from '../../dist/src/sessions/ingest.mjs';
+import {createSessionIngest,digest} from '../../dist/src/sessions/ingest.mjs';
 import {batchDocuments} from '../../dist/src/sessions/indexer.mjs';
 import {installCapture,uninstallCapture} from '../src/capture/install.ts';
-import {captureDir,captureStatus,readCaptureConfig} from '../src/capture/runtime.ts';
+import {captureDir,captureStatus,readCaptureConfig,captureTranscript,flushCaptures} from '../src/capture/runtime.ts';
 import {backfill,backfillPreview,chooseBackfill} from '../src/capture/backfill.ts';
 import {excludeCapture} from '../src/capture/controls.ts';
-import {parseRecord,normalizeHarness} from '../src/capture/parse.ts';
+import {parseRecord,normalizeHarness,finalizeEventIdentity} from '../src/capture/parse.ts';
+import {transcriptEntries} from '../../dist/src/sessions/library.mjs';
 import {antigravityResponse} from '../src/capture/command.ts';
 import {refreshMemories} from '../src/capture/memory.ts';
 
@@ -61,7 +62,8 @@ test('parseRecord maps Antigravity transcript steps and strips wrapper metadata 
   .toMatchObject({kind:'tool_result',data:{type:'tool_result',output:'file does not exist',is_error:true,error:'ENOENT'}});
  expect(parseRecord('antigravity',{step_index:5,source:'SYSTEM',type:'CHECKPOINT',status:'DONE',content:'# Resuming from a compaction'},500))
   .toMatchObject({kind:'compaction',data:{content:'# Resuming from a compaction'}});
- expect(parseRecord('antigravity',{step_index:6,source:'SYSTEM',type:'ERROR_MESSAGE',status:'DONE',error:'tls retry'},600)).toBeNull();
+ expect(parseRecord('antigravity',{step_index:6,source:'SYSTEM',type:'ERROR_MESSAGE',status:'DONE',error:'tls retry'},600))
+  .toMatchObject({kind:'error',data:{error:'tls retry'}});
  expect(normalizeHarness('agy')).toBe('antigravity');
  expect(normalizeHarness('antigravity')).toBe('antigravity');
  expect(antigravityResponse({hookEventName:'Stop'})).toEqual({decision:'allow'});
@@ -72,12 +74,13 @@ test('parseRecord maps Antigravity transcript steps and strips wrapper metadata 
 
 async function fixture(run:(ctx:{
  dir:string;api:string;token:string;principal:{tenantId:string;userId:string};
- batches:any[];attachments:Map<string,Buffer>;hooksFile:string;
+ batches:any[];documents:ReturnType<typeof batchDocuments>;attachments:Map<string,Buffer>;hooksFile:string;
 })=>Promise<void>) {
  const dir=mkdtempSync(join(tmpdir(),'opencrawl-agy-')),saved={...process.env};
  const principal={tenantId:'tenant-agy',userId:'alice'},token='antigravity-test-token-01234567890123456789';
  const store=createLocalSessionStore(join(dir,'objects')),ingest=createSessionIngest({store});
  const batches:any[]=[],attachments=new Map<string,Buffer>();
+ const documents:ReturnType<typeof batchDocuments>=[];
  const handler=standaloneCapture({token,principal,store});
  const server=createServer(async(req,res)=>{
   if(req.method==='PUT'&&req.url?.startsWith('/api/sessions/attachments/')) {
@@ -96,6 +99,9 @@ async function fixture(run:(ctx:{
    const json=req.headers['content-encoding']==='gzip'?Bun.gunzipSync(raw).toString():raw.toString();
    const batch=JSON.parse(json);batches.push(batch);
    const receipt=await ingest.putBatch(principal,batch);
+   const stored=await ingest.getBatch(principal,{...batch,batchId:receipt.batchId});
+   const key=`capture-v1/tenants/${digest(principal.tenantId)}/users/${digest(principal.userId)}/${batch.harness}/${digest(batch.installationId)}/${digest(batch.sessionId)}/${receipt.batchId}.json.gz`;
+   documents.push(...batchDocuments({prefix:'capture-v1',key,batch:stored!,principal}));
    res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({schemaVersion:1,data:receipt}));return;
   }
   handler(req,res);
@@ -111,7 +117,7 @@ async function fixture(run:(ctx:{
   ANTIGRAVITY_HOME:join(dir,'gemini'),
  });
  try {
-  await run({dir,api,token,principal,batches,attachments,hooksFile:join(dir,'gemini','config','hooks.json')});
+  await run({dir,api,token,principal,batches,documents,attachments,hooksFile:join(dir,'gemini','config','hooks.json')});
  } finally {
   server.closeAllConnections();
   await new Promise<void>(r=>server.close(()=>r()));
@@ -120,6 +126,55 @@ async function fixture(run:(ctx:{
   rmSync(dir,{recursive:true,force:true});
  }
 }
+
+test('native step identity survives compact/full offsets and JSON formatting but preserves content revisions',()=>{
+ const step={step_index:1,type:'PLANNER_RESPONSE',content:'Same answer',created_at:'2026-11-13T23:00:01Z'};
+ const wire=(record:object,offset:number)=>finalizeEventIdentity(parseRecord('antigravity',record,offset));
+ const compact=wire({...step,truncated_fields:[]},120);
+ const full=wire({content:step.content,created_at:step.created_at,type:step.type,step_index:1},450);
+ expect(full).toEqual(compact);
+ expect(wire({...step,content:'A fuller answer'},450).id).not.toBe(compact.id);
+ expect(wire({...step,step_index:2},450).id).not.toBe(compact.id);
+ // Legacy records without a native step still distinguish repeated text.
+ const {step_index,...legacy}=step;
+ expect(wire(legacy,120).id).not.toBe(wire(legacy,450).id);
+});
+
+test('compact-to-full capture, resume and retry keep one indexed copy of unchanged steps and searchable errors',async()=>fixture(async f=>{
+ await installCapture(f.api,{home:f.dir,command:[process.execPath,'-e',''],harnesses:['antigravity']});
+ const config=readCaptureConfig()!;
+ const logs=join(f.dir,'gemini','antigravity-cli','brain','conv-transition','.system_generated','logs');
+ mkdirSync(logs,{recursive:true});
+ const compact=join(logs,'transcript.jsonl'),full=join(logs,'transcript_full.jsonl');
+ const prompt={step_index:0,type:'USER_INPUT',content:'Short prompt'};
+ const answer={step_index:1,type:'PLANNER_RESPONSE',content:'Unchanged assistant answer'};
+ const write=(file:string,records:object[])=>writeFileSync(file,records.map(record=>JSON.stringify(record)+'\n').join(''));
+ write(compact,[{...prompt,truncated_fields:['content']},answer]);
+ await captureTranscript(config,'antigravity',compact);
+ await flushCaptures();
+ write(full,[{...prompt,content:'The complete longer prompt'},answer]);
+ await captureTranscript(config,'antigravity',compact);
+ await flushCaptures();
+ const resumed={step_index:2,type:'ERROR_MESSAGE',content:'Model request failed',error:'quota exhausted'};
+ write(full,[{...prompt,content:'The complete longer prompt'},answer,resumed]);
+ await captureTranscript(config,'antigravity',compact);
+ await flushCaptures();
+ const count=f.batches.length;
+ await captureTranscript(config,'antigravity',compact);
+ await flushCaptures();
+ expect(f.batches.length).toBe(count);
+ expect(captureStatus().queued).toBe(0);
+ const events=f.batches.flatMap(b=>b.events);
+ const copies=events.filter(event=>event.nativeId==='1');
+ expect(copies.length).toBe(2); // Replayed source, same immutable event identity.
+ expect(new Set(copies.map(event=>event.id)).size).toBe(1);
+ expect(new Set(events.filter(event=>event.nativeId==='0').map(event=>event.id)).size).toBe(2);
+ expect(new Set(f.documents.filter(item=>item.document.text?.includes('Unchanged assistant answer')).map(item=>item.id)).size).toBe(1);
+ expect(f.documents.some(item=>item.document.kind==='error'&&item.document.text?.includes('quota exhausted'))).toBe(true);
+ const failure=events.find(event=>event.kind==='error');
+ expect(failure).toBeDefined();
+ expect(transcriptEntries(failure)).toEqual([{type:'note',label:'Error',text:'Model request failed\nquota exhausted',truncated:false}]);
+}));
 
 test('auto-detection, agy alias, hooks.json coexistence, rollback and uninstall preserve unrelated hooks',async()=>fixture(async f=>{
  // When Antigravity directory exists, plain installCapture auto-enrolls antigravity.
