@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {publishSetup,type SetupServerStatus} from '../src/setup/api.ts';
 import {inspectCodexHooks,type CodexHookReview} from '../src/capture/codex-hooks.ts';
-import {setupCommand,formatSetupOutput} from '../src/setup/command.ts';
+import {setupCommand,formatSetupOutput,formatSetupCommand} from '../src/setup/command.ts';
 import {readSetupState,historyBenefit,type SetupState} from '../src/setup/state.ts';
 import {readCaptureConfig,captureDir} from '../src/capture/runtime.ts';
 import {applySelectionKey,type SelectionCursor} from '../src/setup/select.ts';
@@ -132,4 +132,26 @@ test('an older installation proof cannot suppress review for a replacement local
  const path=join(captureDir(),'config.json'),config=JSON.parse(readFileSync(path,'utf8'));writeFileSync(path,JSON.stringify({...config,installationId:'replacement-installation'}));
  const result=await setupCommand('status',api,{json:true},setupCodex);
  expect(result).toMatchObject({humanTasks:[{id:'codex-hook-review',kind:'hook_trust',client:'codex'}]});
+}));
+
+
+test('setup plans, handoffs and sign-in keep the selected launcher and saved search-only choices',async()=>fixture(async(api,dir)=>{
+ const command=[join(dir,"private install's bin",process.platform==='win32'?'opencrawl.cmd':'opencrawl')];
+ const dependencies={...setupCodex,command};
+ const plan=await setupCommand('plan',api,{plugins:'codex',forward:'none',history:'none'},dependencies) as {applyCommand:string;planId:string};
+ expect(plan.applyCommand).toBe(formatSetupCommand(['setup','apply','--api',api,'--plugins','codex','--forward','none','--history','none','--plan-id',plan.planId,'--yes','--json'],command));
+ const applied=await setupCommand('apply',api,{yes:true,plugins:'codex',forward:'none',history:'none'},dependencies);
+ for(const result of [applied,await setupCommand('resume',api,{json:true},dependencies)]){
+  const handoff=result as {agentPrompt:string;nextStep:string};
+  expect(handoff.agentPrompt).toContain('in this conversation');
+  expect(handoff.agentPrompt).toContain('Use `'+formatSetupCommand([],command)+'` for every OpenCrawl command');
+  expect(handoff.agentPrompt).toContain('Start with `'+formatSetupCommand(['setup','status','--api',api,'--json'],command)+'`');
+  expect(handoff.agentPrompt).toContain('recording off (forward=false)');
+  expect(handoff.agentPrompt).toContain('without requiring a new session capture');
+  expect(handoff.nextStep).toContain(formatSetupCommand(['setup','status','--api',api,'--json'],command));
+ }
+ delete process.env.OPENCRAWL_TOKEN;
+ const login=await setupCommand('run',api,{json:true},{command,interactive:false}) as {humanTasks:{instruction:string}[]};
+ expect(login.humanTasks[0].instruction).toContain(formatSetupCommand(['login','--api',api],command));
+ expect(login.humanTasks[0].instruction).toContain(formatSetupCommand(['setup','--api',api,'--json'],command));
 }));

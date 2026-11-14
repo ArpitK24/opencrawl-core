@@ -4,7 +4,7 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {CliError} from '../oauth.ts';
 import {atomicJson,withSessionLock} from '../session.ts';
-import {readCaptureConfig,captureDir,refreshCaptureIdentity,HOOK_MODE} from '../capture/runtime.ts';
+import {readCaptureConfig,captureDir,refreshCaptureIdentity,commandForSelf,HOOK_MODE} from '../capture/runtime.ts';
 import {installCapture} from '../capture/install.ts';
 import {inspectCodexHooks,codexHookReviewMessage} from '../capture/codex-hooks.ts';
 import {inventory,type HistoryFile} from '../capture/backfill.ts';
@@ -18,9 +18,18 @@ import {historyJob,startHistoryWorker,runHistoryWorker} from './history-worker.t
 import {chooseSetupItems} from './select.ts';
 import {verifyInstallation} from '../verify-installation.ts';
 type Values=Record<string,unknown>;
-type Dependencies={login?:()=>Promise<unknown>;installPlugins?:typeof installSetupPlugins;launchHistory?:typeof startHistoryWorker;choose?:typeof chooseSetupItems;interactive?:boolean;inspectHooks?:typeof inspectCodexHooks};
+type Dependencies={command?:string[];login?:()=>Promise<unknown>;installPlugins?:typeof installSetupPlugins;launchHistory?:typeof startHistoryWorker;choose?:typeof chooseSetupItems;interactive?:boolean;inspectHooks?:typeof inspectCodexHooks};
 function historyFiles(api:string):HistoryFile[]{const previous=readCaptureConfig();return inventory(previous?.api===api?previous:{roots:{'claude-code':process.env.CLAUDE_CONFIG_DIR||join(homedir(),'.claude'),codex:process.env.CODEX_HOME||join(homedir(),'.codex'),antigravity:process.env.ANTIGRAVITY_HOME||join(homedir(),'.gemini')},claudeDesktopSessionsRoot:defaultClaudeDesktopSessionsRoot()},'all').files;}
 const list=(values:string[])=>values.length?values.join(','):'none';
+// Preserve the managed launcher: it may carry a private installation's environment.
+// Windows handoffs use PowerShell; POSIX handoffs work in sh, bash and zsh.
+export function formatSetupCommand(args:string[],command=commandForSelf(),platform=process.platform):string{
+ const literal=(value:string)=>"'"+value.replaceAll("'",platform==='win32'?"''":"'\\''")+"'";
+ const safe=platform==='win32'?/^[A-Za-z0-9_./:-]+$/:/^[A-Za-z0-9_@%+=:,./-]+$/;
+ const words=[...command,...args].map((value,index)=>platform==='win32'&&index===0?literal(value):safe.test(value)?value:literal(value));
+ return (platform==='win32'?'& ':'')+words.join(' ');
+}
+
 function preserveRecordingOff(selections:SetupSelections,scope:SetupScope):SetupSelections{
  const config=readCaptureConfig();if(!config||config.api!==scope.api||config.owner.tenantId!==scope.tenantId||config.owner.userId!==scope.userId)return selections;
  const forward={...selections.forward};
@@ -77,40 +86,40 @@ async function applyHistory(scope:SetupScope,selections:SetupSelections,files:Hi
  const state=await updateSetupState(scope,current=>{if(!current?.installationId)throw new CliError('SETUP_NOT_STARTED','Confirm client setup before history.');return {...current,selections,historyJob:historyJob(current,chosen(selections,'history'),files)};});
  await publishSetup(state);return state;
 }
-async function result(state:SetupState,launchHistory:typeof startHistoryWorker,inspectHooks:typeof inspectCodexHooks,start=true){
+async function result(state:SetupState,launchHistory:typeof startHistoryWorker,inspectHooks:typeof inspectCodexHooks,command:string[],start=true){
  const history=start?launchHistory(state):{state:state.historyJob?.state??'not_started'};
- const server=await readServerSetup(state.scope.api);
- return {status:state.pluginResults?.some(row=>['error','pending'].includes(row.status))?'needs_attention':'configured',scope:state.scope,installationId:state.installationId,selections:state.selections,plugins:state.pluginResults,history,humanTasks:await tasks(server,state,inspectHooks),historyBenefit,agentPrompt:`Finish OpenCrawl setup. Run opencrawl setup status --api ${state.scope.api} --json and guide me through one returned human task at a time.`,nextStep:'Use setup status --json for history progress. Installation is not proof that a session is searchable.'};
+ const server=await readServerSetup(state.scope.api),statusCommand=formatSetupCommand(['setup','status','--api',state.scope.api,'--json'],command);
+ return {status:state.pluginResults?.some(row=>['error','pending'].includes(row.status))?'needs_attention':'configured',scope:state.scope,installationId:state.installationId,selections:state.selections,plugins:state.pluginResults,history,humanTasks:await tasks(server,state,inspectHooks),historyBenefit,agentPrompt:`Continue OpenCrawl setup in this conversation. Use \`${formatSetupCommand([],command)}\` for every OpenCrawl command${process.platform==='win32'?' in PowerShell':''}. Start with \`${statusCommand}\` and guide me through one returned human task at a time. Reuse my saved choices. For clients with recording off (forward=false), complete the MCP connection without requiring a new session capture.`,nextStep:`Use \`${statusCommand}\` for history progress. Installation is not proof that a session is searchable.`};
 }
-export async function setupCommand(action:string,api:string,values:Values,{login,installPlugins=installSetupPlugins,launchHistory=startHistoryWorker,choose=chooseSetupItems,inspectHooks=inspectCodexHooks,interactive=Boolean(process.stdin.isTTY&&process.stderr.isTTY&&!values.json)}:Dependencies={}){
+export async function setupCommand(action:string,api:string,values:Values,{command=commandForSelf(),login,installPlugins=installSetupPlugins,launchHistory=startHistoryWorker,choose=chooseSetupItems,inspectHooks=inspectCodexHooks,interactive=Boolean(process.stdin.isTTY&&process.stderr.isTTY&&!values.json)}:Dependencies={}){
  if(action==='worker'){if(typeof values['scope-key']!=='string')throw new CliError('INVALID_USAGE','Missing history scope.',64);const state=readStateKey(values['scope-key']);if(state?.scope.api!==api)throw new CliError('SETUP_SCOPE_CHANGED','History worker API does not match its approved scope.');await runHistoryWorker(values['scope-key']);return null;}
  if(!['run','plan','status','apply','resume','verify'].includes(action))throw new CliError('INVALID_USAGE','Use setup, setup --json, setup apply, setup status, setup resume, or setup verify.',64);
  let server;
  try{server=await readServerSetup(api);}catch(error){
   if(error instanceof CliError&&error.code==='AUTH_REQUIRED'){
    if(action==='run'&&interactive&&login){await login();server=await readServerSetup(api);}
-   else return {status:'action_required',humanTasks:[{id:'cli-login',kind:'login',title:'Sign in to OpenCrawl',instruction:`Run opencrawl login --api ${api}, complete browser sign-in, then run opencrawl setup --json.`}],historyBenefit};
+   else return {status:'action_required',humanTasks:[{id:'cli-login',kind:'login',title:'Sign in to OpenCrawl',instruction:`Run \`${formatSetupCommand(['login','--api',api],command)}\`${process.platform==='win32'?' in PowerShell':''}, complete browser sign-in, then run \`${formatSetupCommand(['setup','--api',api,'--json'],command)}\`.`}],historyBenefit};
   }else throw error;
  }
  const scope=serverScope(api,server),previous=readSetupState(scope);
  if(action==='status')return {status:'status',scope,selections:previous?.selections??null,history:previous?.historyJob??null,server,humanTasks:await tasks(server,previous,inspectHooks)};
  if(action==='verify'){
   const client=Array.isArray(values.client)?values.client[0]:values.client;
-  if(!previous?.installationId||typeof client!=='string')throw new CliError('INVALID_USAGE','Run setup first, then setup verify --client CLIENT.',64);
+  if(!previous?.installationId||typeof client!=='string')throw new CliError('INVALID_USAGE',`Run \`${formatSetupCommand(['setup','--api',api],command)}\` first, then \`${formatSetupCommand(['setup','verify','--api',api,'--client','CLIENT'],command)}\`.`,64);
   return verifyInstallation(api,{installationId:previous.installationId,client});
  }
  if(action==='resume'){
-  if(!previous)throw new CliError('SETUP_NOT_STARTED','Run opencrawl setup to review choices first.');
+  if(!previous)throw new CliError('SETUP_NOT_STARTED',`Run \`${formatSetupCommand(['setup','--api',api],command)}\` to review choices first.`);
   const selected=preserveRecordingOff(previous.selections,scope);
   const resumed=await updateSetupState(scope,current=>({...current!,selections:selected}));
   const repaired=previous.pluginResults?.some(row=>previous.selections.plugins[row.client]&&['error','pending'].includes(row.status))?await applyClients(scope,selected,installPlugins):resumed;
-  await publishSetup(repaired);return result(repaired,launchHistory,inspectHooks);
+  await publishSetup(repaired);return result(repaired,launchHistory,inspectHooks,command);
  }
  const clients=setupInventory({api}),existing=readCaptureConfig(),legacyForward=existing?.api===api&&existing.owner.tenantId===scope.tenantId&&existing.owner.userId===scope.userId?(existing.disabled?[]:existing.harnesses??['claude-code','codex']):undefined;
  let selections=preserveRecordingOff(defaultSelections(clients,previous?.selections,legacyForward),scope);
  for(const group of ['plugins','forward','history'] as const)selections[group]=selectGroup(values[group]===undefined?undefined:String(values[group]),group,clients,selections);
  const files=historyFiles(api).filter(file=>selections.history[file.harness]),planId=planDigest(scope,selections,files);
- const plan={status:'confirmation_required',scope,clients,selections,historyBenefit,history:{files:files.length,bytes:files.reduce((n,f)=>n+f.bytes,0)},planId,humanTasks:await tasks(server,previous,inspectHooks),applyCommand:`opencrawl setup apply --api ${api} --plugins ${list(chosen(selections,'plugins'))} --forward ${list(chosen(selections,'forward'))} --history ${list(chosen(selections,'history'))} --plan-id ${planId} --yes --json`};
+ const plan={status:'confirmation_required',scope,clients,selections,historyBenefit,history:{files:files.length,bytes:files.reduce((n,f)=>n+f.bytes,0)},planId,humanTasks:await tasks(server,previous,inspectHooks),applyCommand:formatSetupCommand(['setup','apply','--api',api,'--plugins',list(chosen(selections,'plugins')),'--forward',list(chosen(selections,'forward')),'--history',list(chosen(selections,'history')),'--plan-id',planId,'--yes','--json'],command)};
  if(action==='run'&&interactive){
   const selected=await choose({title:'Choose your agent plugins',description:'Selected clients record new sessions as shown. Messages, tool results and attachments are shared with your signed-in workspace. Use ←/→ to change plugin and recording choices independently.',secondaryLabel:'Record new',items:clients.filter(client=>client.plugin||client.forward).map(client=>({id:client.id,label:client.label+(client.detected?'':' (not detected)'),selected:selections.plugins[client.id]===true,...(client.forward?{secondary:selections.forward[client.id]===true}:{})}))});
   if(selected===null)return {status:'cancelled',humanTasks:[]};
@@ -120,21 +129,21 @@ export async function setupCommand(action:string,api:string,values:Values,{login
   let state=await applyClients(scope,selections,installPlugins);
   const available=historyFiles(api),historyClients=clients.filter(client=>client.history&&available.some(file=>file.harness===client.id));
   const selectedHistory=await choose({title:'Choose past sessions to import',description:historyBenefit+'\nSelected history is shared with your signed-in workspace. Import continues in the background.',emptyMessage:'No local history found. Continuing without an import.',items:historyClients.map(client=>({id:client.id,label:client.label+` (${available.filter(file=>file.harness===client.id).length} files)`,selected:prospectiveHistory[client.id]===true}))});
-  if(selectedHistory===null)return {...await result(state,launchHistory,inspectHooks,false),historyDecision:'unchanged'};
+  if(selectedHistory===null)return {...await result(state,launchHistory,inspectHooks,command,false),historyDecision:'unchanged'};
   selections={...selections,history:Object.fromEntries(clients.map(client=>[client.id,selectedHistory.some(row=>row.id===client.id&&row.selected)]))};
-  state=await applyHistory(scope,selections,available.filter(file=>selections.history[file.harness]));return result(state,launchHistory,inspectHooks);
+  state=await applyHistory(scope,selections,available.filter(file=>selections.history[file.harness]));return result(state,launchHistory,inspectHooks,command);
  }
  if(action!=='apply')return plan;
  if(values.yes!==true)return plan;
- if(values['plan-id']!==undefined&&values['plan-id']!==planId)throw new CliError('SETUP_PLAN_CHANGED','The workspace, choices or available history changed. Review setup --json again before applying.',2);
+ if(values['plan-id']!==undefined&&values['plan-id']!==planId)throw new CliError('SETUP_PLAN_CHANGED',`The workspace, choices or available history changed. Review \`${formatSetupCommand(['setup','--api',api,'--json'],command)}\` again before applying.`,2);
  if(values['plan-id']===undefined&&!['plugins','forward','history'].every(group=>typeof values[group]==='string'))throw new CliError('SETUP_CONFIRMATION_REQUIRED','Use the applyCommand after the user confirms its choices, or specify all three selections with --yes.',64);
  await applyClients(scope,selections,installPlugins);
- return result(await applyHistory(scope,selections,files),launchHistory,inspectHooks);
+ return result(await applyHistory(scope,selections,files),launchHistory,inspectHooks,command);
 }
 export function formatSetupOutput(data:unknown):string{
  const value=data as {status?:string;humanTasks?:SetupHumanTask[];applyCommand?:string;agentPrompt?:string;history?:{state?:string}};
  if(value.agentPrompt)return `OpenCrawl setup saved.${value.history?.state==='queued'||value.history?.state==='running'?' History is importing in the background.':''}\nIn your primary coding agent, send:\n${value.agentPrompt}`;
- if(value.applyCommand)return 'Review setup --json, then run its applyCommand after confirming the choices.';
- if(value.status==='action_required')return value.humanTasks?.[0]?.instruction??'Sign in with opencrawl login.';
+ if(value.applyCommand)return 'Review the JSON setup plan, then run its applyCommand after confirming the choices.';
+ if(value.status==='action_required')return value.humanTasks?.[0]?.instruction??'Complete CLI sign-in before continuing setup.';
  return `Setup: ${value.status??'status'}${value.history?.state?'\nHistory: '+value.history.state:''}\nUse --json for the agent-readable details.`;
 }
