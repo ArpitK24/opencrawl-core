@@ -1,6 +1,7 @@
 import {readFileSync, existsSync, mkdirSync, writeFileSync, copyFileSync, unlinkSync, readdirSync, renameSync, statSync, chmodSync} from 'node:fs';
 import {join, dirname, resolve} from 'node:path';
 import {homedir} from 'node:os';
+import {isDeepStrictEqual} from 'node:util';
 import {removeLegacyService} from './legacy-service.ts';
 import {randomUUID} from 'node:crypto';
 import {HARNESSES, normalizeHarness, readsTranscript, type Harness, type TranscriptHarness} from './parse.ts';
@@ -13,6 +14,7 @@ import {workspaceIdentityEnabled} from '../workspace-identity.ts';
 import {ANTIGRAVITY_SURFACES, captureDir, readCaptureConfig, commandForSelf, request, harnessRoot, HOOK_MODE, type CaptureConfig} from './runtime.ts';
 import {captureNotice, grokBotNotice} from './policy.ts';
 import {hookRunner} from '../hook-runner.ts';
+import {reconcileHookEntries, reconcileHookGroups} from '../hook-config.ts';
 import {defaultClaudeDesktopSessionsRoot} from './desktop-history.ts';
 import {establishForwardBoundaries} from '../setup/watermarks.ts';
 const marker='OpenCrawl session capture';
@@ -23,8 +25,10 @@ function readJson(file:string){return existsSync(file)?JSON.parse(readFileSync(f
  * directory left as it is. */
 function writeHarnessJson(file:string,value:unknown) {
   const before=existsSync(file)?readFileSync(file,'utf8'):'';
+  if(before&&isDeepStrictEqual(JSON.parse(before),value))return;
   const text=before.trim();
   const indent=/\n([ \t]+)\S/.exec(text)?.[1]??(text&&!text.includes('\n')?'':'  ');
+  backup(file);
   mkdirSync(dirname(file),{recursive:true});
   replaceFile(file,(indent?JSON.stringify(value,null,indent):JSON.stringify(value))+'\n');
 }
@@ -33,18 +37,12 @@ type HookEntry={command:string,async?:boolean,timeout:number};
 function modifyHooks(file:string,events:string[],entry:((event:string)=>HookEntry)|null) {
   const config=readJson(file);
   if(config.hooks && (typeof config.hooks!=='object'||Array.isArray(config.hooks)))throw new CliError('CAPTURE_INVALID_CONFIG','Existing harness hooks config is invalid');
-  const hooks=config.hooks??{};
-  for(const [event,groups] of Object.entries(hooks)) {
-    if(!Array.isArray(groups))throw new CliError('CAPTURE_INVALID_CONFIG','Existing hook groups are invalid');
-    hooks[event]=groups.flatMap((group:any)=>{
-      if(!Array.isArray(group.hooks))return [group];
-      const remaining=group.hooks.filter((h:any)=>h.statusMessage!==marker);
-      return remaining.length?[{...group,hooks:remaining}]:[];
-    });
-    if(!hooks[event].length)delete hooks[event];
+  for(const groups of Object.values(config.hooks??{})) {
+    if(!Array.isArray(groups)||groups.some(group=>group==null||Array.isArray(group.hooks)&&group.hooks.some((hook:unknown)=>hook==null)))throw new CliError('CAPTURE_INVALID_CONFIG','Existing hook groups are invalid');
   }
-  if(entry)for(const event of events)(hooks[event]??=[]).push({hooks:[{type:'command',...entry(event),statusMessage:marker}]});
-  backup(file);writeHarnessJson(file,{...config,hooks});
+  const desired=entry?Object.fromEntries(events.map(event=>[event,{type:'command',...entry(event),statusMessage:marker}])):{};
+  const hooks=reconcileHookGroups(config.hooks??{},desired,h=>h!==null&&typeof h==='object'&&'statusMessage' in h&&h.statusMessage===marker);
+  writeHarnessJson(file,{...config,hooks});
 }
 const hookFile=(config:CaptureConfig,harness:Harness)=>harness==='claude-code'?join(harnessRoot(config,harness),'settings.json'):harness==='antigravity'?join(harnessRoot(config,harness),'config','hooks.json'):join(harnessRoot(config,harness),'hooks.json');
 export function antigravityDetected(home=homedir(),env:NodeJS.ProcessEnv=process.env):boolean {
@@ -73,7 +71,7 @@ function modifyAntigravityHooks(file:string,commandForEvent:((event:string)=>str
       Stop:[{type:'command',command:commandForEvent('Stop'),timeout:30}],
     };
   } else delete next['opencrawl-capture'];
-  backup(file);writeHarnessJson(file,next);
+  writeHarnessJson(file,next);
 }
 // Cursor-format entries have no label field; the command itself marks ownership.
 const cursorFormatOwned=(harness:string,entry:any)=>typeof entry?.command==='string'&&/[\\/]capture[\\/]runner\.(?:cjs|sh|cmd)\b.* collect hook .*--harness (cursor|grok-bot)\b/.exec(entry.command)?.[1]===harness;
@@ -83,17 +81,17 @@ function modifyCursorFormatHooks(file:string,command:string|null,harness:'cursor
   const config=readJson(file);
   if(!config||typeof config!=='object'||Array.isArray(config)||config.version!==undefined&&config.version!==1||
     config.hooks!==undefined&&(!config.hooks||typeof config.hooks!=='object'||Array.isArray(config.hooks)))throw new CliError('CAPTURE_INVALID_CONFIG','Existing hooks file is not a version 1 Cursor hooks file');
-  const hooks=config.hooks??{};
-  for(const [event,entries] of Object.entries(hooks)) {
+  for(const entries of Object.values(config.hooks??{})) {
     if(!Array.isArray(entries))throw new CliError('CAPTURE_INVALID_CONFIG','Existing hook entries are invalid');
-    hooks[event]=entries.filter(entry=>!cursorFormatOwned(harness,entry));
-    if(!hooks[event].length)delete hooks[event];
   }
   // Every hook is passive, so a failure or the timeout never blocks the Bot. The
   // hook ends itself at five seconds; the timeout leaves room for a sign-in
   // renewal that must not be abandoned.
-  if(command)for(const event of GROK_BOT_HOOK_EVENTS)(hooks[event]??=[]).push({command,timeout:30});
-  backup(file);replaceFile(file,JSON.stringify({...config,version:1,hooks},null,2)+'\n');
+  const desired=command?Object.fromEntries(GROK_BOT_HOOK_EVENTS.map(event=>[event,{command,timeout:30}])):{};
+  const hooks=reconcileHookEntries(config.hooks??{},desired,entry=>cursorFormatOwned(harness,entry));
+  const next={...config,version:1,hooks};
+  if(isDeepStrictEqual(config,next))return;
+  backup(file);replaceFile(file,JSON.stringify(next,null,2)+'\n');
 }
 /** For a file in another program's directory: new contents, same permissions,
  * and the directory left as it is. */

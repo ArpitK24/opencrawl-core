@@ -1,10 +1,12 @@
 import {existsSync, readFileSync, mkdirSync, writeFileSync, renameSync, unlinkSync, statSync, lstatSync, chmodSync} from 'node:fs';
 import {join, dirname, basename, isAbsolute, relative} from 'node:path';
 import {homedir} from 'node:os';
+import {isDeepStrictEqual} from 'node:util';
 import {randomUUID} from 'node:crypto';
 import {atomicFile, configDir} from './session.ts';
 import {commandForSelf} from './capture/runtime.ts';
 import {hookRunner} from './hook-runner.ts';
+import {reconcileHookEntries, reconcileHookGroups} from './hook-config.ts';
 import {retryWindowsSharing} from './filesystem.ts';
 
 export const startupMarker = 'OpenCrawl session startup';
@@ -92,28 +94,27 @@ export function startupHooks(clients: string[], action: 'status' | 'install', {h
       const cursorCommand=(process.platform==='win32'?'':'/bin/sh ')+quote(runner.file);
       const hook = {type:'command',...invocation,command:invocation.command+' session start --harness '+client,
         timeout: 7, statusMessage: startupMarker};
-      const hooks = {...config.hooks};
-      for (const [event, groups] of Object.entries(hooks)) {
+      for (const groups of Object.values(config.hooks ?? {})) {
         if (!Array.isArray(groups)) throw new Error();
-        hooks[event] = groups.flatMap(group => {
-          if(cursor)return typeof group?.command==='string'&&/[\\/]startup[\\/]runner\.(?:sh|cmd)\b.* session start --harness cursor$/.test(group.command)?[]:[group];
-          if (!Array.isArray(group?.hooks)) throw new Error();
-          const remaining = group.hooks.filter((entry: any) => entry?.statusMessage !== startupMarker);
-          return remaining.length ? [{...group, hooks: remaining}] : [];
-        });
-        if (!hooks[event].length) delete hooks[event];
+        if (!cursor && groups.some(group => !Array.isArray(group?.hooks))) throw new Error();
       }
-      if(cursor)(hooks.sessionStart ??= []).push({command:cursorCommand+' session start --harness cursor',timeout:7});
-      else (hooks.SessionStart ??= []).push({hooks: [hook]});
-      const current = JSON.stringify(config.hooks) === JSON.stringify(hooks) && existsSync(runner.file) && readFileSync(runner.file,'utf8')===runner.script;
+      const hooks = cursor
+        ? reconcileHookEntries(config.hooks ?? {}, {sessionStart: {command:cursorCommand+' session start --harness cursor',timeout:7}},
+          entry => entry !== null && typeof entry === 'object' && 'command' in entry && typeof entry.command === 'string' && /[\\/]startup[\\/]runner\.(?:sh|cmd)\b.* session start --harness cursor$/.test(entry.command))
+        : reconcileHookGroups(config.hooks ?? {}, {SessionStart: hook},
+          entry => entry !== null && typeof entry === 'object' && 'statusMessage' in entry && entry.statusMessage === startupMarker);
+      const next = {...config, ...(cursor?{version:1}:{}), hooks};
+      const hooksCurrent = isDeepStrictEqual(config, next);
+      const current = hooksCurrent && existsSync(runner.file) && readFileSync(runner.file,'utf8')===runner.script;
       if (action === 'status') return {client, file, status: current ? 'current' : before ? 'outdated' : 'missing'};
       if (current) return {client, file, status: 'unchanged'};
       if (existsSync(file) && lstatSync(file).isSymbolicLink()) throw new Error();
       runner.write();
+      if (hooksCurrent) return {client, file, status: 'installed'};
       // Keep a private recovery copy, original permissions and JSON indentation.
       if (before) atomicFile(join(configDir(), 'startup', 'backups', randomUUID() + '.json'), before);
       const indent = /\n([ \t]+)\S/.exec(before)?.[1] ?? (before && !before.includes('\n') ? '' : '  ');
-      const text = JSON.stringify({...config, ...(cursor?{version:1}:{}), hooks}, null, indent) + '\n';
+      const text = JSON.stringify(next, null, indent) + '\n';
       mkdirSync(root, {recursive: true});
       const temp = file + '.' + randomUUID() + '.tmp';
       try {
