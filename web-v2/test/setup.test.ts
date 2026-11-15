@@ -4,17 +4,34 @@ import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,rmSync} from
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
-import {clientSummary,historyLabel,setupCommands} from '../src/application/setup.tsx';
+import {clientSummary,historyLabel,setupCommands,pluginLabel,mcpLabel,clientNeedsAgent} from '../src/application/setup.tsx';
 import type {SetupStatus} from '../../src/application/types.mjs';
 
 type Client=SetupStatus['installations'][number]['clients'][number];
 const client:Client={client:'codex',installed:true,forward:true,history:'skip',historyProgress:{state:'not_started',completed:0},hookTrust:'trusted',mcp:{state:'authenticated'},proof:{state:'verified'},humanTasks:[]};
 test('past verification does not hide disabled recording, removed plugins, or outstanding human actions',()=>{
   assert.equal(clientSummary({...client,forward:false}).label,'Future recording off');
-  assert.equal(clientSummary({...client,installed:false,forward:false,history:'import'}).label,'History only');
+  assert.equal(clientSummary({...client,installed:false,forward:false,history:'import',mcp:{state:'pending'},proof:{state:'not_selected'}}).label,'History only');
   assert.equal(clientSummary({...client,humanTasks:[{id:'auth',kind:'mcp_auth',client:'codex',title:'Sign in',instruction:'Use native MCP authentication.'}]}).label,'Continue in your agent');
   assert.equal(clientSummary({...client,history:'import',historyProgress:{state:'failed',completed:7,total:20}}).tone,'danger');
   assert.equal(clientSummary({...client,history:'skip',historyProgress:{state:'failed',completed:7,total:20}}).label,'Verified');
+});
+test('native MCP and capture evidence remain visible before CLI activation is reported',()=>{
+  const observed={...client,installed:false,captureObservedAt:'2026-11-15T00:00:00Z'};
+  assert.equal(clientSummary(observed).label,'Session searchable');
+  assert.equal(pluginLabel(observed),'Activation not reported');
+  assert.equal(mcpLabel(observed),'Connected');
+  assert.equal(clientSummary({...observed,proof:{state:'waiting_index'}}).label,'Waiting for search');
+  assert.equal(mcpLabel({...observed,mcp:{state:'pending'}}),'Sign-in required');
+  const searchOnly:Client={...observed,forward:false,mcp:{state:'observed'},proof:{state:'not_selected'}};
+  assert.equal(clientSummary(searchOnly).label,'Future recording off');
+  assert.equal(mcpLabel(searchOnly),'Connection observed, capture not selected');
+  assert.equal(pluginLabel(searchOnly),'Activation not reported');
+  assert.equal(clientNeedsAgent(searchOnly),false);
+  assert.equal(clientNeedsAgent(observed),false);
+  const unbound={...observed,mcp:{state:'observed' as const}};
+  assert.equal(clientNeedsAgent(unbound),true);
+  assert.equal(clientSummary(unbound).label,'MCP verification pending');
 });
 test('history import progress stays distinct from live session verification',()=>{
   assert.equal(historyLabel({...client,history:'import',proof:{state:'pending'},historyProgress:{state:'complete',completed:12,total:12}}),'Import complete, 12 of 12 processed');
@@ -24,11 +41,14 @@ test('history import progress stays distinct from live session verification',()=
 test('setup and agent handoff target the selected server with shell-safe arguments',()=>{
   const commands=setupCommands('http://[::1]:4310/mcp');
   assert.equal(commands.setup,"opencrawl setup --api 'http://[::1]:4310'");
-  assert.ok(commands.handoff.includes("--api 'http://[::1]:4310' --json"));
+  assert.ok(commands.handoff.includes("--api 'http://[::1]:4310' --local --json"));
   assert.ok(!commands.setup.includes('app.getopencrawl.com'));
   assert.ok(commands.handoff.includes('opencrawl setup status'));
   assert.ok(commands.handoff.includes('--client CLIENT --json'));
   assert.ok(commands.handoff.includes('expect not_selected with no capture required'));
+  assert.ok(commands.handoff.includes('native installation_status MCP tool'));
+  assert.ok(commands.handoff.includes('native verify_installation with its proof.id as proofId'));
+  assert.ok(commands.handoff.includes('fallback only when shell network access is normally authorized'));
 });
 
 test('explicit start and CLI overrides stay paired and replace every executable handoff',()=>{

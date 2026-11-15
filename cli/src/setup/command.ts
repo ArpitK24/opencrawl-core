@@ -2,7 +2,7 @@ import {readFileSync} from 'node:fs';
 import {hostname,homedir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
-import {CliError} from '../oauth.ts';
+import {CliError,apiOrigin} from '../oauth.ts';
 import {atomicJson,withSessionLock} from '../session.ts';
 import {readCaptureConfig,captureDir} from '../capture/runtime.ts';
 import {installCapture} from '../capture/install.ts';
@@ -25,8 +25,8 @@ type Dependencies={command?:string[];login?:()=>Promise<unknown>;installPlugins?
 function historyFiles(api:string):HistoryFile[]{const previous=readCaptureConfig();return inventory(previous?.api===api?previous:{roots:{'claude-code':process.env.CLAUDE_CONFIG_DIR||join(homedir(),'.claude'),codex:process.env.CODEX_HOME||join(homedir(),'.codex'),antigravity:process.env.ANTIGRAVITY_HOME||join(homedir(),'.gemini')},claudeDesktopSessionsRoot:defaultClaudeDesktopSessionsRoot()},'all').files;}
 const list=(values:string[])=>values.length?values.join(','):'none';
 
-function preserveRecordingOff(selections:SetupSelections,scope:SetupScope):SetupSelections{
- const config=readCaptureConfig();if(!config||config.api!==scope.api||config.owner.tenantId!==scope.tenantId||config.owner.userId!==scope.userId)return selections;
+function preserveRecordingOff(selections:SetupSelections,scope:SetupScope,config=readCaptureConfig()):SetupSelections{
+ if(!config||config.api!==scope.api||config.owner.tenantId!==scope.tenantId||config.owner.userId!==scope.userId)return selections;
  const forward={...selections.forward};
  if(config.disabled)for(const client of Object.keys(forward))forward[client]=false;
  else {
@@ -35,6 +35,26 @@ function preserveRecordingOff(selections:SetupSelections,scope:SetupScope):Setup
   if(config.roots.antigravity)try{const hooks=JSON.parse(readFileSync(join(config.roots.antigravity,'config','hooks.json'),'utf8'));if(hooks['opencrawl-capture']?.enabled===false)forward.antigravity=false;}catch{}
  }
  return {...selections,forward};
+}
+
+/** A local binding is not a freshly authenticated principal or server proof. */
+function readLocalCaptureConfig(){
+ try{return readCaptureConfig();}catch{throw new CliError('SETUP_STATE_INVALID','Local capture configuration could not be read. Preserve it and repair the local file before continuing; no sign-in or setup was started.',2);}
+}
+export function localSetupStatus(requestedApi?:string){
+ const config=readLocalCaptureConfig();
+ if(!config)throw new CliError('SETUP_NOT_STARTED','No local capture installation is saved. Local status cannot verify setup; no choices or sign-in were changed.',2);
+ if(config.schemaVersion!==1||typeof config.api!=='string'||typeof config.owner?.tenantId!=='string'||!config.owner.tenantId||typeof config.owner?.userId!=='string'||!config.owner.userId||typeof config.installationId!=='string'||!config.installationId||config.installationId==='pending'||config.authPending)throw new CliError('SETUP_STATE_INVALID','Local capture has no complete saved installation binding. Preserve its configuration and finish the existing sign-in before continuing.',2);
+ const api=apiOrigin(requestedApi??config.api);
+ if(config.api!==api)throw new CliError('SETUP_SCOPE_CHANGED','The requested API differs from this local installation. No saved choices or credentials were changed.',2);
+ const scope={api:config.api,tenantId:config.owner.tenantId,userId:config.owner.userId};
+ let state:SetupState|null;
+ try{state=readSetupState(scope);}catch(error){if(error instanceof CliError)throw error;throw new CliError('SETUP_STATE_INVALID','Saved local setup choices are malformed. Preserve the file and repair it before continuing; no sign-in or setup was started.',2);}
+ if(!state)throw new CliError('SETUP_NOT_STARTED','No saved setup choices match this local installation owner and API. Preserve the current installation; local status did not start setup.',2);
+ if(state.scope.api!==scope.api||state.scope.tenantId!==scope.tenantId||state.scope.userId!==scope.userId||state.installationId!==config.installationId)throw new CliError('SETUP_SCOPE_CHANGED','Saved setup choices do not match the current installation, API and owner. No state was changed.',2);
+ const selections=preserveRecordingOff(state.selections,scope,config);
+ if(JSON.stringify(readLocalCaptureConfig())!==JSON.stringify(config))throw new CliError('SETUP_SCOPE_CHANGED','The local installation changed while reading status. Retry local status; no state was changed.',2);
+ return {status:'local_status',freshness:'local-only',serverChecked:false,scopeSource:'saved-capture-config',scope,installationId:config.installationId,savedSelections:state.selections,selections};
 }
 
 const planDigest=(scope:SetupScope,selections:SetupSelections,files:HistoryFile[])=>createHash('sha256').update(selectionDigest(scope,selections)+JSON.stringify(files)).digest('hex');
@@ -88,10 +108,11 @@ async function applyHistory(scope:SetupScope,selections:SetupSelections,files:Hi
 }
 async function result(state:SetupState,launchHistory:typeof startHistoryWorker,inspectHooks:typeof inspectCodexHooks,command:string[],start=true){
  const history=start?launchHistory(state):{state:state.historyJob?.state??'not_started'};
- const server=await readServerSetup(state.scope.api),statusCommand=formatSetupCommand(['setup','status','--api',state.scope.api,'--json'],command);
- return {status:state.pluginResults?.some(row=>['error','pending','prepared'].includes(row.status))?'needs_attention':'configured',scope:state.scope,installationId:state.installationId,selections:state.selections,plugins:state.pluginResults,history,humanTasks:await tasks(server,state,inspectHooks),historyBenefit,agentPrompt:`Continue OpenCrawl setup in this conversation. Use \`${formatSetupCommand([],command)}\` for every OpenCrawl command${process.platform==='win32'?' in PowerShell':''}. Start with \`${statusCommand}\` and guide me through one returned human task at a time. Reuse my saved choices. For clients with recording off (forward=false), complete the MCP connection without requiring a new session capture.`,nextStep:`Use \`${statusCommand}\` for history progress. Installation is not proof that a session is searchable.`};
+ const server=await readServerSetup(state.scope.api),statusCommand=formatSetupCommand(['setup','status','--local','--api',state.scope.api,'--json'],command);
+ return {status:state.pluginResults?.some(row=>['error','pending','prepared'].includes(row.status))?'needs_attention':'configured',scope:state.scope,installationId:state.installationId,selections:state.selections,plugins:state.pluginResults,history,humanTasks:await tasks(server,state,inspectHooks),historyBenefit,agentPrompt:`Continue OpenCrawl setup in this conversation. Use \`${formatSetupCommand([],command)}\` for every OpenCrawl command${process.platform==='win32'?' in PowerShell':''}. Start with \`${statusCommand}\` to read this machine's saved choices without network access. Then use the installed plugin's native installation_status tool for each selected client and follow its returned human tasks. Use its verify_installation tool for the returned proof. Reuse my saved choices. For clients with recording off (forward=false), complete the MCP connection without requiring a new session capture.`,nextStep:`Use \`${statusCommand}\` for saved local choices; server status comes from the native plugin. Installation is not proof that a session is searchable.`};
 }
 export async function setupCommand(action:string,api:string,values:Values,{command=setupCommandForSelf(),login,installPlugins=installSetupPlugins,launchHistory=startHistoryWorker,choose=chooseSetupItems,inspectHooks=inspectCodexHooks,interactive=Boolean(process.stdin.isTTY&&process.stderr.isTTY&&!values.json)}:Dependencies={}){
+ if(values.local!==undefined){if(values.local!==true||action!=='status')throw new CliError('INVALID_USAGE','Use --local only with setup status.',64);return localSetupStatus(api);}
  if(action==='worker'){if(typeof values['scope-key']!=='string')throw new CliError('INVALID_USAGE','Missing history scope.',64);const state=readStateKey(values['scope-key']);if(state?.scope.api!==api)throw new CliError('SETUP_SCOPE_CHANGED','History worker API does not match its approved scope.');await runHistoryWorker(values['scope-key']);return null;}
  if(!['run','plan','status','apply','resume','verify'].includes(action))throw new CliError('INVALID_USAGE','Use setup, setup --json, setup apply, setup status, setup resume, or setup verify.',64);
  let server;
@@ -145,6 +166,7 @@ export async function setupCommand(action:string,api:string,values:Values,{comma
 }
 export function formatSetupOutput(data:unknown):string{
  const value=data as {status?:string;humanTasks?:SetupHumanTask[];applyCommand?:string;agentPrompt?:string;history?:{state?:string}};
+ if(value.status==='local_status')return 'Setup: local-only saved state. The server and current authentication were not checked.\nUse --json for the installation binding and saved/effective choices.';
  if(value.agentPrompt)return `OpenCrawl setup saved.${value.history?.state==='queued'||value.history?.state==='running'?' History is importing in the background.':''}\nIn your primary coding agent, send:\n${value.agentPrompt}`;
  if(value.applyCommand)return 'Review the JSON setup plan, then run its applyCommand after confirming the choices.';
  if(value.status==='action_required')return value.humanTasks?.[0]?.instruction??'Complete CLI sign-in before continuing setup.';

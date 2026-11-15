@@ -14,6 +14,7 @@ Import past sessions so your agents can find previous decisions, fixes, and cont
   --plan-id ID    Bind consent to the exact scope, choices and history preview
   --yes          Apply only after the user confirms the displayed choices
   setup status   Read saved choices, human tasks and background import progress
+  setup status --local --json  Read only the exact saved installation and effective choices; no network or server verification
   setup resume   Resume a previously approved, interrupted history job
   setup verify --client ID  Prove a fresh native session is searchable
 

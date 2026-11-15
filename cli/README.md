@@ -44,7 +44,14 @@ separate steps. Migration preserves queued data, foreign hooks and trust choices
 
 Continue in your primary coding agent for native hook review, MCP sign-in, and
 verification. The agent reads saved choices instead of repeating setup questions.
-`opencrawl setup status --json` reports progress; `opencrawl setup resume` retries
+`opencrawl setup status --json` reports progress.
+`opencrawl setup status --local --json` reads the exact saved installation and
+choices without network access, token refresh, child processes, or writes. Its
+`selections` respect local recording opt-outs; `savedSelections` retain the
+accepted choices. `serverChecked: false` and `freshness: "local-only"` mean the
+saved owner is not a freshly authenticated principal and no server proof is claimed.
+Missing or mismatched local state fails without restarting setup.
+`opencrawl setup resume` retries
 approved work. `opencrawl verify-installation --client codex --json` verifies the
 current installation without treating CLI login or plugin files as proof of capture.
 The permanent Setup page tracks each machine and client without blocking the app.

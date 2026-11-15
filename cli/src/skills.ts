@@ -63,7 +63,7 @@ Prefer the native installer: on macOS/Linux, run \`curl -fsSL https://raw.github
 
 ## Continue setup
 
-When helping with setup, read [the setup guide](references/setup.md). Reuse the CLI’s saved plugin, future-recording and history selections. Guide only the remaining native human action, such as hook trust or MCP authentication, then use \`opencrawl verify-installation\` for observed progress. Never repeat the setup questionnaire or substitute a connection ping for a searchable new session.
+When helping with setup, read [the setup guide](references/setup.md). Reuse the CLI’s saved plugin, future-recording and history selections from local setup status. Guide only the remaining native human action, such as hook trust or MCP authentication, then use native MCP installation_status and verify_installation for observed progress. The CLI's verify-installation is also available with normally authorized network access. Never repeat the setup questionnaire or substitute a connection ping for a searchable new session.
 
 ## Session startup and notifications
 

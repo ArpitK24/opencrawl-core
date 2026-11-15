@@ -9,7 +9,7 @@ test('setup guides preserve the actual invocation and quote client/server argume
  for(const platform of ['linux','win32'] as const){
   const command=[platform==='win32'?"C:\\Private install's\\opencrawl.cmd":"/private install's/bin/opencrawl"];
   const guide=setupAgentGuide('codex',api,command,platform);
-  for(const args of [['setup','status','--json'],['setup','resume','--json'],['setup'],['verify-installation','--client','codex','--json']]){
+  for(const args of [['setup','status','--local','--json'],['setup','status','--json'],['setup','resume','--json'],['setup'],['verify-installation','--client','codex','--json']]){
    expect(guide).toContain('`'+formatSetupCommand([...args,'--api',api],command,platform)+'`');
   }
   expect(guide).not.toMatch(/`opencrawl (setup|verify-installation)/);
@@ -17,13 +17,21 @@ test('setup guides preserve the actual invocation and quote client/server argume
   expect(guide).toContain('complete MCP sign-in and tool proof, expect not_selected');
   expect(guide).toContain('do not require or enable new capture');
   expect(guide).toContain('Preserve skipped history');
+  expect(guide).toContain('native OpenCrawl MCP `installation_status`');
+  expect(guide).toContain('same installationId/client and the returned proof.id as proofId');
+  expect(guide).toContain('Unavailable CLI access does not block the native MCP path');
+  expect(guide).toContain('never shell requests or another client');
+  expect(guide).toContain('BOTH proof.state=verified AND mcp.state=authenticated');
+  expect(guide).toContain('proof.state=not_selected with mcp.state=observed is sufficient');
+  expect(guide).toContain('If they disagree, preserve local recording opt-outs');
+  expect(guide).toContain('do not follow a stale capture task or claim completion');
  }
 });
 
 test('standalone setup reference uses the current executable without hardcoding another server',()=>{
  const guide=skillFiles()['references/setup.md'];
  expect(guide).toBe(setupAgentGuide());
- expect(guide).toContain('`'+formatSetupCommand(['setup','status','--json'])+'`');
+ expect(guide).toContain('`'+formatSetupCommand(['setup','status','--local','--json'])+'`');
  expect(guide).toContain('`'+formatSetupCommand(['verify-installation','--client','<this-client>','--json'])+'`');
  expect(guide).not.toContain('--api');
 });

@@ -21,12 +21,19 @@ export function setupCommands(mcpUrl:string, windows=false, setupStartCommand?:s
     : `opencrawl_installer=$(curl -fsSL ${NATIVE_INSTALL_SH}) &&\nprintf '%s' "$opencrawl_installer" | sh &&\n${nativePathCommand(false)}`;
   return {
     setup,install,start:startOverride??(windows?`& {\n${install}\n${setup}\nif ($LASTEXITCODE -ne 0) { throw 'OpenCrawl setup failed' }\n}`:`${install} &&\n${setup}`),
-    handoff:`Continue my OpenCrawl setup in this conversation. Run ${cli} setup status${suffix} --json and reuse my saved choices. Use ${cli} for every OpenCrawl command. For each client selected for a plugin or future recording, run ${cli} verify-installation${suffix} --client CLIENT --json, replacing CLIENT with that client's exact ID from setup status, to read its proof and status. Require a new searchable session only when future recording is enabled. When future recording is off, preserve that choice, complete only MCP sign-in and tool proof, and expect not_selected with no capture required. Preserve skipped history and let history-only imports continue in the background. Guide only the next required native human action without repeating completed steps.`,
+    handoff:`Continue my OpenCrawl setup in this conversation. Run ${cli} setup status${suffix} --local --json to read my installationId and saved choices without network access. Use ${cli} for every OpenCrawl command. For this client selected for a plugin or future recording, guide only the next native hook-trust or MCP sign-in step, then call this deployment's native installation_status MCP tool with installationId and client. Call native verify_installation with its proof.id as proofId, include proof.marker in a normal assistant message if recording is enabled, and check installation_status for authenticated capture and search evidence. Keep verification in this client's native conversation. When future recording is off, preserve that choice, complete only MCP sign-in and tool proof, and expect not_selected with no capture required. Preserve skipped history and let history-only imports continue in the background. Local status does not prove current authentication or server progress. Reuse saved choices without repeating completed steps or changing sandbox permissions. If native installation_status is unavailable, ${cli} verify-installation${suffix} --client CLIENT --json is the fallback only when shell network access is normally authorized.`,
   };
 }
 export function clientSummary(client:Client):{label:string;tone:'neutral'|'success'|'warning'|'danger'} {
   if(client.history==='import'&&client.historyProgress.state==='failed')return {label:'Import needs attention',tone:'danger'};
   if(client.humanTasks.length)return {label:'Continue in your agent',tone:'warning'};
+  if(client.forward&&client.proof.state==='verified'&&client.mcp.state!=='authenticated')return {label:'MCP verification pending',tone:'warning'};
+  // A sandboxed agent may verify over native MCP before the CLI can publish its
+  // next activation observation. Do not hide that evidence or infer installation.
+  if(!client.installed&&client.forward&&client.proof.state==='verified')return {label:'Session searchable',tone:'success'};
+  if(!client.installed&&client.forward&&client.proof.state==='waiting_index')return {label:'Waiting for search',tone:'neutral'};
+  if(!client.installed&&client.forward&&client.proof.state==='waiting_capture')return {label:'Waiting for a new session',tone:'neutral'};
+  if(!client.forward&&client.mcp.state!=='pending')return {label:'Future recording off',tone:'neutral'};
   if(!client.installed&&client.history==='import')return {label:'History only',tone:'neutral'};
   if(!client.installed)return {label:'Not installed',tone:'neutral'};
   if(!client.forward)return {label:'Future recording off',tone:'neutral'};
@@ -34,6 +41,20 @@ export function clientSummary(client:Client):{label:string;tone:'neutral'|'succe
   if(client.proof.state==='waiting_index')return {label:'Waiting for search',tone:'neutral'};
   if(client.proof.state==='waiting_capture')return {label:'Waiting for a new session',tone:'neutral'};
   return {label:'Verification pending',tone:'neutral'};
+}
+export function pluginLabel(client:Client):string {
+  if(client.installed)return 'Installed';
+  return client.captureObservedAt||client.mcp.state!=='pending'||client.proof.state==='verified'?'Activation not reported':'Not installed';
+}
+export function mcpLabel(client:Client):string {
+  if(client.mcp.state==='authenticated')return 'Connected';
+  if(client.mcp.state==='observed')return client.forward?'Connection observed, client verification pending':'Connection observed, capture not selected';
+  return client.installed||client.forward||client.proof.id?'Sign-in required':'Not selected';
+}
+export function clientNeedsAgent(client:Client):boolean {
+  return client.humanTasks.length>0||client.history==='import'&&client.historyProgress.state==='failed'||
+    Boolean(client.installed||client.forward||client.proof.id)&&client.mcp.state==='pending'||
+    client.forward&&(client.proof.state!=='verified'||client.mcp.state!=='authenticated');
 }
 export function historyLabel(client:Client):string {
   if(client.history==='skip')return 'Not selected';
@@ -57,9 +78,9 @@ function ClientRow({client}: {client:Client}) {
     <p className="muted">Future recording {client.forward?'on':'off'}. History: {historyLabel(client)}.</p>
     <details className="oc-disclosure"><summary>Connection and import status</summary>
       <dl className="oc-status-facts">
-        <div><dt>Plugin</dt><dd>{client.installed?'Installed':'Not installed'}</dd></div>
+        <div><dt>Plugin</dt><dd>{pluginLabel(client)}</dd></div>
         <div><dt>Hook trust</dt><dd>{!client.forward?'Not required':client.captureObservedAt?'Capture observed':hookLabel}</dd></div>
-        <div><dt>MCP sign-in</dt><dd>{!client.installed?'Not selected':client.mcp.state==='authenticated'?'Connected':client.mcp.state==='observed'?(client.forward?'Connection observed, client verification pending':'Connection observed, capture not selected'):'Sign-in required'}</dd></div>
+        <div><dt>MCP sign-in</dt><dd>{mcpLabel(client)}</dd></div>
         <div><dt>Verification</dt><dd>{proofLabel}</dd></div>
         <div><dt>History import</dt><dd>{historyLabel(client)}</dd></div>
       </dl>
@@ -75,7 +96,7 @@ export function SetupPage({api,mcpUrl,setupStartCommand,setupCliCommand}: {api:P
   const commands=setupCommands(mcpUrl,typeof navigator!=='undefined'&&/Windows/.test(navigator.userAgent),setupStartCommand,setupCliCommand);
   const status=resource.data;
   const hasInstallations=Boolean(status?.installations.length);
-  const needsAgent=Boolean(status?.installations.some(installation=>installation.clients.some(client=>client.humanTasks.length>0||client.history==='import'&&client.historyProgress.state==='failed'||client.installed&&client.mcp.state==='pending'||client.forward&&client.proof.state!=='verified')));
+  const needsAgent=Boolean(status?.installations.some(installation=>installation.clients.some(clientNeedsAgent)));
   const [copied,setCopied]=useState(false),[handoffOpen,setHandoffOpen]=useState(false);
   const handoff=useRef<HTMLDetailsElement>(null);
   useEffect(()=>{if(!copied)return;const timer=setTimeout(()=>setCopied(false),2_000);return()=>clearTimeout(timer);},[copied]);

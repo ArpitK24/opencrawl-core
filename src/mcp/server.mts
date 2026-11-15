@@ -4,7 +4,7 @@ import {serviceError} from '../sessions/types.mjs';
 import type {createWorkspaceSearch} from '../search/workspace.mjs';
 import type {createBoard} from '../board/board.mjs';
 import type {createSetupStatus} from '../setup/status.mjs';
-import {setupMcpVerifySchema} from '../setup/status.mjs';
+import {setupMcpVerifySchema, setupVerifySchema} from '../setup/status.mjs';
 export interface McpExchange {method: string; tool: string | null}
 export interface McpClientInfo {name?: unknown; version?: unknown}
 interface RpcEnvelope {method?: string; params?: {name?: unknown; clientInfo?: McpClientInfo; _meta?: Record<string, McpClientInfo>}}
@@ -17,7 +17,7 @@ export interface McpOptions {
  onObservationError?: (event: McpExchange & {event: string; reason: string}) => unknown | Promise<unknown>;
  board?: ReturnType<typeof createBoard>;
  search?: ReturnType<typeof createWorkspaceSearch>;
- setup?: Pick<ReturnType<typeof createSetupStatus>, 'mcp'>;
+ setup?: Pick<ReturnType<typeof createSetupStatus>, 'mcp'> & Partial<Pick<ReturnType<typeof createSetupStatus>, 'verify'>>;
  /** Runtime-owned tools share this transport's authentication and request-local principal. */
  registerTools?: (server: McpServer, principal: () => Principal) => void;
 }
@@ -59,9 +59,19 @@ export function createOpenCrawlMcp({authenticate, origin, revision = 'developmen
       if (onConnectionTest) await onConnectionTest(context.getStore()!);
       return {content: [{type: 'text', text: JSON.stringify(result)}], structuredContent: result};
     });
+    const installationStatus = setup?.verify;
+    if (installationStatus) server.registerTool('installation_status', {
+      title:'Check this OpenCrawl installation',
+      description:'Begin or check verification for this installation and client using the authenticated native MCP connection. Get installationId and saved choices from the CLI bootloader or setup status --local. Returns the current proofId and, when recording is selected, a fresh-message marker. Call verify_installation with that proofId from this same native client, include the marker in a normal assistant message, then check here again after native capture runs. This tool checks authorized search/fetch; it does not prove native MCP use by itself, install plugins, change recording/history choices, grant sandbox permissions, or copy CLI credentials. Leave other clients pending until each performs its own verification.',
+      inputSchema:setupVerifySchema,
+      annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
+    },async input=>{
+      try {const result=await installationStatus(context.getStore()!,input);return {content:[{type:'text',text:JSON.stringify({installationId:input.installationId,...result})}],structuredContent:{installationId:input.installationId,...result}};}
+      catch(failure) {const error=serviceError(failure);return {isError:true,content:[{type:'text',text:[400,409].includes(error.status??0)?error.message:'Installation status unavailable or access denied.'}]};}
+    });
     if (setup) server.registerTool('verify_installation', {
       title:'Verify this OpenCrawl installation',
-      description:'Bind this authenticated MCP call to one installation and client proof issued by opencrawl verify-installation. Call from that client’s native conversation. The server waits for its native captured tool result and an authorized search/fetch of a new message; this call alone does not establish success. Never use another client’s proof or write synthetic capture files.',
+      description:'Bind this authenticated MCP call to one installation and client proof issued by installation_status or the CLI verify-installation command. Call from that client’s native conversation. The server waits for its native captured tool result and an authorized search/fetch of a new message; this call alone does not establish success. Never use another client’s proof or write synthetic capture files.',
       inputSchema:setupMcpVerifySchema,
       annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
     },async input=>{

@@ -150,10 +150,10 @@ test('setup plans, handoffs and sign-in keep the selected launcher and saved sea
   const handoff=result as {agentPrompt:string;nextStep:string};
   expect(handoff.agentPrompt).toContain('in this conversation');
   expect(handoff.agentPrompt).toContain('Use `'+formatSetupCommand([],command)+'` for every OpenCrawl command');
-  expect(handoff.agentPrompt).toContain('Start with `'+formatSetupCommand(['setup','status','--api',api,'--json'],command)+'`');
+  expect(handoff.agentPrompt).toContain('Start with `'+formatSetupCommand(['setup','status','--local','--api',api,'--json'],command)+'`');
   expect(handoff.agentPrompt).toContain('recording off (forward=false)');
   expect(handoff.agentPrompt).toContain('without requiring a new session capture');
-  expect(handoff.nextStep).toContain(formatSetupCommand(['setup','status','--api',api,'--json'],command));
+  expect(handoff.nextStep).toContain(formatSetupCommand(['setup','status','--local','--api',api,'--json'],command));
  }
  delete process.env.OPENCRAWL_TOKEN;
  const login=await setupCommand('run',api,{json:true},{command,interactive:false}) as {humanTasks:{instruction:string}[]};

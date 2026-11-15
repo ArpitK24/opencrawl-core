@@ -62,6 +62,25 @@ test('failed status reads retain the page and retry without blocking navigation'
   await expect(page.getByText('No installations yet')).toBeVisible();
 });
 
+test('native MCP verification stays visible while CLI activation reporting is pending',async({page})=>{
+  const installation=partial.installations[0]!;
+  const codex={...installation.clients[0]!,installed:false,history:'skip' as const,captureObservedAt:now};
+  await start(page,{...partial,installations:[{...installation,clients:[codex]}]});
+  const row=page.locator('.oc-status-row');
+  await expect(row.getByText('Session searchable',{exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Continue with your agent',exact:true})).toHaveCount(0);
+  await row.getByText('Connection and import status').click();
+  await expect(row.getByText('Activation not reported',{exact:true})).toBeVisible();
+  await expect(row.getByText('Connected',{exact:true})).toBeVisible();
+  await expect(row.getByText('Installed',{exact:true})).toHaveCount(0);
+  await expect(row.getByText('Not selected',{exact:true})).toBeVisible();
+  for(const state of ['pending','observed'] as const){
+    await start(page,{...partial,installations:[{...installation,clients:[{...codex,mcp:{state}}]}]});
+    await expect(page.getByRole('button',{name:'Continue with your agent',exact:true})).toBeVisible();
+    await expect(page.getByText('MCP verification pending',{exact:true})).toBeVisible();
+  }
+});
+
 test('legacy setup URLs open permanent Setup and preserve workspace navigation',async({page})=>{
   await page.request.post('/__test/reset',{data:{}});
   for(const path of ['/onboarding','/settings']){
