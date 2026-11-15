@@ -21,6 +21,7 @@ import {migrateLegacyLauncher,findLegacyLaunchers} from './legacy-migration.ts';
 import {join} from 'node:path';
 import {atomicJson} from './session.ts';
 import {sessionStartCommand} from './session-start.ts';
+import {hasPluginContext} from './setup/plugin-context.ts';
 import {setupCommand,formatSetupOutput} from './setup/command.ts';
 import {wakeApprovedHistory} from './setup/history-worker.ts';
 import {verifyInstallation,formatInstallationVerification} from './verify-installation.ts';
@@ -231,8 +232,10 @@ export async function loginIdentity(api:string,options:{organizationId?:string;n
 
 export async function main(args = process.argv.slice(2)) {
   if (args[0] === 'session' && args[1] === 'start') {
-    await automaticNativeMigration();
-    try{wakeApprovedHistory();}catch{}
+    if(!hasPluginContext()&&readCaptureConfig()?.hookOwnership!=='plugin'){
+      await automaticNativeMigration();
+      try{wakeApprovedHistory();}catch{}
+    }
     return sessionStartCommand(args.slice(2));
   }
   // Process-owned work overlaps commands and async hooks. It is cancelled when
@@ -279,19 +282,20 @@ export async function main(args = process.argv.slice(2)) {
     if(command!=='install')await automaticNativeMigration();
     if(command==='install'){if(!compiled())throw new CliError('INSTALL_UNAVAILABLE','Run install from a released executable.');const data=await installBinary();await agentSkills('refresh',apiOrigin((parsed.values.api as string|undefined)??process.env.OPENCRAWL_API_URL??readCaptureConfig()?.api??DEFAULT_API_ORIGIN),{});emit(data,`Installed opencrawl ${data.version} at ${data.path}. Add its directory to PATH if needed.`);return 0;}
     if(command==='update'){const data=await updateCli();emit(data,data.updated?`Installed opencrawl ${data.version}. Your next invocation will use it.`:`opencrawl ${data.version} is current.`);return 0;}
-    updateJob=scheduleCliUpdate();
+    const pluginHookInvocation=hasPluginContext()||command==='collect'&&parsed.positionals[1]==='hook'&&readCaptureConfig()?.hookOwnership==='plugin';
+    if(!pluginHookInvocation)updateJob=scheduleCliUpdate();
     const api = apiOrigin((parsed.values.api as string | undefined) ?? process.env.OPENCRAWL_API_URL
       ?? readCaptureConfig()?.api
       ?? DEFAULT_API_ORIGIN);
     if(!['login','logout','status','whoami','skills','collect'].includes(command))try{wakeApprovedHistory();}catch{}
-    if(command!=='collect'&&command!=='skills'&&process.env.OPENCRAWL_NO_UPDATE!=='1')await refreshManagedSkills(api);
+    if(command!=='collect'&&command!=='skills'&&process.env.OPENCRAWL_NO_UPDATE!=='1'&&!hasPluginContext()&&readCaptureConfig()?.hookOwnership!=='plugin')await refreshManagedSkills(api);
     if (command === 'skills') {
       const data = await agentSkills(parsed.positionals[1] ?? 'status', api, {clients: parsed.values.client as string[] | undefined});
       emit(data, JSON.stringify(data, null, 2));
       return data.results.some(result => ['conflict', 'error'].includes(result.status)) ? 1 : 0;
     }
     return await withEnvironmentTokenOrigin((parsed.values.api as string|undefined) ?? process.env.OPENCRAWL_API_URL, async () => {
-    if(!organizationId&&command!=='skills'&&command!=='logout'&&!localCollect&&!parsed.values['dry-run']&&!localHook)memoryJob.current=scheduleMemoryRefresh();
+    if(!pluginHookInvocation&&!organizationId&&command!=='skills'&&command!=='logout'&&!localCollect&&!parsed.values['dry-run']&&!localHook)memoryJob.current=scheduleMemoryRefresh();
     if (command === 'board') {
       if(parsed.positionals[1]==='fetch'&&parsed.positionals.length>2){
         if(parsed.values.id)throw new CliError('INVALID_USAGE','Use positional references or --id, not both. See opencrawl board fetch --help.',64);
@@ -380,7 +384,7 @@ export async function main(args = process.argv.slice(2)) {
     memoryJob.current?.stop();
     await updateJob?.stop();
     // Upgrade only our hook settings locally; never launch an unowned process.
-    if(!informational && args[0]!=='collect' && args[0]!=='logout' && args[0]!=='skills' && args[0]!=='setup' && args[0]!=='verify-installation')try{await upgradeCaptureHooks();}catch{}
+    if(!informational && args[0]!=='collect' && args[0]!=='logout' && args[0]!=='skills' && args[0]!=='setup' && args[0]!=='verify-installation')try{if(!hasPluginContext()&&readCaptureConfig()?.hookOwnership!=='plugin')await upgradeCaptureHooks();}catch{}
   }
 }
 
@@ -397,10 +401,11 @@ async function refreshManagedSkills(api:string){
 }
 
 async function automaticNativeMigration(){
-  if(!compiled()||process.env.OPENCRAWL_NO_UPDATE==='1')return;
+  if(!compiled()||process.env.OPENCRAWL_NO_UPDATE==='1'||hasPluginContext())return;
   let attention=false;
   try{
     const config=readCaptureConfig();
+    if(config?.hookOwnership==='plugin')return;
     const launchers=findLegacyLaunchers([process.env.OPENCRAWL_LAUNCHER,config?.command.find(part=>part.endsWith('/opencrawl.cjs')||part.endsWith('\\opencrawl.cjs'))]);
     if(!launchers.length)return;
     let changed=false;

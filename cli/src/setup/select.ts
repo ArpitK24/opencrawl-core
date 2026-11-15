@@ -11,8 +11,9 @@ export function applySelectionKey(state:SelectionCursor,key:SelectionKey):Select
  if(key==='left')column=0;
  if(key==='right'&&items.some(item=>item.secondary!==undefined))column=1;
  const field=column===1?'secondary':'selected';
- if(key==='space'&&items[index][field]!==undefined)items[index][field]=!items[index][field];
- if(key==='a'||key==='n')for(const item of items)if(item[field]!==undefined)item[field]=key==='a';
+ const select=(item:SelectionItem,value:boolean)=>{item[field]=value;if(field==='selected'&&!value&&item.secondary!==undefined)item.secondary=false;if(field==='secondary'&&value)item.selected=true;};
+ if(key==='space'&&items[index][field]!==undefined)select(items[index],!items[index][field]);
+ if(key==='a'||key==='n')for(const item of items)if(item[field]!==undefined)select(item,key==='a');
  return {items,index,column};
 }
 /** Native terminal keyboard selection; Enter is the single confirmation for this screen. */

@@ -4,10 +4,12 @@ import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync,existsSync} from
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {publishSetup,type SetupServerStatus} from '../src/setup/api.ts';
-import {inspectCodexHooks,type CodexHookReview} from '../src/capture/codex-hooks.ts';
+import {type CodexHookReview} from '../src/capture/codex-hooks.ts';
 import {setupCommand,formatSetupOutput,formatSetupCommand} from '../src/setup/command.ts';
 import {readSetupState,historyBenefit,type SetupState} from '../src/setup/state.ts';
 import {readCaptureConfig,captureDir} from '../src/capture/runtime.ts';
+import {installCapture} from '../src/capture/install.ts';
+import {hookRunner} from '../src/hook-runner.ts';
 import {applySelectionKey,type SelectionCursor} from '../src/setup/select.ts';
 import type {SelectionScreen} from '../src/setup/select.ts';
 type ClientStatus=SetupServerStatus['installations'][number]['clients'][number];
@@ -29,12 +31,14 @@ async function fixture(run:(api:string,dir:string,observations:unknown[],setCode
   await run(api,dir,observations,patch=>{codexPatch=patch;});
  }finally{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));for(const key of Object.keys(process.env))if(!(key in saved))delete process.env[key];Object.assign(process.env,saved);rmSync(dir,{recursive:true,force:true});}
 }
-test('keyboard multiselect toggles plugins and recording independently with all/none shortcuts',()=>{
+test('keyboard selection keeps recording dependent on plugins and permits search-only plugins',()=>{
  let state:SelectionCursor={index:0,column:0,items:[{id:'codex',label:'Codex',selected:true,secondary:false},{id:'cursor',label:'Cursor',selected:true,secondary:true}]};
- state=applySelectionKey(state,'n');expect(state.items.map(item=>item.selected)).toEqual([false,false]);expect(state.items.map(item=>item.secondary)).toEqual([false,true]);
- state=applySelectionKey(state,'right');state=applySelectionKey(state,'space');expect(state.items[0]).toMatchObject({selected:false,secondary:true});
- state=applySelectionKey(state,'down');state=applySelectionKey(state,'space');expect(state.items[1].secondary).toBe(false);
- state=applySelectionKey(state,'left');state=applySelectionKey(state,'a');expect(state.items.every(item=>item.selected)).toBe(true);
+ state=applySelectionKey(state,'n');expect(state.items.map(item=>item.selected)).toEqual([false,false]);expect(state.items.map(item=>item.secondary)).toEqual([false,false]);
+ state=applySelectionKey(state,'right');state=applySelectionKey(state,'space');expect(state.items[0]).toMatchObject({selected:true,secondary:true});
+ state=applySelectionKey(state,'down');state=applySelectionKey(state,'space');expect(state.items[1]).toMatchObject({selected:true,secondary:true});
+ state=applySelectionKey(state,'space');expect(state.items[1]).toMatchObject({selected:true,secondary:false});
+ state=applySelectionKey(state,'left');state=applySelectionKey(state,'n');expect(state.items.every(item=>!item.selected&&!item.secondary)).toBe(true);
+ state=applySelectionKey(state,'a');expect(state.items.every(item=>item.selected&&!item.secondary)).toBe(true);
 });
 test('structured plan has no enrollment effects; apply requires explicit consent and unchanged history snapshot',async()=>fixture(async(api,dir,observations)=>{
  const plan=await setupCommand('run',api,{json:true});expect(plan).toMatchObject({status:'confirmation_required',historyBenefit});expect(observations).toHaveLength(0);expect(readCaptureConfig()).toBeNull();expect(existsSync(join(dir,'config','setup'))).toBe(false);
@@ -47,8 +51,9 @@ test('two interactive screens install plugins first and queue approved history o
   screens.push(screen);steps.push('choose:'+screens.length);
   if(screens.length===1){expect(readSetupState({api,tenantId:'tenant',userId:'user'})).toBeNull();return screen.items.map(item=>({...item,selected:item.id==='codex',secondary:item.id==='codex'}));}
   expect(steps).toEqual(['choose:1','install','choose:2']);expect(launched).toHaveLength(0);expect(readSetupState({api,tenantId:'tenant',userId:'user'})?.historyJob).toBeUndefined();expect(screen.description.split('\n')[0]).toBe(historyBenefit);expect(screen.items.find(item=>item.id==='codex')?.selected).toBe(true);return screen.items;
- },installPlugins:async(_api,selected)=>{steps.push('install');expect(selected).toEqual(['codex']);return {results:[{client:'codex',status:'installed'}],humanTasks:[]};},launchHistory:state=>{steps.push('history');launched.push(state);return {state:'queued',jobId:state.historyJob?.id};}});
+ },installPlugins:async(_api,selected,options)=>{steps.push('install');expect(selected).toEqual(['codex']);expect(readCaptureConfig()).toMatchObject({hookOwnership:'plugin',harnesses:['codex']});expect(readCaptureConfig()?.command).toEqual(options?.command);return {results:[{client:'codex',status:'installed'}],humanTasks:[]};},launchHistory:state=>{steps.push('history');launched.push(state);return {state:'queued',jobId:state.historyJob?.id};}});
  expect(steps).toEqual(['choose:1','install','choose:2','history']);expect(observations).toHaveLength(2);expect(launched[0].historyJob?.files).toHaveLength(1);expect(launched[0].selections.forward.codex).toBe(true);expect(formatSetupOutput(result)).toContain('In your primary coding agent');
+ for(const file of [join(dir,'codex','hooks.json'),join(dir,'codex','config.toml'),join(dir,'config','opencrawl','capture','runner.sh'),join(dir,'codex','skills','opencrawl','SKILL.md')])expect(existsSync(file)).toBe(false);
 }));
 test('cancelling history preserves the confirmed clients and never starts a new import',async()=>fixture(async(api)=>{
  let screens=0,launches=0;
@@ -77,7 +82,7 @@ test('setup observations request native hook trust only for clients with a trust
  expect(Object.fromEntries(clients.map(client=>[client.client,client.hookTrust]))).toEqual({'claude-code':'not_required',codex:'pending',cursor:'not_required',antigravity:'not_required'});
 }));
 
-const nativeUnknown=async(root:string)=>inspectCodexHooks(root,async()=>{throw new Error('native inventory unavailable');});
+const nativeUnknown=async():Promise<CodexHookReview>=>({state:'unknown',total:8,pending:null,disabled:null});
 const nativeDisabled=async():Promise<CodexHookReview>=>({state:'observed',total:8,pending:0,disabled:8});
 const nativeChanged=async():Promise<CodexHookReview>=>({state:'observed',total:8,pending:2,disabled:1});
 const setupCodex:NonNullable<Parameters<typeof setupCommand>[3]>={installPlugins:async()=>({results:[{client:'codex',status:'installed'}],humanTasks:[]}),launchHistory:()=>({state:'not_started'}),inspectHooks:nativeUnknown};
@@ -154,4 +159,46 @@ test('setup plans, handoffs and sign-in keep the selected launcher and saved sea
  const login=await setupCommand('run',api,{json:true},{command,interactive:false}) as {humanTasks:{instruction:string}[]};
  expect(login.humanTasks[0].instruction).toContain(formatSetupCommand(['login','--api',api],command));
  expect(login.humanTasks[0].instruction).toContain(formatSetupCommand(['setup','--api',api,'--json'],command));
+}));
+
+test('explicit recording without its plugin fails before any setup mutation',()=>fixture(async(api,dir,observations)=>{
+ let installed=false;
+ await expect(setupCommand('apply',api,{yes:true,plugins:'none',forward:'codex',history:'codex'},{installPlugins:async()=>{installed=true;return {results:[],humanTasks:[]};}})).rejects.toMatchObject({code:'SETUP_PLUGIN_REQUIRED'});
+ expect(installed).toBe(false);expect(readCaptureConfig()).toBeNull();expect(readSetupState({api,tenantId:'tenant',userId:'user'})).toBeNull();expect(observations).toHaveLength(0);
+}));
+
+test('legacy ownership survives pending plugins, switches only after preparation, and retires definitions after activation',()=>fixture(async(api,dir)=>{
+ await installCapture(api,{home:dir,harnesses:['codex'],command:['legacy-cli']});
+ const original=readCaptureConfig()!,file=join(dir,'codex','hooks.json'),hooks=readFileSync(file,'utf8'),runner=hookRunner('capture',['legacy-cli']);
+ let phase:'pending'|'prepared'|'installed'='pending',installs=0;
+ const dependencies={...setupCodex,installPlugins:async()=>{installs++;expect(readCaptureConfig()?.hookOwnership).toBe(phase==='installed'?'plugin':'global');return {results:[{client:'codex' as const,status:phase}],humanTasks:[]};}};
+ expect(await setupCommand('apply',api,{yes:true,plugins:'codex',forward:'codex',history:'none'},dependencies)).toMatchObject({status:'needs_attention'});
+ expect(readCaptureConfig()).toMatchObject({hookOwnership:'global',installationId:original.installationId});expect(readFileSync(runner.file,'utf8')).toBe(runner.script);expect(readFileSync(file,'utf8')).toBe(hooks);
+ phase='prepared';expect(await setupCommand('resume',api,{json:true},dependencies)).toMatchObject({status:'needs_attention'});
+ expect(readCaptureConfig()).toMatchObject({hookOwnership:'plugin',installationId:original.installationId});expect(readFileSync(file,'utf8')).toBe(hooks);expect(readFileSync(runner.file,'utf8')).toBe(hookRunner('capture',readCaptureConfig()!.command).script);
+ phase='installed';expect(await setupCommand('resume',api,{json:true},dependencies)).toMatchObject({status:'configured'});
+ expect(installs).toBe(3);expect(JSON.parse(readFileSync(file,'utf8')).hooks).toEqual({});
+}));
+
+test('an unknown legacy runner blocks setup before recording choices or plugin state mutate',()=>fixture(async(api,dir)=>{
+ await installCapture(api,{home:dir,harnesses:['codex'],command:['legacy-cli']});
+ const before=readFileSync(join(captureDir(),'config.json'),'utf8'),runner=hookRunner('capture',['legacy-cli']);writeFileSync(runner.file,'unrecognized existing runner');
+ let installs=0;await expect(setupCommand('apply',api,{yes:true,plugins:'codex',forward:'none',history:'none'},{...setupCodex,installPlugins:async()=>{installs++;return {results:[],humanTasks:[]};}})).rejects.toMatchObject({code:'PLUGIN_HOOK_MIGRATION_INVALID'});
+ expect(installs).toBe(0);expect(readSetupState({api,tenantId:'tenant',userId:'user'})).toBeNull();expect(readFileSync(join(captureDir(),'config.json'),'utf8')).toBe(before);expect(readFileSync(runner.file,'utf8')).toBe('unrecognized existing runner');
+}));
+
+test('prepared native load guidance survives independent MCP or capture proof',()=>fixture(async(api,_dir,_observations,setCodex)=>{
+ const dependencies={...setupCodex,installPlugins:async()=>({results:[{client:'codex' as const,status:'prepared' as const}],humanTasks:[{id:'codex-load',kind:'restart' as const,client:'codex' as const,title:'Load native plugin',instruction:'Review native plugin trust and reload.'}]})};
+ await setupCommand('apply',api,{yes:true,plugins:'codex',forward:'none',history:'none'},dependencies);
+ setCodex({mcp:{state:'authenticated'},proof:{state:'verified'},captureObservedAt:new Date().toISOString()});
+ for(const action of ['status','resume'])expect(await setupCommand(action,api,{json:true},dependencies)).toMatchObject({humanTasks:[{id:'codex-load',kind:'restart'}],selections:{forward:{codex:false}}});
+}));
+
+test('resume rechecks previously installed native plugins and a new launcher without expanding saved choices or history',()=>fixture(async(api,dir)=>{
+ const first=[join(dir,'first-cli')],next=[join(dir,'new-cli')];
+ await setupCommand('apply',api,{yes:true,plugins:'codex',forward:'none',history:'codex'},{...setupCodex,command:first});const before=readSetupState({api,tenantId:'tenant',userId:'user'})!;
+ let calls=0;
+ const result=await setupCommand('resume',api,{json:true},{...setupCodex,command:next,choose:async()=>{throw new Error('No new questionnaire');},installPlugins:async(_api,selected,options)=>{calls++;expect(selected).toEqual(['codex']);expect(options?.command).toEqual(next);return {results:[{client:'codex',status:'prepared'}],humanTasks:[{id:'new-bundle-load',kind:'restart',client:'codex',title:'Load the current plugin',instruction:'Reload the native client.'}]};}});
+ expect(calls).toBe(1);expect(result).toMatchObject({status:'needs_attention',humanTasks:[{id:'new-bundle-load'}]});
+ const after=readSetupState({api,tenantId:'tenant',userId:'user'})!;expect(after.selections).toEqual(before.selections);expect(after.historyJob).toEqual(before.historyJob);expect(readCaptureConfig()?.command).toEqual(next);
 }));

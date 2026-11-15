@@ -6,6 +6,7 @@ import {readCaptureConfig} from './capture/runtime.ts';
 import {normalizeHarness} from './capture/parse.ts';
 import {withEnvironmentTokenOrigin} from './environment-token.ts';
 import {parseArgs} from 'node:util';
+import {hasPluginContext, pluginHookContext, recordPluginActivation} from './setup/plugin-context.ts';
 
 export type AntigravityStartOutput = {injectSteps: [{systemMessage: {systemMessage: string}}]};
 export type CursorStartOutput = {additional_context: string};
@@ -87,10 +88,15 @@ export async function sessionStartCommand(args: string[], input: Readable = proc
   let result;
   let harness = '';
   try {
+    // A retained legacy definition may be needed to preserve another hook's
+    // native trust key. Plugin-owned profiles must not execute that old path.
+    if(!hasPluginContext()&&readCaptureConfig()?.hookOwnership==='plugin')return 0;
     const parsed = parseArgs({args, options: {api: {type: 'string'}, harness: {type: 'string'}}});
     harness = normalizeHarness(parsed.values.harness ?? '');
     const api = apiOrigin(parsed.values.api ?? process.env.OPENCRAWL_API_URL ?? readCaptureConfig()?.api ?? DEFAULT_API_ORIGIN);
+    const plugin=pluginHookContext(api,harness);
     const event = await readStartEvent(input);
+    recordPluginActivation(plugin,event);
     result = await withEnvironmentTokenOrigin(parsed.values.api ?? process.env.OPENCRAWL_API_URL,
       () => sessionStart(api, harness, event));
   } catch {result = unavailable(harness, 'The local hook input or configuration could not be read.');}

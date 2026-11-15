@@ -1,11 +1,14 @@
-import {existsSync,readFileSync} from 'node:fs';
-import {join,resolve} from 'node:path';
+import {existsSync,readFileSync,realpathSync} from 'node:fs';
+import {join,resolve,dirname} from 'node:path';
+import {createHash} from 'node:crypto';
+import {configDir} from '../session.ts';
+import {verifyPluginBundle} from '../setup/plugin-context.ts';
 import {spawn} from 'node:child_process';
 
 const owned=new Set(['OpenCrawl session capture','OpenCrawl session startup']);
 export type CodexHookReview={state:'not_applicable'|'unknown'|'observed';total:number;pending:number|null;disabled:number|null};
-type Snapshot={review:CodexHookReview;file:string;bytes:string;config:string;keys:Set<string>};
-function snapshot(root:string):Snapshot {
+type Snapshot={review:CodexHookReview;file:string;bytes:string;config:string;keys:Set<string>;binding?:string;pluginId?:string};
+function globalSnapshot(root:string):Snapshot {
  const file=join(root,'hooks.json'),keys=new Set<string>();let bytes='',config='';
  try {
   bytes=readFileSync(file,'utf8');
@@ -19,6 +22,34 @@ function snapshot(root:string):Snapshot {
   if(existsSync(join(root,'config.toml')))config=readFileSync(join(root,'config.toml'),'utf8');
  } catch {return {file,bytes,config,keys,review:{state:existsSync(file)?'unknown':'not_applicable',total:keys.size,pending:existsSync(file)?null:0,disabled:existsSync(file)?null:0}};}
  return {file,bytes,config,keys,review:{state:keys.size?'unknown':'not_applicable',total:keys.size,pending:keys.size?null:0,disabled:keys.size?null:0}};
+}
+/** A plugin enrollment must never inherit readiness from another deployment's
+ * global hooks. The installer receipt binds the exact native cache and marker. */
+function snapshot(root:string):Snapshot {
+ let captureBytes='',capture:{hookOwnership?:string;harnesses?:string[];api:string;roots?:{codex?:string}}|undefined;
+ try{captureBytes=readFileSync(join(configDir(),'capture/config.json'),'utf8');capture=JSON.parse(captureBytes);}catch{}
+ if(capture?.hookOwnership!=='plugin'||typeof capture.roots?.codex!=='string'||resolve(capture.roots.codex)!==resolve(root))return globalSnapshot(root);
+ const keys=new Set<string>();
+ const result:Snapshot={file:'',bytes:'',config:'',keys,binding:captureBytes,review:{state:'unknown',total:0,pending:null,disabled:null}};
+ // This is capture readiness, not a requirement to enable recording for search.
+ if(!capture.harnesses?.includes('codex'))return {...result,review:{state:'not_applicable',total:0,pending:0,disabled:0}};
+ try{
+  const key=createHash('sha256').update(capture.api).digest('hex').slice(0,12),name='opencrawl-'+key,pluginId=name+'@opencrawl-cli-'+key;
+  const receiptBytes=readFileSync(join(configDir(),'setup-plugins/codex',key,'installed.json'),'utf8');
+  const receipt=JSON.parse(receiptBytes);
+  if(receipt.schemaVersion!==2||receipt.api!==capture.api||receipt.client!=='codex'||receipt.pluginName!==name||receipt.pluginId!==pluginId||typeof receipt.nativeRoot!=='string')return result;
+  const bundle=verifyPluginBundle({nativeRoot:receipt.nativeRoot,api:capture.api,client:'codex',pluginName:name,configHome:dirname(configDir())});
+  if(bundle.digest!==receipt.digest||!('hooks/hooks.json' in bundle.files))return result;
+  const file=join(bundle.root,'hooks/hooks.json'),bytes=readFileSync(file,'utf8'),value=JSON.parse(bytes) as {hooks?:Record<string,unknown>};
+  for(const [event,groups] of Object.entries(value.hooks??{}))if(Array.isArray(groups))groups.forEach((group:unknown,g:number)=>{
+   if(!group||typeof group!=='object'||!('hooks' in group)||!Array.isArray(group.hooks))return;
+   group.hooks.forEach((hook:unknown,h:number)=>{
+    if(hook&&typeof hook==='object'&&'statusMessage' in hook&&typeof hook.statusMessage==='string'&&owned.has(hook.statusMessage))keys.add(`${pluginId}:hooks/hooks.json:${event.replace(/([a-z0-9])([A-Z])/g,'$1_$2').toLowerCase()}:${g}:${h}`);
+   });
+  });
+  const config=existsSync(join(root,'config.toml'))?readFileSync(join(root,'config.toml'),'utf8'):'';
+  return {...result,file,bytes,config,pluginId,binding:JSON.stringify([captureBytes,receiptBytes,bundle.digest,bundle.files]),review:{state:'unknown',total:keys.size,pending:null,disabled:null}};
+ }catch{return result;}
 }
 /** Local files establish ownership, never trust in a current hook definition. */
 export function localCodexHookReview(root:string):CodexHookReview{return snapshot(root).review;}
@@ -68,10 +99,13 @@ export async function inspectCodexHooks(root:string,query=nativeCodexHooks):Prom
  const before=snapshot(root);if(before.review.state==='not_applicable')return before.review;
  try {
   const value=await query(root),after=snapshot(root);
-  if(after.bytes!==before.bytes||after.config!==before.config||!value||typeof value!=='object'||!('data' in value)||!Array.isArray(value.data))return before.review;
+  if(after.file!==before.file||after.bytes!==before.bytes||after.config!==before.config||after.binding!==before.binding||after.pluginId!==before.pluginId||!value||typeof value!=='object'||!('data' in value)||!Array.isArray(value.data))return before.review;
   const hooks:Record<string,unknown>[]=[];
   for(const entry of value.data){if(!entry||typeof entry!=='object'||!Array.isArray(entry.hooks)||!Array.isArray(entry.errors)||entry.errors.length)return before.review;
-   for(const hook of entry.hooks)if(hook&&typeof hook==='object'&&typeof hook.sourcePath==='string'&&resolve(hook.sourcePath)===resolve(before.file)&&owned.has(hook.statusMessage))hooks.push(hook);
+   for(const hook of entry.hooks)if(hook&&typeof hook==='object'&&typeof hook.sourcePath==='string'&&owned.has(hook.statusMessage)){
+    const matches=before.pluginId?hook.source==='plugin'&&hook.pluginId===before.pluginId&&realpathSync(hook.sourcePath)===realpathSync(before.file):resolve(hook.sourcePath)===resolve(before.file);
+    if(matches)hooks.push(hook);
+   }
   }
   if(!before.keys.size||hooks.length!==before.keys.size||new Set(hooks.map(h=>h.key)).size!==before.keys.size||hooks.some(h=>!before.keys.has(String(h.key))||typeof h.enabled!=='boolean'||!['managed','trusted','untrusted','modified'].includes(String(h.trustStatus))))return before.review;
   return {state:'observed',total:hooks.length,pending:hooks.filter(h=>h.enabled&&['untrusted','modified'].includes(String(h.trustStatus))).length,disabled:hooks.filter(h=>!h.enabled).length};

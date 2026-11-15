@@ -1,0 +1,115 @@
+import {test,expect} from 'bun:test';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,rmSync,realpathSync,symlinkSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join,dirname,resolve} from 'node:path';
+import {createHash} from 'node:crypto';
+import {setupPluginFiles,setupPluginIdentity} from '../src/setup/plugins.ts';
+import {pluginHookContext,recordPluginActivation,pluginActivationMatches,verifyPluginBundle,type PluginHookClient} from '../src/setup/plugin-context.ts';
+
+const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
+const json=(value:unknown)=>JSON.stringify(value,null,2)+'\n';
+const clients:PluginHookClient[]=['codex','claude-code','cursor','antigravity'];
+const cli=resolve(import.meta.dir,'../src/cli.ts');
+function fixture(client:PluginHookClient='codex'){
+ const temporary=mkdtempSync(join(tmpdir(),'opencrawl-plugin-context-')),home=realpathSync(temporary),configHome=join(home,'profile'),previous=process.env.OPENCRAWL_CONFIG_HOME;
+ process.env.OPENCRAWL_CONFIG_HOME=configHome;
+ const api='https://candidate.example',identity=setupPluginIdentity(api),nativeRoot=join(home,'native-cache',identity.name),configFile=join(configHome,'opencrawl/capture/config.json'),receiptRoot=join(configHome,'opencrawl/setup-plugins',client,identity.key),installed=join(receiptRoot,'installed.json'),activation=join(receiptRoot,'activation.json');
+ const binding={api,client,pluginName:identity.name,configHome,nativeRoot};
+ const files=setupPluginFiles(client,api,{command:[process.execPath,cli],configHome});
+ const config={schemaVersion:1,hookOwnership:'plugin',api,installationId:'test-installation',owner:{tenantId:'test-tenant',userId:'test-user'},harnesses:[],historyHarnesses:[],roots:{codex:join(home,'codex'),'claude-code':join(home,'claude'),cursor:join(home,'cursor'),antigravity:join(home,'agy')},installedAt:new Date().toISOString(),command:[process.execPath,cli]};
+ const write=(path:string,value:unknown)=>{mkdirSync(dirname(path),{recursive:true});writeFileSync(path,typeof value==='string'?value:json(value));};
+ const seal=()=>{
+  for(const [name,text] of Object.entries(files))write(join(nativeRoot,name),text);
+  const digest=hash(json(files));
+  write(join(nativeRoot,'.opencrawl-setup-plugin.json'),{schemaVersion:2,...binding,version:'fixture',digest,files:Object.fromEntries(Object.entries(files).map(([name,text])=>[name,hash(text)]))});
+  write(installed,{schemaVersion:2,...binding,digest});return digest;
+ };
+ const digest=seal();write(configFile,config);
+ const env={...process.env,HOME:home,USERPROFILE:home,CODEX_HOME:config.roots.codex,CLAUDE_CONFIG_DIR:config.roots['claude-code'],CURSOR_CONFIG_DIR:config.roots.cursor,ANTIGRAVITY_HOME:config.roots.antigravity,OPENCRAWL_CONFIG_HOME:configHome,OPENCRAWL_PLUGIN_API:api,OPENCRAWL_PLUGIN_CLIENT:client,OPENCRAWL_PLUGIN_NAME:identity.name,OPENCRAWL_PLUGIN_ROOT:nativeRoot};
+ for(const name of ['OPENCRAWL_TOKEN','OPENCRAWL_SESSIONS_TOKEN','OPENCRAWL_API_URL','OPENCRAWL_AUTH'])delete (env as NodeJS.ProcessEnv)[name];
+ const event=client==='antigravity'?{hookEventName:'SessionStart',conversationId:'native-session'}:client==='cursor'?{hook_event_name:'sessionStart',session_id:'native-session',cursor_version:'fixture'}:{hook_event_name:'SessionStart',session_id:'native-session',source:'startup'};
+ return {home,configHome,binding,files,digest,config,configFile,installed,activation,env,event,write,seal,close:()=>{if(previous===undefined)delete process.env.OPENCRAWL_CONFIG_HOME;else process.env.OPENCRAWL_CONFIG_HOME=previous;rmSync(temporary,{recursive:true,force:true});}};
+}
+
+test('native plugin activation works for every search-only client without collecting transcript content',()=>{
+ for(const client of clients){const f=fixture(client);try{
+  const context=pluginHookContext(f.binding.api,client,f.env)!;
+  expect(context).toMatchObject({...f.binding,digest:f.digest,installationId:f.config.installationId});
+  expect(pluginActivationMatches({...f.binding,digest:f.digest})).toBe(false);
+  recordPluginActivation(context,{...f.event,transcript_path:'/must-not-read',messages:['unrelated-private-content']});
+  expect(pluginActivationMatches({...f.binding,digest:f.digest})).toBe(true);
+  const receipt=readFileSync(f.activation,'utf8');expect(receipt).not.toContain('unrelated-private-content');expect(receipt).not.toContain('transcript_path');
+  expect(existsSync(join(f.configHome,'opencrawl/capture/queue'))).toBe(false);
+ }finally{f.close();}}
+});
+
+test('endpoint, client, installation, owner, profile and native source changes invalidate activation',()=>{
+ const f=fixture();try{
+  const context=pluginHookContext(f.binding.api,'codex',f.env)!;recordPluginActivation(context,f.event);
+  for(const env of [{...f.env,OPENCRAWL_PLUGIN_API:'https://another.example'},{...f.env,OPENCRAWL_PLUGIN_CLIENT:'cursor'},{...f.env,OPENCRAWL_CONFIG_HOME:join(f.home,'another-profile')},{...f.env,OPENCRAWL_PLUGIN_ROOT:join(f.home,'another-cache')},{...f.env,OPENCRAWL_PLUGIN_NAME:'opencrawl-foreign'}])expect(()=>pluginHookContext(f.binding.api,'codex',env)).toThrow();
+  for(const config of [{...f.config,installationId:'another-installation'},{...f.config,owner:{...f.config.owner,userId:'another-user'}},{...f.config,authPending:true},{...f.config,hookOwnership:'global'},{...f.config,api:'https://another.example'}]){
+   f.write(f.configFile,config);expect(pluginActivationMatches({...f.binding,digest:f.digest})).toBe(false);expect(()=>recordPluginActivation(context,f.event)).toThrow();
+  }
+  f.write(f.configFile,f.config);expect(pluginActivationMatches({...f.binding,digest:f.digest})).toBe(true);
+  f.write(f.installed,{schemaVersion:2,...f.binding,digest:f.digest,nativeRoot:f.home});expect(()=>pluginHookContext(f.binding.api,'codex',f.env)).toThrow();
+ }finally{f.close();}
+});
+
+test('modified assets and symlinked bundle files never count as the installed plugin',()=>{
+ const f=fixture();try{
+  const context=pluginHookContext(f.binding.api,'codex',f.env)!;recordPluginActivation(context,f.event);
+  f.write(join(f.binding.nativeRoot,'.mcp.json'),json({mcpServers:{opencrawl:{url:'https://another.example/mcp'}}}));
+  expect(()=>verifyPluginBundle(f.binding)).toThrow();expect(pluginActivationMatches({...f.binding,digest:f.digest})).toBe(false);
+  f.seal();const target=join(f.binding.nativeRoot,'.mcp.json'),outside=join(f.home,'external-mcp.json');f.write(outside,f.files['.mcp.json']);rmSync(target);symlinkSync(outside,target);
+  expect(()=>verifyPluginBundle(f.binding)).toThrow();expect(pluginActivationMatches({...f.binding,digest:f.digest})).toBe(false);
+ }finally{f.close();}
+});
+
+test('invalid or cross-client native events cannot confirm activation',()=>{
+ const f=fixture();try{
+  const context=pluginHookContext(f.binding.api,'codex',f.env)!;
+  for(const event of [{},{...f.event,session_id:'bad\nidentity'},{...f.event,source:'invented'},{...f.event,cursor_version:'cross-loaded'},{...f.event,hook_event_name:'invented'}])recordPluginActivation(context,event);
+  expect(existsSync(f.activation)).toBe(false);recordPluginActivation(context,f.event);expect(existsSync(f.activation)).toBe(true);
+ }finally{f.close();}
+});
+
+test('generated API arguments cannot rebind inherited tokens or workload authentication',()=>{
+ const f=fixture();try{
+  for(const key of ['OPENCRAWL_TOKEN','OPENCRAWL_SESSIONS_TOKEN','OPENCRAWL_AUTH']){
+   expect(()=>pluginHookContext(f.binding.api,'codex',{...f.env,[key]:'sentinel-must-not-be-used'})).toThrow();
+  }
+  expect(existsSync(f.activation)).toBe(false);
+ }finally{f.close();}
+});
+
+test('real plugin capture callbacks for search-only clients activate without workers, queue or paused notices',async()=>{
+ for(const client of clients){const f=fixture(client);try{
+  const child=Bun.spawn([process.execPath,cli,'collect','hook','--managed','--harness',client,'--api',f.binding.api],{env:f.env,stdin:new Blob([JSON.stringify(f.event)]),stdout:'pipe',stderr:'pipe'});
+  const timer=setTimeout(()=>child.kill(),3000);
+  try{const [code,out,err]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]);expect(code).toBe(0);expect(err).toBe('');expect(out).not.toContain('paused');expect(out).not.toContain('unavailable');}finally{clearTimeout(timer);}
+  expect(pluginActivationMatches({...f.binding,digest:f.digest})).toBe(true);
+  for(const name of ['queue','notices','last-error.json','worker.lock'])expect(existsSync(join(f.configHome,'opencrawl/capture',name))).toBe(false);
+ }finally{f.close();}}
+},15_000);
+
+test('legacy callbacks into plugin-owned profiles exit silently without waiting for stdin or doing work',async()=>{
+ const f=fixture();try{
+  const env:NodeJS.ProcessEnv={...f.env};for(const key of Object.keys(env))if(key.startsWith('OPENCRAWL_PLUGIN_'))delete env[key];
+  for(const args of [['session','start'],['collect','hook','--managed']]){
+   const child=Bun.spawn([process.execPath,cli,...args,'--harness','codex','--api',f.binding.api],{env,stdin:'pipe',stdout:'pipe',stderr:'pipe'});
+   const timer=setTimeout(()=>child.kill(),3000);
+   try{const [code,out,err]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]);expect({code,out,err}).toEqual({code:0,out:'',err:''});}finally{clearTimeout(timer);child.stdin.end();}
+  }
+  expect(existsSync(f.activation)).toBe(false);expect(existsSync(join(f.configHome,'opencrawl/capture/queue'))).toBe(false);expect(existsSync(join(f.configHome,'opencrawl/update.json'))).toBe(false);
+ }finally{f.close();}
+},10_000);
+
+test('bad plugin binding is rejected by real CLI before capture consumes stdin or writes state',async()=>{
+ const f=fixture();try{
+  const env={...f.env,OPENCRAWL_PLUGIN_API:'https://another.example'};
+  const child=Bun.spawn([process.execPath,cli,'collect','hook','--managed','--harness','codex','--api',f.binding.api,'--json'],{env,stdin:'pipe',stdout:'pipe',stderr:'pipe'});
+  const timer=setTimeout(()=>child.kill(),3000);
+  try{const [code,out,err]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]);expect(code).not.toBe(0);expect(out+err).toContain('PLUGIN_CONTEXT_INVALID');}finally{clearTimeout(timer);child.stdin.end();}
+  expect(existsSync(f.activation)).toBe(false);expect(existsSync(join(f.configHome,'opencrawl/capture/queue'))).toBe(false);expect(existsSync(join(f.configHome,'opencrawl/capture/last-error.json'))).toBe(false);
+ }finally{f.close();}
+},5_000);

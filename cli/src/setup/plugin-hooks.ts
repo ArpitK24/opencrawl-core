@@ -1,0 +1,59 @@
+import {posix,win32} from 'node:path';
+import {apiOrigin,CliError} from '../oauth.ts';
+import {GROK_BOT_HOOK_EVENTS} from '../capture/grok-bot.ts';
+import type {PluginClient} from './plugins.ts';
+
+export type PluginHookBinding={command:string[];configHome:string;api:string;pluginName:string};
+const json=(value:unknown)=>JSON.stringify(value,null,2)+'\n';
+const captureMarker='OpenCrawl session capture',startupMarker='OpenCrawl session startup';
+const ambientAuth=['OPENCRAWL_TOKEN','OPENCRAWL_SESSIONS_TOKEN','OPENCRAWL_AUTH','OPENCRAWL_API_URL'];
+const literal=(value:string,windows:boolean)=>windows?'"'+value.replaceAll('%','%%').replaceAll('"','""')+'"':"'"+value.replaceAll("'","'\\''")+"'";
+
+/** Native plugin hooks own delivery; the CLI guard owns endpoint/installation and
+ * saved forward-consent checks. No credentials or global hook files live here.
+ * The hook child uses saved profile auth, never ambient tokens/workload auth.
+ * OPENCRAWL_PLUGIN_ROOT is derived by the bundled runner, including in a native
+ * plugin cache. The guard verifies that root's marker and complete file hashes.
+ */
+export function pluginHookFiles(client:PluginClient,binding:PluginHookBinding,platform=process.platform):Record<string,string>{
+ const windows=platform==='win32',path=windows?win32:posix;
+ const {command,configHome,pluginName}=binding,api=apiOrigin(binding.api);
+ if(!command.length||!path.isAbsolute(command[0])||!path.isAbsolute(configHome)
+   ||!/^opencrawl(?:-[a-z0-9]+)?$/.test(pluginName)
+   ||[...command,configHome,pluginName,api].some(value=>/[\x00-\x1f\x7f]/.test(value)||windows&&value.includes('"')))
+  throw new CliError('INVALID_PLUGIN_BINDING','Plugin hooks need an absolute CLI and profile with a valid OpenCrawl plugin name.');
+ const env:Record<string,string>={OPENCRAWL_CONFIG_HOME:configHome,OPENCRAWL_PLUGIN_API:api,OPENCRAWL_PLUGIN_NAME:pluginName,OPENCRAWL_PLUGIN_CLIENT:client};
+ const runner=windows?'scripts/opencrawl-hook.cmd':'scripts/opencrawl-hook.sh';
+ const script=windows
+  ?'@echo off\r\nsetlocal DisableDelayedExpansion\r\n'+ambientAuth.map(key=>'set "'+key+'="\r\n').join('')+Object.entries(env).map(([key,value])=>'set "'+key+'='+value.replaceAll('%','%%')+'"\r\n').join('')
+   +'for %%I in ("%~dp0..") do set "OPENCRAWL_PLUGIN_ROOT=%%~fI"\r\n'+command.map(value=>literal(value,true)).join(' ')+' %*\r\n'
+  :'#!/bin/sh\n'+'unset '+ambientAuth.join(' ')+'\n'+Object.entries(env).map(([key,value])=>'export '+key+'='+literal(value,false)+'\n').join('')
+   +'OPENCRAWL_PLUGIN_ROOT=$(CDPATH= cd -- "${0%/*}/.." && pwd -P) || exit 0\nexport OPENCRAWL_PLUGIN_ROOT\nexec '+command.map(value=>literal(value,false)).join(' ')+' "$@"\n';
+ // Use process environment expansion, not inline path substitution: quotes,
+ // dollars and percent signs in native cache paths must remain path characters.
+ const root=client==='codex'?'PLUGIN_ROOT':client==='claude-code'?'CLAUDE_PLUGIN_ROOT':'CURSOR_PLUGIN_ROOT';
+ const invocation=windows
+  ?client==='claude-code'?{command:'& "$env:'+root+'\\scripts\\opencrawl-hook.cmd"',shell:'powershell' as const}
+   :{command:client==='antigravity'?'".\\scripts\\opencrawl-hook.cmd"':'"%'+root+'%\\scripts\\opencrawl-hook.cmd"'}
+  :{command:client==='antigravity'?'/bin/sh ./scripts/opencrawl-hook.sh':'/bin/sh "$'+root+'/scripts/opencrawl-hook.sh"'};
+ const args=(values:string[])=>values.map(value=>/^[a-zA-Z0-9_:/.-]+$/.test(value)?value:literal(value,windows)).join(' ');
+ const startup={type:'command',...invocation,command:invocation.command+' '+args(['session','start','--harness',client,'--api',api]),timeout:7,statusMessage:startupMarker};
+ const capture=(event:string)=>{
+  const managed=(client==='codex'||client==='claude-code')&&!(client==='codex'&&event==='SessionEnd');
+  return {type:'command',...invocation,command:invocation.command+' '+args(['collect','hook',...(managed?['--managed']:[]),'--harness',client,'--api',api,...(client==='antigravity'?['--event',event]:[])]),
+   timeout:managed?120:client==='codex'?3:30,statusMessage:captureMarker,...(managed?{async:true}:{})};
+ };
+ if(client==='cursor'){
+  const hooks:Record<string,unknown[]>=Object.fromEntries(GROK_BOT_HOOK_EVENTS.map(event=>{const entry=capture(event);return [event,[{command:entry.command,timeout:entry.timeout}]];}));
+  hooks.sessionStart.unshift({command:startup.command,timeout:startup.timeout});
+  return {[runner]:script,'hooks/hooks.json':json({hooks})};
+ }
+ if(client==='antigravity'){
+  const entry=(event:string)=>{const hook=capture(event);return {type:hook.type,command:hook.command,timeout:hook.timeout};};
+  return {[runner]:script,'hooks.json':json({[pluginName+'-startup']:{SessionStart:[{type:startup.type,command:startup.command,timeout:startup.timeout}]},
+   [pluginName+'-capture']:{SessionStart:[entry('SessionStart')],PostToolUse:[{matcher:'*',hooks:[entry('PostToolUse')]}],PostInvocation:[entry('PostInvocation')],Stop:[entry('Stop')]}})};
+ }
+ const events=client==='claude-code'?['SessionStart','UserPromptSubmit','PreToolUse','PostToolUse','PostToolUseFailure','Stop','SubagentStop','SessionEnd']
+  :['SessionStart','UserPromptSubmit','PreToolUse','PostToolUse','Stop','SubagentStop','SessionEnd'];
+ return {[runner]:script,'hooks/hooks.json':json({hooks:Object.fromEntries(events.map(event=>[event,[{hooks:event==='SessionStart'?[startup,capture(event)]:[capture(event)]}]]))})};
+}

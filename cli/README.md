@@ -29,9 +29,18 @@ opencrawl search "release checklist"
 
 
 Setup signs you in first, then offers two selection screens. Choose plugins and
-future recording independently, then choose which available histories to import.
+whether each records new sessions, then choose which available histories to import.
 Detected supported clients and available histories start selected; saved choices
 are preserved and importing none is valid. History runs in the background.
+
+Codex, Claude Code, Cursor and Antigravity plugins bundle their own startup and
+capture hooks, MCP connection, and setup guidance. Recording requires its plugin;
+a plugin can also be used for search with recording off. The CLI saves consent and
+runs history workers without installing global hooks for this setup flow. Each
+deployment has a separate native plugin identity so an existing production plugin
+cannot shadow a self-hosted or preview connection. Prepared plugins become active
+only after their matching native hook runs; native trust and MCP sign-in remain
+separate steps. Migration preserves queued data, foreign hooks and trust choices.
 
 Continue in your primary coding agent for native hook review, MCP sign-in, and
 verification. The agent reads saved choices instead of repeating setup questions.
@@ -42,7 +51,8 @@ The permanent Setup page tracks each machine and client without blocking the app
 
 For your own server, use `opencrawl setup --api https://your-opencrawl.example`.
 The same flow authenticates against that server and needs no hosted account.
-Advanced capture-only enrollment remains available with `opencrawl collect install`.
+Advanced capture-only enrollment remains available with `opencrawl collect install`;
+that compatibility path uses global hooks and standalone skills as described below.
 
 Native installation is preferred and needs no separate Node, npm or Bun runtime.
 On Windows PowerShell use:
@@ -425,10 +435,11 @@ duplicating hook messages. Other referenced paths are never opened. Existing
 Cursor history is not imported. Tool capture retains what Cursor exposes; some
 Read results contain metadata rather than file bytes. Origin stays unknown without explicit cloud evidence.
 
-The MIT Cursor plugin lives in `plugins/opencrawl-cursor` in the public
+The separately distributed MIT Cursor plugin lives in `plugins/opencrawl-cursor` in the public
 `getopencrawl/opencrawl-plugins` repository. It bundles MCP, a retrieval rule,
 setup guidance. Capture requires explicit CLI enrollment and uses its managed
-user hooks; the plugin does not install a second set of capture callbacks. Cursor MCP uses
+user hooks; that older distribution does not install a second set of capture callbacks.
+CLI setup uses its deployment-specific plugin with bundled hooks instead. Cursor MCP uses
 its own OAuth grant. Verify a fresh stored receipt and search/fetch a unique new
 message filtered to harness=cursor; installation alone does not prove capture.
 Cursor has no supported native board push listener here; read at work boundaries.
