@@ -50,7 +50,8 @@ test('bundled runners retain stdin, argv and profile binding after a cache move 
     const env={...process.env,PATH:windows?process.env.PATH:'/no-node-or-bun-on-path',OPENCRAWL_TOKEN:'fixture-ambient-user-token',OPENCRAWL_SESSIONS_TOKEN:'fixture-ambient-capture-token',OPENCRAWL_AUTH:'replicas-workspace',OPENCRAWL_API_URL:'https://unrelated.example',OPENCRAWL_CONFIG_HOME:'/unrelated/profile',OPENCRAWL_PLUGIN_API:'https://unrelated.example',OPENCRAWL_PLUGIN_ROOT:'/unrelated/cache',PLUGIN_ROOT:root,CLAUDE_PLUGIN_ROOT:root,CURSOR_PLUGIN_ROOT:root};
     const executable=windows?(client==='codex'||hook.shell==='powershell'?join(process.env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe'):process.env.ComSpec||'cmd.exe'):'/bin/sh';
     const args=windows?(client==='codex'||hook.shell==='powershell'?['-NoProfile','-NonInteractive','-Command',hook.command]:['/d','/s','/c','"'+hook.command+'"']):['-c',hook.command];
-    const result=spawnSync(executable,args,{cwd:client==='antigravity'?root:home,env,input:payload,encoding:'utf8',timeout:10_000});
+    // cmd.exe consumes the already quoted /c string; C-runtime argv escaping corrupts it.
+    const result=spawnSync(executable,args,{cwd:client==='antigravity'?root:home,env,input:payload,encoding:'utf8',timeout:10_000,windowsVerbatimArguments:windows&&client!=='codex'&&hook.shell!=='powershell'});
     expect({error:result.error?.message,stderr:result.stderr,status:result.status}).toEqual({error:undefined,stderr:'',status:0});
     const observed=JSON.parse(result.stdout);
     expect(observed).toMatchObject({input:payload,profile,api:binding.api,name:binding.pluginName,client,root,token:null,sessionsToken:null,authMode:null,ambientApi:null});
