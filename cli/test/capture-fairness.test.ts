@@ -1,11 +1,12 @@
 import {test,expect} from 'bun:test';
 import {createServer,type ServerResponse} from 'node:http';
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,readdirSync,rmSync,utimesSync,existsSync} from 'node:fs';
-import {join} from 'node:path';
+import {join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {installCapture} from '../src/capture/install.ts';
-import {captureDir,readCaptureConfig,flushCaptures,captureHook,captureWorker} from '../src/capture/runtime.ts';
+import {captureDir,readCaptureConfig,flushCaptures,captureHook,captureWorker,hookFlush,captureStatus} from '../src/capture/runtime.ts';
 import {hash} from '../src/capture/parse.ts';
+import {withSessionLock} from '../src/session.ts';
 
 const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));
 async function until(check:()=>boolean){const end=Date.now()+4000;while(!check()){if(Date.now()>end)throw Error('condition timed out');await sleep(10);}}
@@ -15,7 +16,7 @@ async function fixture(run:(f:any)=>Promise<void>){
  let active=0,maxActive=0;
  let handle:((raw:string,res:ServerResponse)=>Promise<void>)|undefined;
  const server=createServer(async(req,res)=>{
-  if(req.url==='/api/sessions/identity'){res.end(JSON.stringify({data:{principal:owner}}));return;}
+  if(req.url==='/api/sessions/identity'){res.end(JSON.stringify({data:{principal:owner,capabilities:{harnesses:['codex','claude-code','cursor']}}}));return;}
   const parts=[];for await(const c of req)parts.push(c);const raw=Buffer.concat(parts).toString();
   if(req.url!=='/api/sessions/batches'){res.writeHead(404);res.end();return;}
   payloads.push(raw);active++;maxActive=Math.max(maxActive,active);
@@ -24,8 +25,8 @@ async function fixture(run:(f:any)=>Promise<void>){
  });
  await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));const api='http://127.0.0.1:'+(server.address() as any).port;process.env.OPENCRAWL_API_URL=api;
  try{
-  Object.assign(process.env,{OPENCRAWL_CONFIG_HOME:join(dir,'config'),OPENCRAWL_SESSIONS_TOKEN:'synthetic',CLAUDE_CONFIG_DIR:join(dir,'claude'),CODEX_HOME:join(dir,'codex')});
-  await installCapture(api,{background:false,home:dir,command:[]});
+  Object.assign(process.env,{OPENCRAWL_CONFIG_HOME:join(dir,'config'),OPENCRAWL_SESSIONS_TOKEN:'synthetic',CLAUDE_CONFIG_DIR:join(dir,'claude'),CODEX_HOME:join(dir,'codex'),CURSOR_CONFIG_DIR:join(dir,'cursor')});
+  await installCapture(api,{background:false,home:dir,command:[],harnesses:['codex','claude-code','cursor']});
   const config=readCaptureConfig()!;
   const enqueue=(n:number,sessionId='session')=>{
    const path=join(captureDir(),'queue',String(n).padStart(4,'0')+'.json');
@@ -65,6 +66,22 @@ test('excluded captures do not consume the background upload budget or get delet
  expect(readdirSync(join(captureDir(),'queue'))).toHaveLength(80);
 }));
 
+test('synchronous hooks upload one concurrent wave, including fresh and old captures',async()=>fixture(async f=>{
+ for(let n=0;n<40;n++)f.enqueue(n);
+ f.enqueue(1000,'fresh');
+ f.handle=async()=>{await sleep(10);};
+ await hookFlush({hook_event_name:'stop'});
+ expect(f.payloads).toHaveLength(4);
+ expect(f.maxActive).toBe(4);
+ expect(f.payloads.map((raw:string)=>JSON.parse(raw).sessionId)).toContain('fresh');
+ expect(f.payloads.map((raw:string)=>JSON.parse(raw).events[0].data.n)).toContain(0);
+ expect(readdirSync(join(captureDir(),'queue'))).toHaveLength(37);
+ expect(JSON.parse(readFileSync(join(captureDir(),'hook-flush.json'),'utf8')).ok).toBe(true);
+ // The full worker/explicit flush still drains all retained work.
+ expect(await flushCaptures()).toEqual({uploaded:37});
+ expect(new Set(f.payloads).size).toBe(41);
+}));
+
 test('a hook arriving during a large flush reaches the receiver before the old backlog drains',async()=>fixture(async f=>{
  for(let n=0;n<80;n++)f.enqueue(n);
  const held:Array<()=>void>=[];
@@ -102,4 +119,40 @@ test('disabling capture lets only already in-flight uploads finish and retains t
  writeFileSync(join(captureDir(),'config.json'),JSON.stringify({...f.config,disabled:true}));
  held.forEach(r=>r());expect(await first).toEqual({uploaded:4});
  expect(f.payloads).toHaveLength(4);expect(readdirSync(join(captureDir(),'queue'))).toHaveLength(8);
+}));
+
+test('a synchronous Cursor hook uploads while an unrelated historical transcript is locked',async()=>fixture(async f=>{
+ const config=readCaptureConfig()!,file=join(config.roots['claude-code'],'projects','old','old.jsonl');
+ mkdirSync(join(file,'..'),{recursive:true});
+ writeFileSync(file,JSON.stringify({type:'user',uuid:'old-event',sessionId:'old',message:{role:'user',content:'Unrelated historical activity'}})+'\n');
+ const source=join(captureDir(),'sources','old.json');mkdirSync(join(source,'..'),{recursive:true});writeFileSync(source,JSON.stringify({harness:'claude-code',path:file,sessionId:'old'}));
+ const saved=readFileSync(source);
+ await captureHook('cursor',{hook_event_name:'beforeSubmitPrompt',conversation_id:'fresh-cursor',prompt:'Current Cursor activity'});
+ let release!:()=>void;
+ const held=withSessionLock('capture:spool',()=>new Promise<void>(resolve=>{release=resolve;}));
+ while(!release)await new Promise(resolve=>setTimeout(resolve,1));
+ const child=Bun.spawn([process.execPath,resolve(import.meta.dir,'../src/cli.ts'),'collect','hook','--harness','cursor'],{
+  env:{...process.env,OPENCRAWL_NO_UPDATE:'1'},stdin:new Blob([JSON.stringify({hook_event_name:'stop',conversation_id:'fresh-cursor'})]),stdout:'ignore',stderr:'ignore',
+ });
+ const flushing=child.exited;
+ let timer:ReturnType<typeof setTimeout>|undefined,completed=false;
+ try{completed=await Promise.race([flushing.then(()=>true),new Promise<boolean>(resolve=>{timer=setTimeout(()=>resolve(false),2500);})]);}
+ finally{clearTimeout(timer);release();await held;await flushing;}
+ expect(completed).toBe(true);
+ expect(await flushing).toBe(0);
+ expect(f.payloads.map((raw:string)=>JSON.parse(raw).harness)).toEqual(['cursor']);
+ expect(JSON.parse(f.payloads[0]).events.some((event:any)=>event.data?.content?.[0]?.text==='Current Cursor activity')).toBe(true);
+ expect(readFileSync(source)).toEqual(saved);
+ expect(captureStatus()).toMatchObject({pendingHooks:0,queued:0});
+}));
+
+test('transcript-only hooks still reconcile a known source without a new notice',async()=>fixture(async f=>{
+ const file=join(f.config.roots['claude-code'],'projects','old','old.jsonl');
+ mkdirSync(join(file,'..'),{recursive:true});
+ writeFileSync(file,JSON.stringify({type:'user',uuid:'late-event',sessionId:'old',message:{role:'user',content:'Late transcript content'}})+'\n');
+ const source=join(captureDir(),'sources','old.json');mkdirSync(join(source,'..'),{recursive:true});
+ writeFileSync(source,JSON.stringify({harness:'claude-code',path:file,sessionId:'old'}));
+ await hookFlush({hook_event_name:'Stop'});
+ expect(f.payloads.map((raw:string)=>JSON.parse(raw).harness)).toContain('claude-code');
+ expect(f.payloads.flatMap((raw:string)=>JSON.parse(raw).events).some((event:any)=>event.nativeId==='late-event')).toBe(true);
 }));
