@@ -581,6 +581,23 @@ tokens. Changing that fixed identity invalidates old delegations.
 
 ## Search workspace knowledge
 
+Search excludes session tool/command output by default. Use
+`--include-tool-outputs` for logs, failures, test output and execution receipts.
+The current chat is also excluded when the client supplies its exact native
+identity. Use `--include-current-session` to include it. Check
+`data.searchContext`: `currentSessionStatus: "unavailable"` means native identity
+was missing and this chat was **not** excluded. These controls do not delete
+captures or prevent fetching an authorized passage by ID.
+
+Native search hooks attach `currentSession` to the preferred `opencrawl_search`
+MCP tool. The legacy `search` alias accepts explicit context but is not rewritten;
+this keeps new CLIs compatible with older self-hosted servers. An ordinary
+CLI search can pass `--current-session '{"harness":"codex","sessionId":"native-chat-id"}'`.
+Use the actual caller identity, never the newest chat, current directory, board
+display name or another chat's receipt. Workspace and user remain server-derived.
+Explicit kind, role and tool-name filters intersect these defaults; selecting a
+tool result kind does not automatically enable `--include-tool-outputs`.
+
 `opencrawl search "words" --json` queries sessions and all authorized indexed
 connectors. Use `--source sessions|connectors`, `--match any|all|phrase`,
 `--session-id ID` with sessions, and `--limit 1..40`. Follow `data.next` with
@@ -616,11 +633,25 @@ compiles this fixture; it adds no production dependency.
 
 ## Managed skill refresh
 
-Automatic and explicit launcher updates regenerate the CLI-owned `opencrawl`
-skill using the selected release, including local edits and stale files. Other
-named skills remain separate. Skill failures do not prevent CLI use.
-`opencrawl skills refresh --json` retries regeneration and reports access errors.
-`OPENCRAWL_NO_UPDATE=1` disables automatic refresh too.
+After the new binary is installed, its next existing capture hook, session
+startup or ordinary CLI invocation refreshes already-installed `opencrawl` skills
+and native search hooks using that release, including local edits and stale
+files. Publication does not reload an already-running client. Refresh is local,
+skips a busy installation lock and retries later, and caches completed revisions
+to avoid per-event writes. Other named skills remain separate; failures do not
+prevent CLI use. `opencrawl skills refresh --json` explicitly retries regeneration
+and reports access errors. `OPENCRAWL_NO_UPDATE=1` disables automatic refresh too.
+A client without an installed skill still needs `opencrawl skills install`.
+
+Disabled hooks, managed-only policy and existing profile bindings are preserved.
+Codex must review the new **OpenCrawl search context** hook in `/hooks` or Settings
+> Hooks, then start a new session. Claude normally reloads changed hook settings;
+SessionStart requests a skill rescan when it refreshes guidance. Cursor watches
+hook settings; restart if they have not reloaded. Start a fresh Antigravity
+session: `/skills reload` refreshes skills, but live hook reload is unverified.
+Reconnect MCP if the new `opencrawl_search` alias is missing, and verify an actual
+response's `searchContext.currentSessionStatus`. See
+[client activation details](../docs/search-context.md#client-attachment).
 
 Board discovery uses MCP `board_sync`/`board_topics`; expand a relevant reference
 with `board_fetch` or `opencrawl board fetch --id <reference>
