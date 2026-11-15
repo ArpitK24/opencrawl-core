@@ -119,8 +119,22 @@ function pluginRows(output:string):Record<string,unknown>[]|null {
 function matchesName(row:Record<string,unknown>,name:string) {return row.name===name||[row.id,row.pluginId].some(id=>typeof id==='string'&&(id===name||id.startsWith(name+'@')));}
 function isManaged(row:Record<string,unknown>,client:PluginClient,identity:ReturnType<typeof setupPluginIdentity>) {return client==='antigravity'?row.name===identity.name:[row.id,row.pluginId].includes(identity.name+'@'+identity.marketplace);}
 function nativeRoot(row:Record<string,unknown>,client:PluginClient,cachePath?:string):string|undefined {
-  const value=client==='codex'?cachePath??row.installedPath??row.installPath:client==='claude-code'?row.readFromFolder??row.installPath:row.path;
+  const value=client==='codex'?row.installedPath??row.installPath??cachePath:client==='claude-code'?row.readFromFolder??row.installPath:row.path;
   return typeof value==='string'?resolve(value):undefined;
+}
+function nativeProfileMatches(row:Record<string,unknown>,client:PluginClient,api:string,pluginName:string,configHome:string) {
+  // The current native source is authoritative. A saved receipt can outlive a
+  // different CLI profile taking ownership of this deployment-specific plugin.
+  const roots:string[]=[];
+  if(client==='codex'){
+    const source=row.source as {source?:unknown;path?:unknown}|undefined;
+    if(source?.source!=='local'||typeof source.path!=='string')return false;
+    roots.push(resolve(source.path));
+    const installed=row.installedPath??row.installPath;
+    if(installed!==undefined){if(typeof installed!=='string')return false;roots.push(resolve(installed));}
+  }else{const root=nativeRoot(row,client);if(!root)return false;roots.push(root);}
+  try{for(const nativeRoot of roots)verifyPluginBundle({api,client,pluginName,configHome,nativeRoot});return true;}catch{return false;}
+
 }
 function nativeBindingMatches(row:Record<string,unknown>,client:PluginClient,directory:string,api:string,name:string,digest:string,configHome:string,root?:string) {
   if(!root)return false;
@@ -167,6 +181,10 @@ export async function installSetupPlugins(api:string,selected:string[],options:P
             humanTasks.push({id:client+':plugin_install',kind:'plugin_install',client,title:'Review this deployment plugin',instruction:'Inspect the existing deployment-specific plugin and source in native controls. Preserve it until the user chooses to repair or replace that installation; unrelated OpenCrawl plugins can remain enabled.'});continue;
           }
           if(native&&(native.enabled===false||native.installed===false)){results.push({client,status:'pending',message:'The deployment plugin is disabled or unavailable. Its native choice was preserved.'});humanTasks.push({id:client+':plugin_install',kind:'plugin_install',client,title:'Review the deployment plugin',instruction:'Use native controls to review this plugin’s disabled or unavailable state. Preserve policy and the user’s choice before resuming.'});continue;}
+          if(native&&!nativeProfileMatches(native,client,origin,identity.name,configHome)){
+            results.push({client,status:'pending',message:'The native plugin belongs to another CLI profile or its current source could not be verified. It was preserved.'});
+            humanTasks.push({id:client+':plugin_install',kind:'plugin_install',client,title:'Review the active OpenCrawl profile',instruction:'Inspect this deployment plugin’s current native source and CLI profile. Continue setup with the owning profile, or have the user explicitly resolve that conflict before retrying; an older installation receipt cannot replace it.'});continue;
+          }
           if(native)loadedRoot=nativeRoot(native,client,cachePath);
         }
         const unchanged=bundleMatches(directory,bundle,digest,client,origin,identity.name,configHome);
@@ -195,7 +213,7 @@ export async function installSetupPlugins(api:string,selected:string[],options:P
             if(!native||native.enabled===false||native.installed===false||!nativeBindingMatches(native,client,directory,origin,identity.name,digest,configHome,loadedRoot)) {results.push({client,status:'pending',message:'The client has not confirmed this enabled plugin at the selected source and endpoint.',directory});humanTasks.push({id:client+':plugin_install',kind:'plugin_install',client,title:'Confirm '+labels[client]+' plugin source',instruction:'Inspect the native plugin source and endpoint. Preserve unrelated plugins and finish the reported policy or installation step before resuming.'});continue;}
           }
         }
-        safeDirectory(dirname(receipt),configHome);atomicJson(receipt,{schemaVersion:2,api:origin,client,pluginName:identity.name,configHome,digest,pluginId,directory,nativeRoot:loadedRoot,...(cachePath?{cachePath}:{})});
+        safeDirectory(dirname(receipt),configHome);atomicJson(receipt,{schemaVersion:2,api:origin,client,pluginName:identity.name,configHome,digest,pluginId,directory,nativeRoot:loadedRoot,...(client==='codex'&&loadedRoot?{cachePath:loadedRoot}:{})});
         const active=Boolean(loadedRoot&&pluginActivationMatches({api:origin,client,pluginName:identity.name,digest,nativeRoot:loadedRoot,configHome}));
         results.push({client,status:active?(unchanged?'unchanged':'installed'):'prepared',pluginId,directory,...(!active?{message:'Plugin prepared; waiting for its native startup hook to confirm activation.'}:{})});
         if(!active)humanTasks.push({id:client+':restart',kind:'restart',client,title:'Load OpenCrawl in '+labels[client],instruction:`Open or reload ${labels[client]} and select the ${identity.name} plugin for ${origin}. Review any native plugin-hook trust request. ${client==='cursor'?'In Customize or /plugin list, confirm this deployment-specific local plugin loads; if local imports are blocked, ask the administrator to allow it. ':''}Resume setup after its native startup hook runs. Do not use a session-only --plugin-dir override as installation proof.`});

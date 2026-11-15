@@ -29,11 +29,13 @@ export function pluginHookFiles(client:PluginClient,binding:PluginHookBinding,pl
    +'for %%I in ("%~dp0..") do set "OPENCRAWL_PLUGIN_ROOT=%%~fI"\r\n'+command.map(value=>literal(value,true)).join(' ')+' %*\r\n'
   :'#!/bin/sh\n'+'unset '+ambientAuth.join(' ')+'\n'+Object.entries(env).map(([key,value])=>'export '+key+'='+literal(value,false)+'\n').join('')
    +'OPENCRAWL_PLUGIN_ROOT=$(CDPATH= cd -- "${0%/*}/.." && pwd -P) || exit 0\nexport OPENCRAWL_PLUGIN_ROOT\nexec '+command.map(value=>literal(value,false)).join(' ')+' "$@"\n';
+ // Codex 0.166 uses the session's Windows shell (PowerShell by default);
+ // it does not support Claude's per-handler shell override.
  // Use process environment expansion, not inline path substitution: quotes,
  // dollars and percent signs in native cache paths must remain path characters.
  const root=client==='codex'?'PLUGIN_ROOT':client==='claude-code'?'CLAUDE_PLUGIN_ROOT':'CURSOR_PLUGIN_ROOT';
  const invocation=windows
-  ?client==='claude-code'?{command:'& "$env:'+root+'\\scripts\\opencrawl-hook.cmd"',shell:'powershell' as const}
+  ?client==='claude-code'||client==='codex'?{command:'& "$env:'+root+'\\scripts\\opencrawl-hook.cmd"',...(client==='claude-code'?{shell:'powershell' as const}:{})}
    :{command:client==='antigravity'?'".\\scripts\\opencrawl-hook.cmd"':'"%'+root+'%\\scripts\\opencrawl-hook.cmd"'}
   :{command:client==='antigravity'?'/bin/sh ./scripts/opencrawl-hook.sh':'/bin/sh "$'+root+'/scripts/opencrawl-hook.sh"'};
  const args=(values:string[])=>values.map(value=>/^[a-zA-Z0-9_:/.-]+$/.test(value)?value:literal(value,windows)).join(' ');

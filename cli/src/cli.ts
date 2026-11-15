@@ -280,7 +280,7 @@ export async function main(args = process.argv.slice(2)) {
       });
     }
     if(command!=='install')await automaticNativeMigration();
-    if(command==='install'){if(!compiled())throw new CliError('INSTALL_UNAVAILABLE','Run install from a released executable.');const data=await installBinary();await agentSkills('refresh',apiOrigin((parsed.values.api as string|undefined)??process.env.OPENCRAWL_API_URL??readCaptureConfig()?.api??DEFAULT_API_ORIGIN),{});emit(data,`Installed opencrawl ${data.version} at ${data.path}. Add its directory to PATH if needed.`);return 0;}
+    if(command==='install'){if(!compiled())throw new CliError('INSTALL_UNAVAILABLE','Run install from a released executable.');const data=await installBinary();if(!hasPluginContext()&&readCaptureConfig()?.hookOwnership!=='plugin')await agentSkills('refresh',apiOrigin((parsed.values.api as string|undefined)??process.env.OPENCRAWL_API_URL??readCaptureConfig()?.api??DEFAULT_API_ORIGIN),{});emit(data,`Installed opencrawl ${data.version} at ${data.path}. Add its directory to PATH if needed.`);return 0;}
     if(command==='update'){const data=await updateCli();emit(data,data.updated?`Installed opencrawl ${data.version}. Your next invocation will use it.`:`opencrawl ${data.version} is current.`);return 0;}
     const pluginHookInvocation=hasPluginContext()||command==='collect'&&parsed.positionals[1]==='hook'&&readCaptureConfig()?.hookOwnership==='plugin';
     if(!pluginHookInvocation)updateJob=scheduleCliUpdate();

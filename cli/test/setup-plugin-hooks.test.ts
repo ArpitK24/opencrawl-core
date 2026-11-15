@@ -48,8 +48,8 @@ test('bundled runners retain stdin, argv and profile binding after a cache move 
    const start=entries(client,files)[client==='cursor'?'sessionStart':'SessionStart'];
    for(const hook of start){
     const env={...process.env,PATH:windows?process.env.PATH:'/no-node-or-bun-on-path',OPENCRAWL_TOKEN:'fixture-ambient-user-token',OPENCRAWL_SESSIONS_TOKEN:'fixture-ambient-capture-token',OPENCRAWL_AUTH:'replicas-workspace',OPENCRAWL_API_URL:'https://unrelated.example',OPENCRAWL_CONFIG_HOME:'/unrelated/profile',OPENCRAWL_PLUGIN_API:'https://unrelated.example',OPENCRAWL_PLUGIN_ROOT:'/unrelated/cache',PLUGIN_ROOT:root,CLAUDE_PLUGIN_ROOT:root,CURSOR_PLUGIN_ROOT:root};
-    const executable=windows?(hook.shell==='powershell'?join(process.env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe'):process.env.ComSpec||'cmd.exe'):'/bin/sh';
-    const args=windows?(hook.shell==='powershell'?['-NoProfile','-NonInteractive','-Command',hook.command]:['/d','/s','/c','"'+hook.command+'"']):['-c',hook.command];
+    const executable=windows?(client==='codex'||hook.shell==='powershell'?join(process.env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe'):process.env.ComSpec||'cmd.exe'):'/bin/sh';
+    const args=windows?(client==='codex'||hook.shell==='powershell'?['-NoProfile','-NonInteractive','-Command',hook.command]:['/d','/s','/c','"'+hook.command+'"']):['-c',hook.command];
     const result=spawnSync(executable,args,{cwd:client==='antigravity'?root:home,env,input:payload,encoding:'utf8',timeout:10_000});
     expect({error:result.error?.message,stderr:result.stderr,status:result.status}).toEqual({error:undefined,stderr:'',status:0});
     const observed=JSON.parse(result.stdout);
@@ -70,9 +70,9 @@ test('Windows bundles use native command shells and protect profile percent and 
   expect(files['scripts/opencrawl-hook.cmd']).toContain('OPENCRAWL_CONFIG_HOME=C:\\profile %%TEMP%% !keep!');
   expect(files['scripts/opencrawl-hook.cmd']).toContain('OPENCRAWL_PLUGIN_ROOT=%%~fI');
   const first=entries(client,files)[client==='cursor'?'sessionStart':'SessionStart'][0];
-  if(client==='claude-code'){expect(first.shell).toBe('powershell');expect(first.command).toContain('$env:CLAUDE_PLUGIN_ROOT');}
+  if(client==='claude-code'||client==='codex'){expect(first.shell).toBe(client==='claude-code'?'powershell':undefined);expect(first.command).toContain('$env:'+(client==='codex'?'PLUGIN_ROOT':'CLAUDE_PLUGIN_ROOT'));}
   else if(client==='antigravity')expect(first.command).toStartWith('".\\scripts\\opencrawl-hook.cmd"');
-  else expect(first.command).toContain('%'+(client==='codex'?'PLUGIN_ROOT':'CURSOR_PLUGIN_ROOT')+'%');
+  else expect(first.command).toContain('%CURSOR_PLUGIN_ROOT%');
  }
 });
 

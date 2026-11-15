@@ -180,7 +180,39 @@ test('Codex format upgrade removes only byte-matching obsolete owned manifests b
 test('modified or symlink obsolete manifests fail before new bundle files are written',()=>fixture(async(home,options)=>{
  const first=await installSetupPlugins(origin,['codex'],options),directory=first.results[0]!.directory!;legacyCodexBundle(directory);
  writeFileSync(join(directory,'plugin.json'),'user modified');
- expect((await installSetupPlugins(origin,['codex'],options)).results[0]?.status).toBe('error');expect(existsSync(join(directory,'.codex-plugin/plugin.json'))).toBe(false);expect(readFileSync(join(directory,'plugin.json'),'utf8')).toBe('user modified');
+ expect((await installSetupPlugins(origin,['codex'],options)).results[0]?.status).toBe('pending');expect(existsSync(join(directory,'.codex-plugin/plugin.json'))).toBe(false);expect(readFileSync(join(directory,'plugin.json'),'utf8')).toBe('user modified');
  rmSync(join(directory,'plugin.json'));const target=join(home,'user-plugin.json');writeFileSync(target,'private user file');symlinkSync(target,join(directory,'plugin.json'));
- expect((await installSetupPlugins(origin,['codex'],options)).results[0]?.status).toBe('error');expect(existsSync(join(directory,'.codex-plugin/plugin.json'))).toBe(false);expect(readFileSync(target,'utf8')).toBe('private user file');
+ expect((await installSetupPlugins(origin,['codex'],options)).results[0]?.status).toBe('pending');expect(existsSync(join(directory,'.codex-plugin/plugin.json'))).toBe(false);expect(readFileSync(target,'utf8')).toBe('private user file');
+}));
+
+test('a stale receipt cannot rebind a deployment plugin owned by another CLI profile',()=>fixture(async(home,options,calls)=>{
+ for(const client of ['codex','claude-code','antigravity'] as const){
+  const first=await installSetupPlugins(origin,[client],options),directory=first.results[0]!.directory!,before=readFileSync(receipt(home,client),'utf8'),sourceBefore=readFileSync(join(directory,'.opencrawl-setup-plugin.json'),'utf8');
+  const foreignConfig=join(home,'other-profile/config'),foreignRoot=join(home,'other-native-source',client),bundle=setupPluginFiles(client,origin,{command:options.command,configHome:foreignConfig});
+  for(const [name,content] of Object.entries(bundle)){mkdirSync(dirname(join(foreignRoot,name)),{recursive:true});writeFileSync(join(foreignRoot,name),content);}
+  const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
+  save(join(foreignRoot,'.opencrawl-setup-plugin.json'),{schemaVersion:2,api:origin,client,pluginName:identity.name,configHome:foreignConfig,digest:hash(JSON.stringify(bundle,null,2)+'\n'),files:Object.fromEntries(Object.entries(bundle).map(([name,text])=>[name,hash(text)]))});
+  const native=options.runner!;options.runner=async(command,args,env)=>{const response=await native(command,args,env);if(args[1]==='list'){const result=JSON.parse(response.stdout!);for(const row of result.installed){row.source={source:'local',path:foreignRoot};row.readFromFolder=foreignRoot;row.path=foreignRoot;}return {...response,stdout:JSON.stringify(result)};}return response;};
+  calls.length=0;const result=await installSetupPlugins(origin,[client],options);
+  expect(result.results[0]?.status).toBe('pending');expect(result.results[0]?.message).toContain('another CLI profile');expect(calls).toHaveLength(1);
+  expect(readFileSync(receipt(home,client),'utf8')).toBe(before);expect(readFileSync(join(directory,'.opencrawl-setup-plugin.json'),'utf8')).toBe(sourceBefore);
+  expect(read(join(foreignRoot,'.opencrawl-setup-plugin.json')).configHome).toBe(foreignConfig);options.runner=native;
+ }
+}));
+test('matching native profile ownership permits ordinary command upgrades for every native installer',()=>fixture(async(home,options)=>{
+ for(const client of ['codex','claude-code','antigravity'] as const){
+  await installSetupPlugins(origin,[client],options);const prior=read(receipt(home,client));options.command=[join(home,'upgraded cli',client,'opencrawl')];
+  expect((await installSetupPlugins(origin,[client],options)).results[0]?.status).toBe('prepared');expect(read(receipt(home,client)).digest).not.toBe(prior.digest);
+ }
+}));
+
+test('current Codex cache inventory takes precedence over a stale saved path and rejects another profile',()=>fixture(async(home,options,calls)=>{
+ await installSetupPlugins(origin,['codex'],options);const before=read(receipt(home,'codex')),current=join(home,'new-current-codex-cache');cpSync(before.nativeRoot,current,{recursive:true});
+ const native=options.runner!;options.runner=async(command,args,env)=>{const response=await native(command,args,env);if(args[1]==='list'){const result=JSON.parse(response.stdout!);for(const row of result.installed)row.installedPath=current;return {...response,stdout:JSON.stringify(result)};}return response;};
+ calls.length=0;expect((await installSetupPlugins(origin,['codex'],options)).results[0]?.status).toBe('prepared');expect(calls).toHaveLength(1);
+ expect(read(receipt(home,'codex'))).toMatchObject({nativeRoot:current,cachePath:current});
+ const markerFile=join(current,'.opencrawl-setup-plugin.json');save(markerFile,{...read(markerFile),configHome:join(home,'other-config')});
+ const receiptBefore=readFileSync(receipt(home,'codex'),'utf8');calls.length=0;
+ expect((await installSetupPlugins(origin,['codex'],options)).results[0]?.status).toBe('pending');expect(calls).toHaveLength(1);expect(readFileSync(receipt(home,'codex'),'utf8')).toBe(receiptBefore);
+ expect(read(markerFile).configHome).toBe(join(home,'other-config'));
 }));
