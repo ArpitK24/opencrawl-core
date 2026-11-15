@@ -108,6 +108,79 @@ test('Claude native tool_use and tool_result blocks bind MCP without treating te
   assert.equal((await f.setup.read(owner)).installations[0].clients[1].mcp.state,'authenticated');
 });
 
+async function agyFixture({compact=false,server='opencrawl_opencrawl'}={}) {
+  const f=await fixture(),selected={...selection,client:'antigravity'};
+  await f.setup.installation(owner,registration([observation('antigravity')]));
+  const proof=(await f.setup.verify(owner,selected)).proof,input={...selected,proofId:proof.id};
+  const started=f.batch().events[0].timestamp;f.advance(100);
+  const result=await f.setup.mcp(owner,input);f.advance(100);
+  const completed=f.batch().events[0].timestamp;
+  const wrapper={ServerName:server,ToolName:'verify_installation',Arguments:input};
+  const hook={id:'agy-completed-step',kind:'hook',timestamp:completed,data:{hookEventName:'PostToolUse',conversationId:'native-session',stepIdx:4,toolCall:{name:'call_mcp_tool',args:compact?Object.fromEntries(Object.entries(wrapper).map(([k,v])=>[k,JSON.stringify(v)])):wrapper}}};
+  const output={id:'agy-native-result',kind:'tool_result',sequence:4,nativeId:'4',timestamp:started,data:{type:'tool_result',output:JSON.stringify(result)}};
+  const ingest=(events,extra={})=>f.setup.session(owner,f.batch({harness:'antigravity',events,...extra}));
+  const read=async()=>(await f.setup.read(owner)).installations[0].clients.find(c=>c.client==='antigravity');
+  await ingest([{id:'agy-message',kind:'message',timestamp:completed,data:{role:'assistant',content:proof.marker}}]);
+  return {...f,selected,proof,hook,output,ingest,read};
+}
+
+test('Antigravity binds its completed MCP wrapper to the exact native result step across batches',async()=>{
+  for(const compact of [false,true])for(const order of ['result-first','hook-first']){
+    const f=await agyFixture({compact,server:compact?'opencrawl-012345abcdef_opencrawl':'opencrawl_opencrawl'});
+    const pair=order==='result-first'?[f.output,f.hook]:[f.hook,f.output];
+    await f.ingest([pair[0]]);assert.equal((await f.read()).mcp.state,'observed');
+    await f.ingest([pair[1]]);assert.equal((await f.read()).mcp.state,'authenticated');
+    assert.equal((await f.read()).proof.state,'waiting_index','native MCP binding does not invent search proof');
+    await f.ingest(pair);assert.equal((await f.read()).mcp.state,'authenticated','replay stays idempotent');
+    assert.equal(JSON.stringify(await f.read()).includes('opencrawlmcp'),false);
+  }
+});
+
+test('Antigravity rejects unrelated steps, wrappers, sessions, stale timestamps and non-native evidence',async()=>{
+  const cases=[
+    ['adjacent result',(f)=>{f.output.sequence=5;f.output.nativeId='5';}],
+    ['missing native ID',(f)=>{delete f.output.nativeId;}],
+    ['different native ID',(f)=>{f.output.nativeId='04';}],
+    ['negative step',(f)=>{f.hook.data.stepIdx=-1;}],
+    ['fractional step',(f)=>{f.hook.data.stepIdx=4.5;}],
+    ['wrong native conversation',(f)=>{f.hook.data.conversationId='other-native';}],
+    ['before tool execution',(f)=>{f.hook.data.hookEventName='PreToolUse';}],
+    ['terminal call',(f)=>{f.hook.data.toolCall.name='run_command';}],
+    ['unrelated MCP server',(f)=>{f.hook.data.toolCall.args.ServerName='unrelated';}],
+    ['different MCP tool',(f)=>{f.hook.data.toolCall.args.ToolName='installation_status';}],
+    ['other proof',(f)=>{f.hook.data.toolCall.args.Arguments.proofId='0'.repeat(32);}],
+    ['wrong result nonce',(f)=>{f.output.data.output='opencrawlmcp'+'0'.repeat(32);}],
+    ['hook before receipt',(f)=>{f.hook.timestamp=f.output.timestamp;}],
+    ['result before challenge',(f)=>{f.output.timestamp='2026-11-14T11:59:59Z';}],
+    ['hook error',(f)=>{f.hook.data.error='Native tool failed';}],
+    ['result error',(f)=>{f.output.data.is_error=true;}],
+    ['oversized encoded arguments',(f)=>{f.hook.data.toolCall.args.Arguments=' '.repeat(8193)+JSON.stringify(f.hook.data.toolCall.args.Arguments);}],
+  ];
+  for(const [name,change] of cases){
+    const f=await agyFixture();change(f);await f.ingest([f.output,f.hook]);
+    assert.equal((await f.read()).mcp.state,'observed',name);
+  }
+  for(const extra of [{captureMode:'history'},{sessionId:'other-native'},{installationId:'other-installation'},{harness:'codex'}]){
+    const f=await agyFixture();await f.ingest([f.output,f.hook],extra);
+    assert.equal((await f.read()).mcp.state,'observed',JSON.stringify(extra));
+  }
+});
+
+test('Antigravity cannot join the same step across sessions or use another session for this marker',async()=>{
+  for(const wholePair of [false,true]){
+    const f=await agyFixture();
+    const otherHook={...f.hook,data:{...f.hook.data,conversationId:'other-native'}};
+    if(wholePair)await f.ingest([otherHook,f.output],{sessionId:'other-native'});
+    else {
+      await f.ingest([f.hook]);
+      await f.ingest([f.output],{sessionId:'other-native'});
+    }
+    assert.equal((await f.read()).mcp.state,'observed',wholePair?'other session pair cannot verify marker session':'step IDs remain session-scoped');
+    await f.ingest([f.hook,f.output]);
+    assert.equal((await f.read()).mcp.state,'authenticated');
+  }
+});
+
 test('search-only and history-only clients can observe MCP without enabling capture or claiming native proof',async()=>{
   const f=await fixture();
   for(const history of ['skip','import']) {

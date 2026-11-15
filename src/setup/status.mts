@@ -42,6 +42,31 @@ function toolBlocks(event:SessionEvent):Record<string,unknown>[] {
   const data=event.data??{},content=Array.isArray(data.content)?data.content:[];
   return [...(['tool_call','tool_result'].includes(event.kind)?[data]:[]),...content.filter((block):block is Record<string,unknown>=>Boolean(block)&&typeof block==='object'&&!Array.isArray(block))];
 }
+const object=(value:unknown):value is Record<string,unknown>=>Boolean(value&&typeof value==='object'&&!Array.isArray(value));
+function agyValue(value:unknown):unknown {
+  // Compact native records JSON-encode individual wrapper arguments. Proof
+  // inputs are small; never recursively decode arbitrary tool output.
+  if(typeof value!=='string'||value.length>8192)return value;
+  try{return JSON.parse(value);}catch{return value;}
+}
+function verificationBlocks(batch:SessionBatch,event:SessionEvent):Record<string,unknown>[] {
+  if(batch.harness!=='antigravity')return toolBlocks(event);
+  const data=event.data??{};
+  // Antigravity's documented PostToolUse stepIdx identifies the completed
+  // native step. The collector retains that hook and the GENERIC result's
+  // matching sequence/nativeId; neither contains a native tool call ID.
+  if(event.kind==='hook'&&data.hookEventName==='PostToolUse'&&!data.error&&data.conversationId===batch.sessionId&&Number.isSafeInteger(data.stepIdx)&&Number(data.stepIdx)>=0){
+    const tool=data.toolCall;if(!object(tool)||tool.name!=='call_mcp_tool')return [];
+    const args=agyValue(tool.args);if(!object(args))return [];
+    const server=agyValue(args.ServerName),name=agyValue(args.ToolName),input=agyValue(args.Arguments);
+    if(typeof server!=='string'||!/^opencrawl(?:-[a-f0-9]{12})?(?:_opencrawl)?$/.test(server)||name!=='verify_installation'||!object(input))return [];
+    return [{id:'antigravity-step:'+data.stepIdx,name,input}];
+  }
+  if(event.kind==='tool_result'&&data.type==='tool_result'&&!data.is_error&&Number.isSafeInteger(event.sequence)&&Number(event.sequence)>=0&&event.nativeId===String(event.sequence)){
+    return [{...data,call_id:'antigravity-step:'+event.sequence}];
+  }
+  return [];
+}
 const callId=(block:Record<string,unknown>,result=false)=>{
   const value=result?(block.call_id??block.tool_use_id):(block.call_id??block.id);
   return typeof value==='string'&&value.length>0&&value.length<=200?value:null;
@@ -147,13 +172,18 @@ export function createSetupStatus({store,prefix='capture-v1',search,now=()=>new 
         // Claude embeds native tool_use/tool_result blocks inside messages;
         // Codex records separate call/result events. A terminal command returning
         // an MCP response is not a native MCP invocation and must not pass.
-        for(const event of batch.events)for(const block of toolBlocks(event)) {
+        for(const event of batch.events)for(const block of verificationBlocks(batch,event)) {
           const id=callId(block);
-          if(id&&fresh(event,since)&&nativeVerificationCall(block,e.proof.id!,batch.installationId,batch.harness)) {
+          // AGY hooks observe completion after the server issues its receipt;
+          // its result created_at may instead describe the step's start. Bind
+          // the completed hook after receipt issuance and its exact result
+          // after challenge issuance. Other clients retain their native IDs.
+          const callSince=batch.harness==='antigravity'?e.mcpCall?.issuedAt:since;
+          if(id&&callSince&&fresh(event,callSince)&&nativeVerificationCall(block,e.proof.id!,batch.installationId,batch.harness)) {
             e.nativeCalls=[...(e.nativeCalls??[]).filter(call=>call.callId!==id||call.sessionId!==batch.sessionId),{callId:id,sessionId:batch.sessionId}].slice(-8);
           }
           const resultId=callId(block,true);
-          if(resultId&&e.mcpCall&&(event.kind==='tool_result'||block.type==='tool_result')&&fresh(event,e.mcpCall.issuedAt)&&JSON.stringify(block).includes(e.mcpCall.receipt)) {
+          if(resultId&&e.mcpCall&&(event.kind==='tool_result'||block.type==='tool_result')&&fresh(event,batch.harness==='antigravity'?since:e.mcpCall.issuedAt)&&JSON.stringify(block).includes(e.mcpCall.receipt)) {
             e.nativeResults=[...(e.nativeResults??[]).filter(result=>result.callId!==resultId||result.sessionId!==batch.sessionId),{callId:resultId,sessionId:batch.sessionId,eventId:event.id,observedAt:now().toISOString()}].slice(-8);
           }
         }
