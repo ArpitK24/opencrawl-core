@@ -44,13 +44,14 @@ export function setupPluginFiles(client:PluginClient,api:string,options:BundleOp
   const identity=setupPluginIdentity(api),origin=identity.api,url=origin+'/mcp';
   const command=options.command??setupCommandForSelf(),configHome=resolve(options.configHome??process.env.OPENCRAWL_CONFIG_HOME??process.env.XDG_CONFIG_HOME??join(homedir(),'.config'));
   const base={name:identity.name,version,description:'Search knowledge and finish OpenCrawl setup at '+origin+'.',author:{name:'OpenCrawl'},license:'MIT'};
-  const guide=setupAgentGuide(client,origin,command)+`\nThis plugin is \`${identity.name}\`, bound to ${origin}. Use this plugin's native MCP namespace for setup and search; preserve other OpenCrawl deployments.\n`;
+  const guide=setupAgentGuide(client,origin,command,process.platform,client==='codex'?{name:identity.name,url}:undefined)+`\nThis plugin is \`${identity.name}\`, bound to ${origin}. Use this plugin's native MCP namespace for setup and search; preserve other OpenCrawl deployments.\n`;
   const files:Record<string,string>={...Object.fromEntries(Object.entries(skillFiles(guide)).map(([name,content])=>['skills/opencrawl/'+name,content])),'skills/opencrawl-setup/SKILL.md':guide,'README.md':'# OpenCrawl\n\nContinue setup at '+origin+' with this plugin. The CLI owns saved choices and history workers; this native plugin delivers startup and capture hooks.\n'};
   if(client==='codex') {
     // Codex 0.166 discovers both MCP and hooks through its supported compatibility layout.
     // A portable root without its schema silently loads skills but drops MCP.
     files['.codex-plugin/plugin.json']=json({...base,skills:'./skills/',mcpServers:'./.mcp.json',hooks:'./hooks/hooks.json',onboardingSkill:'./skills/opencrawl-setup/SKILL.md',interface:{displayName:'OpenCrawl ('+new URL(origin).host+')',shortDescription:'Search knowledge and finish setup',defaultPrompt:['Continue my OpenCrawl setup at '+origin+'.']}});
-    files['.mcp.json']=json({mcpServers:{opencrawl:{type:'http',url}}});
+    // Codex merges MCP servers by this inner key, even across distinct plugins.
+    files['.mcp.json']=json({mcpServers:{[identity.name]:{type:'http',url}}});
   } else if(client==='claude-code') {
     files['.claude-plugin/plugin.json']=json(base);
     files['.mcp.json']=json({mcpServers:{opencrawl:{type:'http',url}}});
@@ -144,7 +145,8 @@ function nativeBindingMatches(row:Record<string,unknown>,client:PluginClient,dir
   }
   try{if(verifyPluginBundle({api,client,pluginName:name,configHome,nativeRoot:root}).digest!==digest)return false;}catch{return false;}
   const file=client==='claude-code'||client==='codex'?'.mcp.json':client==='antigravity'?'mcp_config.json':'mcp.json';
-  return read(join(root,file))?.mcpServers?.opencrawl?.url===api+'/mcp';
+  const servers=read(join(root,file))?.mcpServers,server=servers?.[client==='codex'?name:'opencrawl'];
+  return server?.url===api+'/mcp'&&(client!=='codex'||Object.keys(servers).length===1&&server.type==='http');
 }
 function bundleMatches(directory:string,bundle:Record<string,string>,digest:string,client:PluginClient,api:string,pluginName:string,configHome:string) {
   try {

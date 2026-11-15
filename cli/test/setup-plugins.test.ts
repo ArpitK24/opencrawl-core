@@ -52,7 +52,7 @@ test('all four bundles contain native hooks bound to the exact profile, command 
   expect(runner).toContain(identity.name);expect(runner).toContain('OPENCRAWL_CONFIG_HOME');expect(runner).toContain('private profile');expect(runner).toContain('private cli');
   expect(files['skills/opencrawl-setup/SKILL.md']).toContain(identity.name);expect(files['skills/opencrawl-setup/SKILL.md']).toContain('Never switch to a separate "test MCP" prompt');
   expect(files['skills/opencrawl/references/search.md']).toContain('Lexical search recipe');
-  if(client==='codex'){const manifest=JSON.parse(files['.codex-plugin/plugin.json']);expect(manifest).toMatchObject({hooks:'./hooks/hooks.json',mcpServers:'./.mcp.json',skills:'./skills/'});expect(JSON.parse(files['.mcp.json']).mcpServers.opencrawl.type).toBe('http');expect(files['plugin.json']).toBeUndefined();expect(files['mcp.json']).toBeUndefined();}
+  if(client==='codex'){const manifest=JSON.parse(files['.codex-plugin/plugin.json']);expect(manifest).toMatchObject({hooks:'./hooks/hooks.json',mcpServers:'./.mcp.json',skills:'./skills/'});expect(JSON.parse(files['.mcp.json']).mcpServers).toEqual({[identity.name]:{type:'http',url:origin+'/mcp'}});expect(files['plugin.json']).toBeUndefined();expect(files['mcp.json']).toBeUndefined();}
  }
 });
 test('native registration prepares a plugin and resumes without reinstalling before activation',()=>fixture(async(home,options,calls)=>{
@@ -170,6 +170,41 @@ function legacyCodexBundle(directory:string) {
  const digest=(value:string)=>createHash('sha256').update(value).digest('hex');
  save(markerFile,{...metadata,digest:digest(JSON.stringify(files,null,2)+'\n'),files:Object.fromEntries(Object.entries(files).map(([name,text])=>[name,digest(text)]))});
 }
+function genericCodexMcp(directory:string) {
+ const markerFile=join(directory,'.opencrawl-setup-plugin.json'),metadata=read(markerFile);
+ save(join(directory,'.mcp.json'),{mcpServers:{opencrawl:{type:'http',url:origin+'/mcp'}}});
+ const files=Object.fromEntries(Object.keys(metadata.files).map(name=>[name,readFileSync(join(directory,name),'utf8')]));
+ const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
+ save(markerFile,{...metadata,digest:hash(JSON.stringify(files,null,2)+'\n'),files:Object.fromEntries(Object.entries(files).map(([name,text])=>[name,hash(text)]))});
+ return read(markerFile);
+}
+test('owned generic Codex MCP migrates without changing hooks, manual MCP, auth, trust or another deployment',()=>fixture(async(home,options,calls)=>{
+ const first=await installSetupPlugins(origin,['codex'],options),directory=first.results[0]!.directory!;
+ activate(home,'codex');
+ const activationFile=join(dirname(receipt(home,'codex')),'activation.json');
+ const otherApi='https://other.example';await installSetupPlugins(otherApi,['codex'],options);
+ const other=read(receipt(home,'codex',otherApi)),otherBefore=readFileSync(join(other.nativeRoot,'.opencrawl-setup-plugin.json'),'utf8');
+ const native=read(receipt(home,'codex')),hooksBefore=readFileSync(join(native.nativeRoot,'hooks/hooks.json'),'utf8');
+ const runnerFile=process.platform==='win32'?'scripts/opencrawl-hook.cmd':'scripts/opencrawl-hook.sh',runnerBefore=readFileSync(join(native.nativeRoot,runnerFile),'utf8');
+ genericCodexMcp(directory);const old=genericCodexMcp(native.nativeRoot);save(receipt(home,'codex'),{...native,digest:old.digest});
+ save(activationFile,{...read(activationFile),digest:old.digest});const activationBefore=readFileSync(activationFile,'utf8');
+ const preserved={
+  'config.toml':'[mcp_servers.opencrawl]\nurl = "https://manual.example/mcp"\n',
+  'auth.json':'synthetic-auth-sentinel',
+  'hooks-trust.json':'synthetic-trust-sentinel',
+ };
+ for(const [name,text] of Object.entries(preserved)){mkdirSync(join(home,'.codex'),{recursive:true});writeFileSync(join(home,'.codex',name),text);}
+ expect(pluginActivationMatches({...native,digest:old.digest})).toBe(false);calls.length=0;
+ const migrated=await installSetupPlugins(origin,['codex'],options);expect(migrated.results[0]?.status).toBe('prepared');
+ expect(calls.filter(call=>call[2]==='add').map(call=>call[3])).toEqual([identity.name+'@'+identity.marketplace]);
+ for(const root of [directory,native.nativeRoot])expect(read(join(root,'.mcp.json')).mcpServers).toEqual({[identity.name]:{type:'http',url:origin+'/mcp'}});
+ expect(read(join(other.nativeRoot,'.mcp.json')).mcpServers).toEqual({[setupPluginIdentity(otherApi).name]:{type:'http',url:otherApi+'/mcp'}});
+ expect(readFileSync(join(other.nativeRoot,'.opencrawl-setup-plugin.json'),'utf8')).toBe(otherBefore);
+ expect(readFileSync(join(native.nativeRoot,'hooks/hooks.json'),'utf8')).toBe(hooksBefore);expect(readFileSync(join(native.nativeRoot,runnerFile),'utf8')).toBe(runnerBefore);
+ for(const [name,text] of Object.entries(preserved))expect(readFileSync(join(home,'.codex',name),'utf8')).toBe(text);
+ expect(readFileSync(activationFile,'utf8')).toBe(activationBefore);expect(pluginActivationMatches(read(receipt(home,'codex')))).toBe(false);
+ activate(home,'codex');expect((await installSetupPlugins(origin,['codex'],options)).results[0]?.status).toBe('unchanged');
+}));
 test('Codex format upgrade removes only byte-matching obsolete owned manifests before native reinstallation',()=>fixture(async(home,options)=>{
  const first=await installSetupPlugins(origin,['codex'],options),directory=first.results[0]!.directory!;legacyCodexBundle(directory);writeFileSync(join(directory,'user-notes.txt'),'foreign extra');
  const next=await installSetupPlugins(origin,['codex'],options);expect(next.results[0]?.status).toBe('prepared');

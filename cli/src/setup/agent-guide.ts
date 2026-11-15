@@ -1,6 +1,6 @@
 import {formatSetupCommand} from './invocation.ts';
 
-export function setupAgentGuide(client = 'the current client', api?: string, command?:string[], platform=process.platform) {
+export function setupAgentGuide(client = 'the current client', api?: string, command?:string[], platform=process.platform, mcp?:{name:string;url:string}) {
   const server=api?['--api',api]:[];
   const invoke=(args:string[])=>formatSetupCommand([...args,...server],command,platform);
   const clientId=client==='the current client'?'<this-client>':client;
@@ -11,7 +11,7 @@ description: Continue OpenCrawl setup with saved choices, native hook trust, MCP
 
 # Continue OpenCrawl setup
 
-The CLI is the bootloader and owns installation, saved choices, progress, and verification. You are the human interface for the remaining steps in ${client}. Use \`${formatSetupCommand([],command,platform)}\` for every OpenCrawl command; this preserves the current installation and its configuration.
+The CLI is the bootloader and owns installation, saved choices, progress, and verification. You are the human interface for the remaining steps in ${client}. Use \`${formatSetupCommand([],command,platform)}\` for every OpenCrawl command; this preserves the current installation and its configuration.${mcp?`\n\nUse native MCP server \`${mcp.name}\` at \`${mcp.url}\` for this deployment's authentication and tools. Confirm that exact name and endpoint in the harness. A manual \`opencrawl\` server or another deployment's plugin is a different connection; preserve it and do not use it for this installation's verification.`:''}
 
 Respect the harness's declared network and filesystem restrictions. Local setup status needs no network. Use native MCP for server verification; it has its own authentication and does not require shell network access. If a CLI command needs additional access, use the harness's normal approval mechanism and stop that command if approval is denied or unavailable. Do not change permission policy, disable the sandbox, or ask the user to sign in again merely because a shell network request failed.
 

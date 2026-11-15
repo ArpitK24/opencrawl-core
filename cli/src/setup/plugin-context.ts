@@ -66,6 +66,15 @@ function profile(binding:PluginBinding):CaptureConfig {
 function installedBundle(binding:PluginBinding,bundle:VerifiedPluginBundle):void {
   const receipt=readJson(join(profileRoot(binding.configHome,binding.client,binding.api),'installed.json'));
   if(!object(receipt)||receipt.schemaVersion!==2||receipt.api!==binding.api||receipt.client!==binding.client||receipt.pluginName!==binding.pluginName||receipt.digest!==bundle.digest||typeof receipt.nativeRoot!=='string'||realpathSync(receipt.nativeRoot)!==bundle.root)throw invalid();
+  // Ownership checks still admit an intact older bundle for installer migration.
+  // Activation requires Codex's deployment-scoped MCP name, not a colliding key.
+  if(binding.client==='codex'){
+    if(!bundle.files['.mcp.json'])throw invalid();
+    const mcp=readJson(bundleFile(bundle.root,'.mcp.json'));
+    const servers=object(mcp)&&object(mcp.mcpServers)?mcp.mcpServers:null;
+    const server=servers?.[binding.pluginName];
+    if(!servers||Object.keys(servers).length!==1||!object(server)||server.type!=='http'||server.url!==binding.api+'/mcp')throw invalid();
+  }
 }
 
 /** Reject mismatched deployment/client/profile before reading a transcript or using auth. */

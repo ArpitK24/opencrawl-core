@@ -40,10 +40,21 @@ test('every native plugin gives its onboarding and shared setup reference the sa
  const api='https://selected.example';
  for(const client of ['claude-code','codex','cursor','antigravity'] as const){
   const files=setupPluginFiles(client,api),guide=files['skills/opencrawl-setup/SKILL.md'];
-  expect(guide).toStartWith(setupAgentGuide(client,api));
+  expect(guide).toStartWith(setupAgentGuide(client,api,undefined,process.platform,client==='codex'?{name:setupPluginIdentity(api).name,url:api+'/mcp'}:undefined));
   expect(guide).toContain(setupPluginIdentity(api).name);
   expect(files['skills/opencrawl/references/setup.md']).toBe(guide);
   expect(guide).toContain('`'+formatSetupCommand(['verify-installation','--client',client,'--json','--api',api])+'`');
   expect(guide).not.toMatch(/`opencrawl (setup|verify-installation)/);
+ }
+});
+
+test('Codex names the exact deployment MCP connection without changing other harness guides',()=>{
+ const api='https://selected.example',identity=setupPluginIdentity(api);
+ const codex=setupPluginFiles('codex',api)['skills/opencrawl-setup/SKILL.md'];
+ expect(codex).toContain('Use native MCP server `'+identity.name+'` at `'+api+'/mcp`');
+ expect(codex).toContain('A manual `opencrawl` server or another deployment');
+ expect(codex).toContain('do not use it for this installation');
+ for(const client of ['claude-code','cursor','antigravity'] as const){
+  expect(setupPluginFiles(client,api)['skills/opencrawl-setup/SKILL.md']).toBe(setupAgentGuide(client,api)+`\nThis plugin is \`${identity.name}\`, bound to ${api}. Use this plugin's native MCP namespace for setup and search; preserve other OpenCrawl deployments.\n`);
  }
 });
