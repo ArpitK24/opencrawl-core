@@ -2,9 +2,11 @@ const common='\nOptions: --json (versioned JSON), --api https://host (deployment
 export function commandHelp(command:string, operation?:string):string|undefined {
   if(command==='setup')return `Usage: opencrawl setup [--api URL]
        opencrawl setup --json
+       opencrawl setup hooks --json
        opencrawl setup apply --plugins IDS --forward IDS --history IDS --plan-id ID --yes
 
 Sign in first, then review independent plugin, future-recording and history choices.
+setup hooks inspects this installation's Codex hook trust locally without changing it.
 Detected supported clients and available histories start selected; saved off choices stay off.
 Import past sessions so your agents can find previous decisions, fixes, and context.
 

@@ -5,6 +5,7 @@ import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
 import {scopeKey,type SetupState} from '../src/setup/state.ts';
 import type {CaptureConfig} from '../src/capture/runtime.ts';
+import type {CodexHookReview} from '../src/capture/codex-hooks.ts';
 
 const api='https://offline.example',scope={api,tenantId:'local-team',userId:'local-user'};
 function snapshot(root:string):unknown[]{
@@ -13,7 +14,7 @@ function snapshot(root:string):unknown[]{
   return [[relative(root,path),stat.mode,stat.mtimeMs,entry.isFile()?readFileSync(path).toString('base64'):snapshot(path)]];
  });
 }
-async function fixture(run:(f:{root:string;config:CaptureConfig;state:SetupState;captureFile:string;stateFile:string;save:()=>void;invoke:(args?:string[])=>Promise<{code:number;data:Record<string,unknown>;output:string}>})=>Promise<void>){
+async function fixture(run:(f:{root:string;config:CaptureConfig;state:SetupState;captureFile:string;stateFile:string;save:()=>void;invoke:(args?:string[])=>Promise<{code:number;data:Record<string,unknown>;output:string}>})=>Promise<void>,nativeReview?:CodexHookReview){
  const root=mkdtempSync(join(tmpdir(),'opencrawl-local-status-')),configHome=join(root,'config'),captureFile=join(configHome,'opencrawl','capture','config.json'),stateFile=join(configHome,'opencrawl','setup',scopeKey(scope)+'.json');
  const config:CaptureConfig={schemaVersion:1,api,installationId:'local-installation',owner:{tenantId:scope.tenantId,userId:scope.userId,name:'private-owner-name',email:'private-owner-email'},installedAt:'2026-11-15T00:00:00Z',command:['private-launcher'],roots:{'claude-code':join(root,'claude'),codex:join(root,'codex'),cursor:join(root,'cursor'),antigravity:join(root,'gemini')},harnesses:['codex','antigravity'],historyHarnesses:['codex'],hookOwnership:'plugin'};
  const state:SetupState={schemaVersion:1,scope,installationId:config.installationId,acceptedAt:'2026-11-15T00:00:00Z',selections:{plugins:{codex:true,cursor:true,antigravity:true,'claude-code':false},forward:{codex:true,cursor:true,antigravity:true,'claude-code':false},history:{codex:true,cursor:false,antigravity:false,'claude-code':false}},historyJob:{id:'approved-history',clients:['codex'],files:[],state:'queued',completedClients:[],createdAt:'2026-11-15T00:00:00Z',updatedAt:'2026-11-15T00:00:00Z'}};
@@ -23,6 +24,7 @@ async function fixture(run:(f:{root:string;config:CaptureConfig;state:SetupState
  writeFileSync(credential,JSON.stringify({accessToken:'synthetic-access-secret',refreshToken:'synthetic-refresh-secret',expiresAt:0,auth:{clientId:'fixture',tokenEndpoint:api+'/token'}}));chmodSync(credential,0o644);
  const preload=join(root,'offline-guards.ts');
  writeFileSync(preload,`import {mock} from 'bun:test';
+${nativeReview?`import * as nativeHooks from ${JSON.stringify(resolve(import.meta.dir,'../src/capture/codex-hooks.ts'))};\nmock.module(${JSON.stringify(resolve(import.meta.dir,'../src/capture/codex-hooks.ts'))},()=>({...nativeHooks,inspectCodexHooks:async()=>(${JSON.stringify(nativeReview)})}));`:''}
 import * as fs from 'node:fs';
 import * as cp from 'node:child_process';
 const denied=(name)=>{process.stderr.write('FORBIDDEN_SIDE_EFFECT:'+name+'\\n');throw new Error('Forbidden offline side effect');};
@@ -76,8 +78,20 @@ test('missing or incomplete local binding fails without restarting setup, even w
 
 test('local flag and malformed variants reject before native delegation, global hook refresh, auth or history work',()=>fixture(async({config,save,invoke})=>{
  config.hookOwnership='global';save();
- for(const args of [['setup'],['setup','resume'],['setup','apply'],['setup','worker'],['setup','verify'],['verify-installation'],['whoami'],['search','fixture'],['session','start'],['collect','install'],['update'],['login']]){
+ for(const args of [['setup'],['setup','hooks'],['setup','resume'],['setup','apply'],['setup','worker'],['setup','verify'],['verify-installation'],['whoami'],['search','fixture'],['session','start'],['collect','install'],['update'],['login']]){
   expect(await invoke([...args,'--local'])).toMatchObject({code:64,data:{error:{code:'INVALID_USAGE'}}});
  }
  for(const args of [['setup','status','--local=false'],['search','fixture','--local='],['setup','status','--local','--api']])expect(await invoke(args)).toMatchObject({code:64,data:{error:{code:'INVALID_USAGE'}}});
 }));
+
+
+test('explicit hook status observes native trust without server auth, writes, workers or generic process launches',()=>fixture(async({config,invoke})=>{
+ const result=await invoke(['setup','hooks']);
+ expect(result).toMatchObject({code:0,data:{data:{status:'hook_status',serverChecked:false,scope,installationId:config.installationId,client:'codex',recordingSelected:true,review:{state:'observed',total:8,pending:0,disabled:0}}}});
+ expect(result.output).not.toContain('"authenticated"');expect(result.output).not.toContain('"proof"');
+}, {state:'observed',total:8,pending:0,disabled:0}));
+
+test('explicit hook status keeps unknown trust distinct from successful native review',()=>fixture(async({invoke})=>{
+ expect(await invoke(['setup','hooks'])).toMatchObject({code:0,data:{data:{review:{state:'unknown',total:8,pending:null,disabled:null}}}});
+ expect(await invoke(['setup','hooks','--api','https://another.example'])).toMatchObject({code:2,data:{error:{code:'SETUP_SCOPE_CHANGED'}}});
+}, {state:'unknown',total:8,pending:null,disabled:null}));

@@ -96,6 +96,68 @@ test('MCP needs its authenticated proof-specific call plus the selected native c
   assert.equal(client.proof.state,'waiting_index','MCP auth never stands in for searchable capture');
 });
 
+function codexCompletion(f,result) {
+  const timestamp=f.batch().events[0].timestamp;
+  return {id:'native-completion',kind:'mcp_tool_call_end',timestamp,data:{type:'item_completed',thread_id:'native-session',
+    started_at_ms:Date.parse(timestamp)-100,completed_at_ms:Date.parse(timestamp),item:{type:'McpToolCall',id:'exec-native-mcp',
+      server:'opencrawl-0123456789ab',tool:'verify_installation',status:'completed',pluginId:'opencrawl-0123456789ab@opencrawl-cli-0123456789ab',
+      arguments:{...selection,proofId:f.proof.id},result:{content:[{type:'text',text:JSON.stringify(result)}],structuredContent:result}}}};
+}
+
+test('Codex completed native MCP metadata binds its own invocation and result in the selected session',async()=>{
+  for(const server of ['opencrawl','opencrawl-0123456789ab']) {
+    const f=await fixture(),result=await f.setup.mcp(owner,{...selection,proofId:f.proof.id}),event=codexCompletion(f,result);
+    event.data.item.server=server;if(server==='opencrawl')delete event.data.item.pluginId;
+    // Native metadata may arrive before the marker; it cannot prove a different session.
+    await f.setup.session(owner,f.batch({events:[event]}));
+    assert.equal((await f.setup.read(owner)).installations[0].clients[0].mcp.state,'observed');
+    await f.setup.session(owner,f.batch());
+    const client=(await f.setup.read(owner)).installations[0].clients[0];
+    assert.equal(client.mcp.state,'authenticated');assert.equal(client.proof.state,'waiting_index');
+  }
+});
+
+test('Codex native completion rejects wrong binding, errors, incomplete records and stale or future evidence',async()=>{
+  const changes=[
+    ['wrong server',e=>e.data.item.server='other-opencrawl'],['wrong tool',e=>e.data.item.tool='search'],
+    ['wrong thread',e=>e.data.thread_id='other-session'],['missing thread',e=>delete e.data.thread_id],
+    ['wrong proof',e=>e.data.item.arguments.proofId='0'.repeat(32)],['wrong client',e=>e.data.item.arguments.client='claude-code'],
+    ['wrong installation',e=>e.data.item.arguments.installationId='other-installation'],
+    ['string arguments',e=>e.data.item.arguments=JSON.stringify(e.data.item.arguments)],
+    ['incomplete',e=>e.data.item.status='in_progress'],['failed',e=>e.data.item.status='failed'],
+    ['native error',e=>e.data.item.error={message:'failed'}],['native isError',e=>e.data.item.isError=true],
+    ['MCP error',e=>e.data.item.result.isError=true],['error result',e=>e.data.item.result.error={message:'failed'}],
+    ['missing result',e=>delete e.data.item.result],['string result',e=>e.data.item.result=JSON.stringify(e.data.item.result)],
+    ['missing id',e=>delete e.data.item.id],['empty id',e=>e.data.item.id=''],['blank id',e=>e.data.item.id=' '],['long id',e=>e.data.item.id='x'.repeat(201)],
+    ['wrong native type',e=>e.data.item.type='CommandExecution'],['wrong event type',e=>e.data.type='item_started'],
+    ['wrong event kind',e=>e.kind='hook'],['missing timestamp',e=>e.timestamp=null],
+    ['stale',e=>e.timestamp='2026-11-14T11:59:00Z'],['before MCP receipt',e=>e.timestamp='2026-11-14T12:00:00.500Z'],['future',e=>e.timestamp='2026-11-14T12:02:00Z'],
+    ['wrong nonce',e=>e.data.item.result={content:[{type:'text',text:'not the server receipt'}]}],
+  ];
+  for(const [label,change] of changes) {
+    const f=await fixture();await f.setup.session(owner,f.batch());
+    const result=await f.setup.mcp(owner,{...selection,proofId:f.proof.id}),event=codexCompletion(f,result);change(event);
+    await f.setup.session(owner,f.batch({events:[event]}));
+    assert.equal((await f.setup.read(owner)).installations[0].clients[0].mcp.state,'observed',label);
+  }
+  for(const changed of [{sessionId:'other-session'},{harness:'claude-code'},{installationId:'another'},{captureMode:'history'}]) {
+    const f=await fixture();await f.setup.session(owner,f.batch());
+    const result=await f.setup.mcp(owner,{...selection,proofId:f.proof.id}),event=codexCompletion(f,result);
+    if(changed.sessionId)event.data.thread_id=changed.sessionId;
+    await f.setup.session(owner,f.batch({...changed,events:[event]}));
+    assert.equal((await f.setup.read(owner)).installations[0].clients[0].mcp.state,'observed',JSON.stringify(changed));
+  }
+});
+
+test('rejected Codex completion cannot donate its nonce to a later matching call ID',async()=>{
+  const f=await fixture();await f.setup.session(owner,f.batch());
+  const result=await f.setup.mcp(owner,{...selection,proofId:f.proof.id}),event=codexCompletion(f,result);
+  event.data.item.arguments.client='claude-code';await f.setup.session(owner,f.batch({events:[event]}));
+  await f.setup.session(owner,f.batch({events:[{id:'later-call',kind:'tool_call',timestamp:event.timestamp,data:{
+    id:event.data.item.id,name:'mcp__opencrawl__verify_installation',input:{...selection,proofId:f.proof.id}}}]}));
+  assert.equal((await f.setup.read(owner)).installations[0].clients[0].mcp.state,'observed');
+});
+
 test('Claude native tool_use and tool_result blocks bind MCP without treating terminal output as authentication',async()=>{
   const f=await fixture(),selected={...selection,client:'claude-code'},proof=(await f.setup.verify(owner,selected)).proof;
   f.advance(1000);const timestamp=f.batch().events[0].timestamp;

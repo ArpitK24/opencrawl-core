@@ -49,7 +49,20 @@ function agyValue(value:unknown):unknown {
   if(typeof value!=='string'||value.length>8192)return value;
   try{return JSON.parse(value);}catch{return value;}
 }
-function verificationBlocks(batch:SessionBatch,event:SessionEvent):Record<string,unknown>[] {
+function verificationBlocks(batch:SessionBatch,event:SessionEvent,proofId:string):Record<string,unknown>[] {
+  if(batch.harness==='codex'&&event.kind==='mcp_tool_call_end') {
+    const data=event.data??{},item=data.item;
+    // Codex code mode records the actual MCP exchange in item_completed. Never
+    // infer a native invocation from JavaScript source or the outer exec output.
+    if(data.type!=='item_completed'||data.thread_id!==batch.sessionId||!object(item)||item.type!=='McpToolCall'||item.status!=='completed'||item.error||item.isError||
+      typeof item.server!=='string'||!/^opencrawl(?:-[a-f0-9]{12})?$/.test(item.server)||item.tool!=='verify_installation'||
+      !object(item.arguments)||!object(item.result)||item.result.isError||item.result.error||typeof item.id!=='string'||!item.id.trim()||!callId(item))return [];
+    const call={id:item.id,name:item.server+'/'+item.tool,input:item.arguments};
+    // Both halves belong to this one completed native record. A mismatched
+    // invocation must not leave a result that can pair with a later call.
+    if(!nativeVerificationCall(call,proofId,batch.installationId,batch.harness))return [];
+    return [call,{type:'tool_result',call_id:item.id,output:item.result}];
+  }
   if(batch.harness!=='antigravity')return toolBlocks(event);
   const data=event.data??{};
   // Antigravity's documented PostToolUse stepIdx identifies the completed
@@ -172,7 +185,7 @@ export function createSetupStatus({store,prefix='capture-v1',search,now=()=>new 
         // Claude embeds native tool_use/tool_result blocks inside messages;
         // Codex records separate call/result events. A terminal command returning
         // an MCP response is not a native MCP invocation and must not pass.
-        for(const event of batch.events)for(const block of verificationBlocks(batch,event)) {
+        for(const event of batch.events)for(const block of verificationBlocks(batch,event,e.proof.id!)) {
           const id=callId(block);
           // AGY hooks observe completion after the server issues its receipt;
           // its result created_at may instead describe the step's start. Bind

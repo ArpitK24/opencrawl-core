@@ -22,7 +22,7 @@ import {join} from 'node:path';
 import {atomicJson} from './session.ts';
 import {sessionStartCommand} from './session-start.ts';
 import {hasPluginContext} from './setup/plugin-context.ts';
-import {setupCommand,localSetupStatus,formatSetupOutput} from './setup/command.ts';
+import {setupCommand,localSetupStatus,setupHookStatus,formatSetupOutput} from './setup/command.ts';
 import {wakeApprovedHistory} from './setup/history-worker.ts';
 import {verifyInstallation,formatInstallationVerification} from './verify-installation.ts';
 
@@ -270,6 +270,7 @@ export async function main(args = process.argv.slice(2)) {
     if (organizationId && process.env.OPENCRAWL_TOKEN?.trim()) throw new CliError('ENVIRONMENT_TOKEN_ACTIVE', 'Unset OPENCRAWL_TOKEN before selecting a workspace with your saved sign-in. Environment tokens remain bound to the workspace that issued them.', 2);
     if (parsed.values.client && !['skills','setup','verify-installation'].includes(command)) throw new CliError('INVALID_USAGE', 'Use --client with skills or installation verification.', 64);
     if(parsed.values.local){const data=localSetupStatus((parsed.values.api as string|undefined)??process.env.OPENCRAWL_API_URL);emit(data,formatSetupOutput(data));return 0;}
+    if(command==='setup'&&parsed.positionals[1]==='hooks'){const data=await setupHookStatus((parsed.values.api as string|undefined)??process.env.OPENCRAWL_API_URL);emit(data,formatSetupOutput(data));return 0;}
     if(command==='setup'||command==='verify-installation'){
       const api=apiOrigin((parsed.values.api as string|undefined)??process.env.OPENCRAWL_API_URL??readCaptureConfig()?.api??DEFAULT_API_ORIGIN);
       return await withEnvironmentTokenOrigin((parsed.values.api as string|undefined)??process.env.OPENCRAWL_API_URL,async()=>{

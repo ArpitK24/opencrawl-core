@@ -179,6 +179,9 @@ export function parseRecord(harness: Harness, record: any, offset: number) {
     } else if (record.type === 'turn_context') {kind='turn_metadata';data={turn_id:r.turn_id,model:r.model,model_provider:r.model_provider,effort:r.effort,cwd:r.cwd};}
     else if (record.type === 'compacted') {kind='compaction';data=r;}
     // Raw tool execution evidence, attachments and subagent relationships not always represented as response items.
+    // Code-mode MCP calls retain their real invocation and result in native
+    // item completion metadata; the outer exec call is not the MCP call.
+    else if (record.type === 'event_msg' && r.type === 'item_completed' && r.item?.type === 'McpToolCall') {kind='mcp_tool_call_end';data=r;}
     else if (record.type === 'event_msg' && /exec_command_end|mcp_tool_call_end|collab_|view_image|user_message|token_count/.test(r.type ?? '')) {kind=r.type;data=r;}
     else if (record.type === 'session_meta') {kind='session_metadata';data={id:r.id,source:r.source,originator:r.originator,cli_version:r.cli_version,cwd:r.cwd,git:r.git,forked_from_id:r.forked_from_id,...(typeof r.title==='string'?{title:r.title}:{})};}
   }

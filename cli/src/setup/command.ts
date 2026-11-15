@@ -58,6 +58,15 @@ export function localSetupStatus(requestedApi?:string){
 }
 
 const planDigest=(scope:SetupScope,selections:SetupSelections,files:HistoryFile[])=>createHash('sha256').update(selectionDigest(scope,selections)+JSON.stringify(files)).digest('hex');
+/** Explicit native inspection, separate from the zero-process local status contract. */
+export async function setupHookStatus(requestedApi?:string,inspectHooks=inspectCodexHooks){
+ const local=localSetupStatus(requestedApi),config=readLocalCaptureConfig();
+ if(!config)throw new CliError('SETUP_STATE_INVALID','The local installation changed before hook inspection. Retry; no setup state was changed.',2);
+ const review=!local.selections.forward.codex?{state:'not_applicable' as const,total:0,pending:0,disabled:0}:config.hookOwnership==='plugin'?await inspectHooks(config.roots.codex):{state:'unknown' as const,total:0,pending:null,disabled:null};
+ if(JSON.stringify(config)!==JSON.stringify(readLocalCaptureConfig())||JSON.stringify(local)!==JSON.stringify(localSetupStatus(requestedApi)))throw new CliError('SETUP_SCOPE_CHANGED','The local installation or choices changed during hook inspection. Retry; no setup state was changed.',2);
+ return {status:'hook_status',serverChecked:false,scope:local.scope,installationId:local.installationId,client:'codex',recordingSelected:local.selections.forward.codex===true,review};
+}
+
 async function tasks(server:SetupServerStatus,state:SetupState|null,inspectHooks:typeof inspectCodexHooks):Promise<SetupHumanTask[]>{
  const row=server.installations.find(row=>row.installationId===state?.installationId);
  const found=row?[...(state?.humanTasks??[]).filter(task=>{const client=row.clients.find(client=>client.client===task.client);if(task.kind==='plugin_install')return !client?.installed;if(task.kind==='restart')return Boolean(task.client&&state?.selections.plugins[task.client]&&(state.pluginResults?.some(result=>result.client===task.client&&result.status==='prepared')||!client?.captureObservedAt&&client?.mcp?.state!=='authenticated'&&client?.proof?.state!=='verified'));return false;}),...row.clients.flatMap(client=>client.humanTasks)]:state?.humanTasks??[];
@@ -113,8 +122,9 @@ async function result(state:SetupState,launchHistory:typeof startHistoryWorker,i
 }
 export async function setupCommand(action:string,api:string,values:Values,{command=setupCommandForSelf(),login,installPlugins=installSetupPlugins,launchHistory=startHistoryWorker,choose=chooseSetupItems,inspectHooks=inspectCodexHooks,interactive=Boolean(process.stdin.isTTY&&process.stderr.isTTY&&!values.json)}:Dependencies={}){
  if(values.local!==undefined){if(values.local!==true||action!=='status')throw new CliError('INVALID_USAGE','Use --local only with setup status.',64);return localSetupStatus(api);}
+ if(action==='hooks')return setupHookStatus(api,inspectHooks);
  if(action==='worker'){if(typeof values['scope-key']!=='string')throw new CliError('INVALID_USAGE','Missing history scope.',64);const state=readStateKey(values['scope-key']);if(state?.scope.api!==api)throw new CliError('SETUP_SCOPE_CHANGED','History worker API does not match its approved scope.');await runHistoryWorker(values['scope-key']);return null;}
- if(!['run','plan','status','apply','resume','verify'].includes(action))throw new CliError('INVALID_USAGE','Use setup, setup --json, setup apply, setup status, setup resume, or setup verify.',64);
+ if(!['run','plan','status','apply','resume','verify'].includes(action))throw new CliError('INVALID_USAGE','Use setup, setup --json, setup apply, setup status, setup hooks, setup resume, or setup verify.',64);
  let server;
  try{server=await readServerSetup(api);}catch(error){
   if(error instanceof CliError&&error.code==='AUTH_REQUIRED'){

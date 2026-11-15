@@ -202,3 +202,32 @@ test('resume rechecks previously installed native plugins and a new launcher wit
  expect(calls).toBe(1);expect(result).toMatchObject({status:'needs_attention',humanTasks:[{id:'new-bundle-load'}]});
  const after=readSetupState({api,tenantId:'tenant',userId:'user'})!;expect(after.selections).toEqual(before.selections);expect(after.historyJob).toEqual(before.historyJob);expect(readCaptureConfig()?.command).toEqual(next);
 }));
+
+
+test('native hook status respects effective recording opt-outs without inspecting or authenticating',()=>fixture(async api=>{
+ await setupCommand('apply',api,{yes:true,plugins:'codex',forward:'none',history:'none'},setupCodex);
+ const savedFetch=globalThis.fetch;globalThis.fetch=Object.assign(()=>{throw new Error('Hook status must not access the server');},{preconnect:()=>{throw new Error('Hook status must not preconnect');}});
+ try{
+  expect(await setupCommand('hooks',api,{json:true},{inspectHooks:async()=>{throw new Error('Do not inspect opted-out capture');}})).toMatchObject({status:'hook_status',recordingSelected:false,review:{state:'not_applicable',pending:0}});
+ }finally{globalThis.fetch=savedFetch;}
+}));
+
+test('native hook status fails closed when installation or selections change during inspection',()=>fixture(async api=>{
+ await setupCommand('apply',api,{yes:true,plugins:'codex',forward:'codex',history:'none'},setupCodex);
+ const config=readCaptureConfig()!,file=join(process.env.OPENCRAWL_CONFIG_HOME!,'opencrawl','capture','config.json');
+ const savedFetch=globalThis.fetch;globalThis.fetch=Object.assign(()=>{throw new Error('Hook status must not access the server');},{preconnect:()=>{throw new Error('Hook status must not preconnect');}});
+ try{
+  await expect(setupCommand('hooks',api,{json:true},{inspectHooks:async root=>{
+   expect(root).toBe(config.roots.codex);writeFileSync(file,JSON.stringify({...config,installationId:'changed-during-inspection'}));
+   return {state:'observed',total:8,pending:0,disabled:0};
+  }})).rejects.toMatchObject({code:'SETUP_SCOPE_CHANGED'});
+ }finally{globalThis.fetch=savedFetch;}
+}));
+
+
+test('native setup inspection cannot inherit trusted legacy global hooks for a plugin enrollment',()=>fixture(async api=>{
+ await setupCommand('apply',api,{yes:true,plugins:'codex',forward:'codex',history:'none'},setupCodex);
+ const config=readCaptureConfig()!,file=join(process.env.OPENCRAWL_CONFIG_HOME!,'opencrawl','capture','config.json');
+ writeFileSync(file,JSON.stringify({...config,hookOwnership:'global'}));
+ expect(await setupCommand('hooks',api,{json:true},{inspectHooks:async()=>{throw new Error('Legacy global trust is not plugin trust');}})).toMatchObject({recordingSelected:true,review:{state:'unknown',total:0,pending:null,disabled:null}});
+}));

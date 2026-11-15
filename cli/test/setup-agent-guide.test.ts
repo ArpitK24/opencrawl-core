@@ -9,7 +9,7 @@ test('setup guides preserve the actual invocation and quote client/server argume
  for(const platform of ['linux','win32'] as const){
   const command=[platform==='win32'?"C:\\Private install's\\opencrawl.cmd":"/private install's/bin/opencrawl"];
   const guide=setupAgentGuide('codex',api,command,platform);
-  for(const args of [['setup','status','--local','--json'],['setup','status','--json'],['setup','resume','--json'],['setup'],['verify-installation','--client','codex','--json']]){
+  for(const args of [['setup','hooks','--json'],['setup','status','--local','--json'],['setup','status','--json'],['setup','resume','--json'],['setup'],['verify-installation','--client','codex','--json']]){
    expect(guide).toContain('`'+formatSetupCommand([...args,'--api',api],command,platform)+'`');
   }
   expect(guide).not.toMatch(/`opencrawl (setup|verify-installation)/);
@@ -17,6 +17,8 @@ test('setup guides preserve the actual invocation and quote client/server argume
   expect(guide).toContain('complete MCP sign-in and tool proof, expect not_selected');
   expect(guide).toContain('do not require or enable new capture');
   expect(guide).toContain('Preserve skipped history');
+  expect(guide).toContain('do not ask again even if server hookTrust still says pending');
+  expect(guide).toContain('Keep disabled hooks as intentional opt-outs');
   expect(guide).toContain('native OpenCrawl MCP `installation_status`');
   expect(guide).toContain('same installationId/client and the returned proof.id as proofId');
   expect(guide).toContain('Unavailable CLI access does not block the native MCP path');
