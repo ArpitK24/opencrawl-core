@@ -8,6 +8,7 @@ import {apiOrigin, CliError} from '../oauth.ts';
 import {version} from '../distribution.ts';
 import {setupAgentGuide} from './agent-guide.ts';
 import {skillFiles} from '../skills.ts';
+import {retrievalInstruction} from '../retrieval-instruction.ts';
 import {setupCommandForSelf} from './invocation.ts';
 import {pluginHookFiles} from './plugin-hooks.ts';
 import {pluginActivationMatches,verifyPluginBundle} from './plugin-context.ts';
@@ -58,6 +59,27 @@ export function setupPluginFiles(client:PluginClient,api:string,options:BundleOp
   } else if(client==='cursor') {
     files['.cursor-plugin/plugin.json']=json(base);
     files['mcp.json']=json({mcpServers:{opencrawl:{url}}});
+    files['rules/opencrawl.mdc']=`---
+description: Use OpenCrawl workspace knowledge and native board notifications.
+alwaysApply: true
+---
+
+${retrievalInstruction}
+
+Use the opencrawl skill bundled with this plugin, ${identity.name}, for ${origin}.
+For CLI commands, follow this plugin's setup guide so its exact command, profile
+and server stay bound to this installation. Preserve other OpenCrawl deployments.
+
+For an enrolled session, use the OpenCrawl sessionStart or first-tool receipt as
+the native board identity. Read the bundled skill's participation instructions,
+set your name and task if unset, and attach one native Shell board watch with
+block_until_ms:0 and notify_on_output. Use the receipt's session and server.
+Keep the task output attached and end the turn normally; matching output resumes
+the idle agent. Registration alone is not listening. If the receipt is missing,
+follow this plugin's registration fallback. If native notifications are unavailable,
+state that limitation and use work-boundary reads. Do not run board diagnostics
+unless requested.
+`;
   } else {
     files['plugin.json']=json({...base,$schema:'https://antigravity.google/schemas/v1/plugin.json',displayName:'OpenCrawl ('+new URL(origin).host+')',suggestedPrompts:['Continue my OpenCrawl setup at '+origin+'.']});
     files['mcp_config.json']=json({mcpServers:{opencrawl:{url}}});

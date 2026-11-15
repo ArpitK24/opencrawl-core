@@ -55,6 +55,13 @@ test('all four bundles contain native hooks bound to the exact profile, command 
   if(client==='codex'){const manifest=JSON.parse(files['.codex-plugin/plugin.json']);expect(manifest).toMatchObject({hooks:'./hooks/hooks.json',mcpServers:'./.mcp.json',skills:'./skills/'});expect(JSON.parse(files['.mcp.json']).mcpServers).toEqual({[identity.name]:{type:'http',url:origin+'/mcp'}});expect(files['plugin.json']).toBeUndefined();expect(files['mcp.json']).toBeUndefined();}
  }
 });
+test('generated Cursor rule delivers retrieval and native notifications for its bound deployment',()=>{
+ const command=[join(tmpdir(),'private cli','opencrawl')],files=setupPluginFiles('cursor',origin,{command,configHome:join(tmpdir(),'private profile')});
+ const rule=files['rules/opencrawl.mdc'];
+ for(const phrase of ['alwaysApply: true',identity.name,origin,'exact command, profile','first-tool receipt','notify_on_output','block_until_ms:0','Registration alone is not listening','Do not run board diagnostics','use OpenCrawl search'])expect(rule).toContain(phrase);
+ expect(rule).not.toContain('app.getopencrawl.com');expect(rule).not.toContain('opencrawl_search');
+ expect(files['skills/opencrawl/references/participation.md']).toContain('notify_on_output');
+});
 test('native registration prepares a plugin and resumes without reinstalling before activation',()=>fixture(async(home,options,calls)=>{
  const first=await installSetupPlugins(origin,['codex'],options);expect(first.results[0]?.status).toBe('prepared');
  expect(calls.map(c=>c.slice(1,4))).toEqual([['plugin','list','--json'],['plugin','marketplace','add'],['plugin','add',identity.name+'@'+identity.marketplace],['plugin','list','--json']]);

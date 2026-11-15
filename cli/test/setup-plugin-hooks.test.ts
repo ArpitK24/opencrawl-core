@@ -31,7 +31,11 @@ test('all four native plugin formats include synchronous startup and supported c
    expect(hooks.SessionEnd[0].async).toBeUndefined();expect(hooks.SessionEnd[0].timeout).toBe(3);expect(hooks.SessionEnd[0].command).not.toContain('--managed');
    expect(hooks.PostToolUse[0].async).toBe(true);expect(hooks.PostToolUse[0].command).toContain('--managed');
   }else if(client==='claude-code'){expect(hooks.PostToolUseFailure).toHaveLength(1);expect(hooks.SessionEnd[0].async).toBe(true);}
-  else if(client==='cursor'){expect(hooks.stop[0].command).toContain('$CURSOR_PLUGIN_ROOT/');expect(hooks.postToolUseFailure).toHaveLength(1);expect(hooks.preCompact).toHaveLength(1);}
+  else if(client==='cursor'){
+   expect(hooks.stop[0].command).toContain('$CURSOR_PLUGIN_ROOT/');expect(hooks.postToolUseFailure).toHaveLength(1);expect(hooks.preCompact).toHaveLength(1);
+   expect(hooks.postToolUse).toHaveLength(2);expect(hooks.postToolUse[0].command).toBe(start[0].command+' --after-tool');
+   expect(hooks.postToolUse[0].timeout).toBe(7);expect(hooks.postToolUse[0].async).toBeUndefined();expect(hooks.postToolUse[1].command).toContain('collect hook');
+  }
   else for(const [event,rows] of Object.entries(hooks))expect(rows.at(-1)!.command).toContain('--event '+event);
  }
 });
@@ -46,7 +50,8 @@ test('bundled runners retain stdin, argv and profile binding after a cache move 
    const files=pluginHookFiles(client,{...binding,command:[process.execPath,stub,'pinned launcher argument'],configHome:profile});
    for(const [name,text] of Object.entries(files)){const file=join(root,name);mkdirSync(dirname(file),{recursive:true});writeFileSync(file,text);}
    const start=entries(client,files)[client==='cursor'?'sessionStart':'SessionStart'];
-   for(const hook of start){
+   const callbacks=client==='cursor'?[...start,entries(client,files).postToolUse[0]]:start;
+   for(const hook of callbacks){
     const env={...process.env,PATH:windows?process.env.PATH:'/no-node-or-bun-on-path',OPENCRAWL_TOKEN:'fixture-ambient-user-token',OPENCRAWL_SESSIONS_TOKEN:'fixture-ambient-capture-token',OPENCRAWL_AUTH:'replicas-workspace',OPENCRAWL_API_URL:'https://unrelated.example',OPENCRAWL_CONFIG_HOME:'/unrelated/profile',OPENCRAWL_PLUGIN_API:'https://unrelated.example',OPENCRAWL_PLUGIN_ROOT:'/unrelated/cache',PLUGIN_ROOT:root,CLAUDE_PLUGIN_ROOT:root,CURSOR_PLUGIN_ROOT:root};
     const executable=windows?(client==='codex'||hook.shell==='powershell'?join(process.env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe'):process.env.ComSpec||'cmd.exe'):'/bin/sh';
     const args=windows?(client==='codex'||hook.shell==='powershell'?['-NoProfile','-NonInteractive','-Command',hook.command]:['/d','/s','/c','"'+hook.command+'"']):['-c',hook.command];
@@ -56,7 +61,8 @@ test('bundled runners retain stdin, argv and profile binding after a cache move 
     const observed=JSON.parse(result.stdout);
     expect(observed).toMatchObject({input:payload,profile,api:binding.api,name:binding.pluginName,client,root,token:null,sessionsToken:null,authMode:null,ambientApi:null});
     expect(env.OPENCRAWL_TOKEN).toBe('fixture-ambient-user-token');expect(env.OPENCRAWL_SESSIONS_TOKEN).toBe('fixture-ambient-capture-token');expect(env.OPENCRAWL_AUTH).toBe('replicas-workspace');
-    expect(observed.args[0]).toBe('pinned launcher argument');expect(observed.args.slice(1,3)).toEqual(hook===start[0]?['session','start']:['collect','hook']);
+    expect(observed.args[0]).toBe('pinned launcher argument');expect(observed.args.slice(1,3)).toEqual(hook===start[1]?['collect','hook']:['session','start']);
+    if(client==='cursor'&&hook===callbacks.at(-1))expect(observed.args).toContain('--after-tool');
     expect(observed.args.slice(observed.args.indexOf('--harness'),observed.args.indexOf('--harness')+2)).toEqual(['--harness',client]);
    }
   }

@@ -1,19 +1,20 @@
 import {test,expect} from 'bun:test';
-import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,rmSync,realpathSync,symlinkSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,readdirSync,existsSync,rmSync,realpathSync,symlinkSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,dirname,resolve} from 'node:path';
 import {createHash} from 'node:crypto';
 import {setupPluginFiles,setupPluginIdentity} from '../src/setup/plugins.ts';
 import {pluginHookContext,recordPluginActivation,pluginActivationMatches,verifyPluginBundle,type PluginHookClient} from '../src/setup/plugin-context.ts';
+import {sessionFile} from '../src/session.ts';
 
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 const json=(value:unknown)=>JSON.stringify(value,null,2)+'\n';
 const clients:PluginHookClient[]=['codex','claude-code','cursor','antigravity'];
 const cli=resolve(import.meta.dir,'../src/cli.ts');
-function fixture(client:PluginHookClient='codex'){
+function fixture(client:PluginHookClient='codex',api='https://candidate.example'){
  const temporary=mkdtempSync(join(tmpdir(),'opencrawl-plugin-context-')),home=realpathSync(temporary),configHome=join(home,'profile'),previous=process.env.OPENCRAWL_CONFIG_HOME;
  process.env.OPENCRAWL_CONFIG_HOME=configHome;
- const api='https://candidate.example',identity=setupPluginIdentity(api),nativeRoot=join(home,'native-cache',identity.name),configFile=join(configHome,'opencrawl/capture/config.json'),receiptRoot=join(configHome,'opencrawl/setup-plugins',client,identity.key),installed=join(receiptRoot,'installed.json'),activation=join(receiptRoot,'activation.json');
+ const identity=setupPluginIdentity(api),nativeRoot=join(home,'native-cache',identity.name),configFile=join(configHome,'opencrawl/capture/config.json'),receiptRoot=join(configHome,'opencrawl/setup-plugins',client,identity.key),installed=join(receiptRoot,'installed.json'),activation=join(receiptRoot,'activation.json');
  const binding={api,client,pluginName:identity.name,configHome,nativeRoot};
  const files=setupPluginFiles(client,api,{command:[process.execPath,cli],configHome});
  const config={schemaVersion:1,hookOwnership:'plugin',api,installationId:'test-installation',owner:{tenantId:'test-tenant',userId:'test-user'},harnesses:[],historyHarnesses:[],roots:{codex:join(home,'codex'),'claude-code':join(home,'claude'),cursor:join(home,'cursor'),antigravity:join(home,'agy')},installedAt:new Date().toISOString(),command:[process.execPath,cli]};
@@ -130,3 +131,40 @@ test('bad plugin binding is rejected by real CLI before capture consumes stdin o
   expect(existsSync(f.activation)).toBe(false);expect(existsSync(join(f.configHome,'opencrawl/capture/queue'))).toBe(false);expect(existsSync(join(f.configHome,'opencrawl/capture/last-error.json'))).toBe(false);
  }finally{f.close();}
 },5_000);
+
+test('Cursor first-tool startup rejects a bad plugin binding before stdin or activation',async()=>{
+ const f=fixture('cursor');try{
+  for(const env of [{...f.env,OPENCRAWL_PLUGIN_API:'https://another.example'},{...f.env,OPENCRAWL_CONFIG_HOME:join(f.home,'another-profile')}]){
+  const child=Bun.spawn([process.execPath,cli,'session','start','--harness','cursor','--after-tool','--api',f.binding.api],{env,stdin:'pipe',stdout:'pipe',stderr:'pipe'});
+  const timer=setTimeout(()=>child.kill(),3000);
+  try{
+   const [code,out,err]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]);
+   expect(code).toBe(0);expect(err).toBe('');expect(JSON.parse(out).additional_context).toContain('local hook input or configuration could not be read');
+  }finally{clearTimeout(timer);child.stdin.end();}
+  }
+  expect(existsSync(f.activation)).toBe(false);expect(existsSync(join(f.configHome,'opencrawl/startup/cursor-context'))).toBe(false);
+  expect(existsSync(join(f.configHome,'opencrawl/capture/queue'))).toBe(false);expect(readFileSync(f.configFile,'utf8')).toBe(json(f.config));
+ }finally{f.close();}
+},5_000);
+
+test('Cursor first-tool startup confirms a search-only plugin without enabling recording or retaining tool content',async()=>{
+ let requests=0;
+ const server=Bun.serve({hostname:'127.0.0.1',port:0,async fetch(request){
+  requests++;expect(new URL(request.url).pathname).toBe('/api/board/bootstrap');expect(request.headers.get('authorization')).toBe('Bearer disposable-test-token');
+  const input=await request.json();expect(input).toMatchObject({session:'native-session',harness:'cursor'});
+  return Response.json({schemaVersion:1,data:{session:'native-session',workspace:'test-tenant',agent:'a'.repeat(64),name:null,task:null}});
+ }});
+ const f=fixture('cursor',`http://127.0.0.1:${server.port}`);try{
+  f.write(sessionFile(f.binding.api),{auth:{clientId:'fixture',tokenEndpoint:f.binding.api+'/unused-token'},accessToken:'disposable-test-token',refreshToken:'not-used',expiresAt:Date.now()+60_000});
+  const payload={hook_event_name:'postToolUse',conversation_id:'native-session',generation_id:'native-turn',tool_output:'private-output'.repeat(2000)};
+  const run=async()=>{
+   const child=Bun.spawn([process.execPath,cli,'session','start','--harness','cursor','--after-tool','--api',f.binding.api],{env:f.env,stdin:new Blob([JSON.stringify(payload)]),stdout:'pipe',stderr:'pipe'});
+   const [code,out,err]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]);
+   expect(code).toBe(0);expect(err).toBe('');expect(out).not.toContain('private-output');return JSON.parse(out);
+  };
+  expect((await run()).additional_context).toContain('Session handle: native-session');expect(await run()).toEqual({});expect(requests).toBe(1);
+  expect(JSON.parse(readFileSync(f.activation,'utf8'))).toMatchObject({client:'cursor',event:'postToolUse',installationId:f.config.installationId});
+  const state=join(f.configHome,'opencrawl/startup/cursor-context');expect(readdirSync(state).map(name=>JSON.parse(readFileSync(join(state,name),'utf8')))).toEqual([{generation:'native-turn'}]);
+  expect(existsSync(join(f.configHome,'opencrawl/capture/queue'))).toBe(false);expect(existsSync(join(f.configHome,'opencrawl/capture/worker.pid'))).toBe(false);expect(readFileSync(f.configFile,'utf8')).toBe(json(f.config));
+ }finally{f.close();server.stop(true);}
+},10_000);
