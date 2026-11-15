@@ -46,7 +46,7 @@ async function cursorFormatHook(harness:'cursor'|'grok-bot',plugin:PluginHookCon
       await bindHookIdentity(event);
       await captureHook(harness,event);
       await upgradeCaptureHooks();
-      await hookFlush(event);
+      await hookFlush(event,{reconcileTranscripts:false});
     }
   }catch(e){answer(null);try{recordError(e);}catch{}}
   clearTimeout(deadline);
