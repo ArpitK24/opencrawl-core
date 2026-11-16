@@ -29,7 +29,16 @@ The installer applies three ordinary Helm releases, in order:
 
 1. `<release>-infra`: selected bundled databases and backends.
 2. `<release>-airbyte`: pinned upstream Airbyte 2.4.0, if selected.
-3. `<release>`: migration Job, application and worker.
+3. `<release>`: migration Job, application, worker and connector activation hook.
+
+The post-install/post-upgrade hook runs the runtime's connector activation after
+app and worker readiness. Fresh installations have no historical caches to catch
+up. Migrated installations await actual Temporal completions before Helm succeeds;
+the installer includes that completion receipt in its JSON output. A failed or
+timed-out hook leaves the release failed and retains its logs. Repair the dependency
+and rerun the same installation to resume. `application.runtime.activationTimeoutSeconds`
+controls the hook deadline (default 900 seconds); the installer extends its Helm
+timeout to cover it. Direct Helm users must supply `--wait` and an adequate `--timeout`.
 
 Airbyte's pre-install bootloader needs its database to exist already. Separate
 releases preserve the upstream chart's lifecycle. The installer validates the
@@ -154,6 +163,7 @@ node verify.mts --config disposable.json --exercise --existing
 
 For infrastructure failures inspect Pods, Events, PVCs and the named release.
 For app-state failures inspect `<release>-migrate-<revision>` and `app-state-ready`.
+For connector catch-up inspect the `<release>-activate` Job and its retained logs.
 The installer supports `--through infrastructure` or `--through airbyte` to stop at
 an intermediate stage. Rerun the same command/configuration to resume.
 

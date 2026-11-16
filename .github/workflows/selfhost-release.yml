@@ -36,6 +36,17 @@ jobs:
         env:
           REVISION: ${{ github.sha }}
         run: node deploy/helm/release-kit.mts --revision "$REVISION" --out artifacts
+      - name: Verify anonymous image pulls on both architectures
+        run: |
+          set -euo pipefail
+          export DOCKER_CONFIG="$(mktemp -d)"
+          trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+          runtime=$(node -p 'const r=require("./artifacts/release.json"); r.image.repository+"@"+r.image.digest')
+          connector=$(node -p 'const r=require("./artifacts/release.json"); r.githubConnector.repository+"@"+r.githubConnector.digest')
+          for platform in linux/amd64 linux/arm64; do
+            docker pull --platform "$platform" "$runtime"
+            docker pull --platform "$platform" "$connector"
+          done
       - name: Publish versioned release assets
         env:
           GH_TOKEN: ${{ github.token }}

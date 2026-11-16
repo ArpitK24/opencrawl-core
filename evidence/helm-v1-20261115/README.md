@@ -21,6 +21,7 @@ These results do not establish acceptance of later persistence revisions.
 | `external-postgres.json` | Each PostgreSQL consumer connected through its separate external database and restricted owner role. |
 | `backend-retention.json` | OpenSearch, S3 and Temporal data survived backend pod replacement. |
 | `publication-gate.json` | Public GHCR access was blocked; both image repositories rejected anonymous token requests. |
+| `public-image-access.json` | After the approved visibility change, anonymous access succeeded for both images, both architectures, configuration blobs and every layer endpoint. This checks earlier image tags; the final PostgreSQL images are built separately. |
 | `cleanup.json` | The task cluster, nodes, volumes, temporary image repositories and IAM resources were removed; shared staging networking and GitHub OIDC remained available. |
 
 The agent-facing conformance runner is `deploy/helm/verify.mts`; the real Airbyte
@@ -32,5 +33,6 @@ they do not prove that a grant issued before upgrade survived.
 External-service TLS is covered by configuration tests, not a live TLS endpoint
 in this EKS run. Namespace/index isolation is logical separation on shared backend
 capacity, not independent availability. This v1 has one app and one worker and
-does not claim HA. No public versioned self-host kit was published in this run:
-publication requires the final persistence integration and publicly pullable images.
+does not claim HA. These original EKS receipts predate the final persistence merge
+and public kit publication. Later release evidence must identify its own immutable
+runtime revision; public access does not by itself establish application acceptance.
