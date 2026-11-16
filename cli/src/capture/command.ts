@@ -3,12 +3,16 @@ import {join} from 'node:path';
 import {inspectCodexHooks} from './codex-hooks.ts';
 import {CliError} from '../oauth.ts';
 import {installCapture,uninstallCapture,upgradeCaptureHooks} from './install.ts';
-import {captureHook,captureAttentionNotice,ownedCaptureWorker,captureStatus,readCaptureConfig,syncCaptures,flushCaptureWork,refreshCapturedTitles,recordError,hookFlush,bindHookIdentity,captureDaemonEnabled} from './runtime.ts';
+import {captureHook,captureAttentionNotice,captureDir,ownedCaptureWorker,captureStatus,readCaptureConfig,syncCaptures,flushCaptureWork,refreshCapturedTitles,recordError,hookFlush,bindHookIdentity,captureDaemonEnabled} from './runtime.ts';
 import {processSessionStartTask} from '../session-start-task.ts';
+import {awaitDaemonActivation} from './daemon-bootstrap.ts';
+import {compiled,version} from '../distribution.ts';
+import {ownedNativeCaptureCommand} from './daemon-upgrade-launch.ts';
+import {upgradeCaptureDaemon} from './daemon-upgrade.ts';
 import {runCaptureDaemon} from './daemon.ts';
 import {ensureCaptureDaemon} from './daemon-service.ts';
 import {recordNativeDaemonHook} from './daemon-handoff.ts';
-import {exitAfterCredentialRotation} from '../session.ts';
+import {atomicJson,exitAfterCredentialRotation} from '../session.ts';
 import {grokBotResponse} from './grok-bot.ts';
 import {normalizeHarness,HARNESSES,type Harness} from './parse.ts';
 import {backfill,backfillPreview,selection,setupBackfill,reportBackfillProgress} from './backfill.ts';
@@ -137,7 +141,8 @@ export async function collectCommand(action:string,api:string,values:any) {
     case 'sync': try{return await syncCaptures();}catch(e){recordError(e);throw e;}
     case 'titles': try{return await refreshCapturedTitles();}catch(e){recordError(e);throw e;}
     case 'flush': try{return await flushCaptureWork({retryRejected:values['retry-rejected']===true});}catch(e){recordError(e);throw e;}
-    case 'daemon': {await runCaptureDaemon({processStartupTask:processSessionStartTask});return null;}
+    case 'upgrade-daemon': {const config=readCaptureConfig();if(!compiled()||!config||!ownedNativeCaptureCommand(config))return {state:'not-selected'};const result=await upgradeCaptureDaemon({command:[process.execPath]});atomicJson(join(captureDir(),'daemon','upgrade-result.json'),{...result,at:new Date().toISOString()});atomicJson(join(captureDir(),'daemon','upgrade-attempt.json'),{version,nextAttemptAt:Date.now()+(result.state==='busy'?60_000:15*60_000)});return result;}
+    case 'daemon': {if(!await awaitDaemonActivation())return null;await runCaptureDaemon({processStartupTask:processSessionStartTask});return null;}
     case 'worker': {try{await ownedCaptureWorker();}catch(e){try{recordError(e);}catch{}}return null;}
     case 'hook': {
       if(!hasPluginContext()&&readCaptureConfig()?.hookOwnership==='plugin')return null;

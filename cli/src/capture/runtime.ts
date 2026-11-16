@@ -121,7 +121,7 @@ export function recordError(error:any) {
 function ensureDirectories() {for(const dir of ['queue','state','blobs','notices','sources','rejected','uploads'])mkdirSync(join(captureDir(),dir),{recursive:true,mode:0o700});}
 /** Only the fixed notice header is needed for ordering. Filesystem timestamps
  * can tie on Linux; reading whole payloads here would unbound backlog memory. */
-function orderedNoticeNames() {
+export function orderedNoticeNames() {
   return readdirSync(join(captureDir(),'notices')).filter(name=>name.endsWith('.json')).map(name=>{
     const path=join(captureDir(),'notices',name),fd=openSync(path,'r'),buffer=Buffer.alloc(256);
     try {

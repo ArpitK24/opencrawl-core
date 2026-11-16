@@ -53,4 +53,17 @@ opencrawl --help
 
 Update with `opencrawl update`.
 
+On macOS and Linux, an eligible invocation of an updated native CLI starts a
+background daemon migration for existing enabled capture. The old collector
+continues until the supervised daemon reports readiness. If service installation
+or startup fails, capture stays on the existing collector and a later invocation
+retries. Hooks do not wait for installation or startup. Disabled capture and
+custom launchers are preserved; plugin setup manages its own activation.
+
+Migration retains the destination, installation identity, queued batches and
+transcript cursors. The daemon watches enrolled sessions and recovers pending
+hook notices; it does not scan the historical transcript catalogue. Hosts without
+a usable supervisor retain fallback capture rather than reporting an installed
+daemon. `opencrawl collect status --json` reports the selected capture worker.
+
 [Website](https://getopencrawl.com) · [Documentation](https://github.com/getopencrawl/opencrawl-core#readme) · [Issues](https://github.com/getopencrawl/opencrawl-core/issues)

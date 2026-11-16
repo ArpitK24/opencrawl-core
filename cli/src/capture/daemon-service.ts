@@ -115,8 +115,8 @@ export async function ensureCaptureDaemon(config=readCaptureConfig(),{platform=p
 
 /** User-scoped OS supervision; hosts without a user manager receive an explicit
  * profile-bound foreground command for their own supervisor. */
-export async function installCaptureDaemon(config:CaptureConfig,{home=homedir(),service=true,platform=process.platform,run=spawnSync,ensure=ensureCaptureDaemon,hostRun}:{home?:string;service?:boolean;platform?:NodeJS.Platform;run?:typeof spawnSync;ensure?:typeof ensureCaptureDaemon;hostRun?:HostInvoke}={}) {
-  if(!isDeepStrictEqual(readCaptureConfig(),config))throw Error('Capture configuration changed before service installation');
+export async function installCaptureDaemon(config:CaptureConfig,{home=homedir(),service=true,platform=process.platform,run=spawnSync,ensure=ensureCaptureDaemon,hostRun,expectedConfig=config}:{expectedConfig?:CaptureConfig;home?:string;service?:boolean;platform?:NodeJS.Platform;run?:typeof spawnSync;ensure?:typeof ensureCaptureDaemon;hostRun?:HostInvoke}={}) {
+  if(!isDeepStrictEqual(readCaptureConfig(),expectedConfig))throw Error('Capture configuration changed before service installation');
   const queue=join(captureDir(),'queue'),pending=existsSync(queue)&&readdirSync(queue).some(name=>name.endsWith('.json'));
   if(!captureDaemonEnabled(config)||!config.backgroundStartup&&(config.disabled||!captureDaemonHarnesses(config).length&&!pending)){
     uninstallCaptureDaemon(home,{platform,run,hostRun});return {kind:'not-required',supervised:false,queuedDataPreserved:true};
@@ -142,7 +142,7 @@ export async function installCaptureDaemon(config:CaptureConfig,{home=homedir(),
       verifyHostService(hostService(config),hostRun);
     }
   }
-  if(!isDeepStrictEqual(readCaptureConfig(),config))throw Error('Capture configuration changed before service installation');
+  if(!isDeepStrictEqual(readCaptureConfig(),expectedConfig))throw Error('Capture configuration changed before service installation');
   mkdirSync(directory(),{recursive:true,mode:0o700});
   atomicJson(join(directory(),'generation.json'),{generation:crypto.randomUUID()});
   if(platform==='darwin'&&service){

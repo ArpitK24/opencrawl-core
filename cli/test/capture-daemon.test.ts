@@ -950,3 +950,21 @@ isolatedTest('Devin native hook returns after bounded local handoff while the co
     }finally{child.stdin.end();child.kill();await child.exited;}
   });
 }));
+
+isolatedTest('migrated Cursor daemon uploads late legacy hook notices while excluding the old worker',async()=>fixture(async f=>{
+  const {upgradeCaptureDaemon}=await import('../src/capture/daemon-upgrade.ts');
+  const {awaitDaemonActivation,waitForDaemonReady}=await import('../src/capture/daemon-bootstrap.ts');
+  const config=nativeConfig(f,'cursor');delete config.captureWorker;delete config.claudeCapture;
+  atomicJson(join(captureDir(),'config.json'),config);
+  let started:Promise<void>|undefined;
+  const upgraded=await upgradeCaptureDaemon({install:async()=>{
+    started=awaitDaemonActivation({pollMs:1}).then(async activated=>{if(activated)await f.start();});return {supervised:true};
+  },ready:stage=>waitForDaemonReady(stage,1000),cleanup:()=>{}});
+  expect(upgraded.state).toBe('activated');await started;
+  await expect(withSessionLock('capture:worker',async()=>{},0)).rejects.toMatchObject({code:'SESSION_BUSY'});
+  const notice={id:'late-native-cursor',at:new Date().toISOString(),sequence:50,harness:'cursor',event:{conversation_id:'late-session',hook_event_name:'beforeSubmitPrompt',prompt:'late migration capture survives'}};
+  atomicJson(join(captureDir(),'notices',notice.id+'.json'),notice);
+  await until(()=>JSON.stringify(f.batches).includes('late migration capture survives'));
+  expect(existsSync(join(captureDir(),'notices',notice.id+'.json'))).toBe(false);
+  await f.stop();
+}));

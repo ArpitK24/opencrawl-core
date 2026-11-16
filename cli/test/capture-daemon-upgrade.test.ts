@@ -3,8 +3,13 @@ import {mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync,existsSync,unlin
 import {tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
 import {atomicJson,withSessionLock} from '../src/session.ts';
-import {captureDir,readCaptureConfig,type CaptureConfig} from '../src/capture/runtime.ts';
-import {upgradeCaptureDaemon} from '../src/capture/daemon-upgrade.ts';
+import {captureDir,readCaptureConfig,captureHook,drainCaptureNotices,type CaptureConfig} from '../src/capture/runtime.ts';
+import {awaitDaemonActivation,waitForDaemonReady,bootstrapFile} from '../src/capture/daemon-bootstrap.ts';
+import {importLegacyDaemonNotices} from '../src/capture/daemon-legacy.ts';
+import {readdirSync} from 'node:fs';
+import {upgradeCaptureDaemon as upgrade} from '../src/capture/daemon-upgrade.ts';
+
+const upgradeCaptureDaemon=(options:Parameters<typeof upgrade>[0]={})=>upgrade({ready:async()=>true,cleanup:()=>{},...options});
 
 async function fixture(run:(config:CaptureConfig)=>Promise<void>){
   const root=mkdtempSync(join(tmpdir(),'opencrawl-upgrade-test-')),previous=process.env.OPENCRAWL_CONFIG_HOME;
@@ -29,22 +34,20 @@ test('upgrade preserves queued bytes, cursor and destination, and installs once'
   expect(installs).toBe(1);
   for(const name of retained)expect(readFileSync(join(captureDir(),name),'utf8')).toBe('retained '+name);
 }));
-test('upgrade waits for a legacy worker and pending notices without changing ingress',()=>fixture(async config=>{
-  await withSessionLock('capture:worker',async()=>{expect(await upgradeCaptureDaemon({install:forbidden})).toEqual({state:'busy'});});
-  const notice=join(captureDir(),'notices','pending.json');mkdirSync(dirname(notice),{recursive:true});writeFileSync(notice,'retained notice');
-  expect(await upgradeCaptureDaemon({install:forbidden})).toEqual({state:'legacy-pending'});
-  expect(readCaptureConfig()).toEqual(config);expect(readFileSync(notice,'utf8')).toBe('retained notice');
-  unlinkSync(notice);
-  expect(await upgradeCaptureDaemon({install:async()=>({supervised:true})})).toEqual({state:'activated'});
+test('upgrade defers to a live legacy worker without switching ingress',()=>fixture(async config=>{
+  await withSessionLock('capture:worker',async()=>{
+    expect(await upgradeCaptureDaemon({install:async()=>({supervised:true})})).toEqual({state:'busy'});
+  });
+  expect(readCaptureConfig()).toEqual(config);
 }));
-test('failed service installation retains accepted inbox and retries supervision',()=>fixture(async()=>{
-  const inbox=join(captureDir(),'daemon','inbox','accepted.json');
-  await expect(upgradeCaptureDaemon({install:async()=>{mkdirSync(dirname(inbox),{recursive:true});writeFileSync(inbox,'accepted during install');throw Error('supervisor unavailable');}})).rejects.toThrow('supervisor unavailable');
-  expect(readCaptureConfig()?.captureWorker).toBe('daemon-v1');
-  expect(existsSync(join(captureDir(),'daemon','upgrade.json'))).toBe(false);
-  expect(await upgradeCaptureDaemon({install:async()=>({supervised:false})})).toEqual({state:'supervision-required'});
+test('bootstrap failures retain legacy capture and allow later retry',()=>fixture(async config=>{
+  expect(await upgradeCaptureDaemon({install:async()=>{throw Error('supervisor unavailable');}})).toEqual({state:'fallback',reason:'bootstrap-failed'});
+  expect(readCaptureConfig()).toEqual(config);
+  expect(await upgradeCaptureDaemon({install:async()=>({supervised:false})})).toEqual({state:'fallback',reason:'supervision-unavailable'});
+  expect(readCaptureConfig()).toEqual(config);
+  expect(await upgradeCaptureDaemon({install:async()=>({supervised:true}),ready:async()=>false})).toEqual({state:'fallback',reason:'readiness-unconfirmed'});
+  expect(readCaptureConfig()).toEqual(config);
   expect(await upgradeCaptureDaemon({install:async()=>({supervised:true})})).toEqual({state:'activated'});
-  expect(readFileSync(inbox,'utf8')).toBe('accepted during install');
 }));
 test('service startup releases configuration lock and never certifies a changed destination',()=>fixture(async config=>{
   expect(await upgradeCaptureDaemon({install:async()=>{
@@ -54,5 +57,64 @@ test('service startup releases configuration lock and never certifies a changed 
     return {supervised:true};
   }})).toEqual({state:'busy'});
   expect(readCaptureConfig()).toEqual({...config,disabled:true});
-  expect(existsSync(join(captureDir(),'daemon','upgrade.json'))).toBe(false);
+}));
+
+test('real readiness handshake leaves legacy ingress active until publication',()=>fixture(async config=>{
+  let worker:Promise<boolean>|undefined;
+  const result=await upgrade({install:async(candidate,before)=>{
+    expect(readCaptureConfig()).toEqual(before);expect(before).toEqual(config);
+    worker=awaitDaemonActivation({pollMs:1});
+    await captureHook('cursor',{conversation_id:'during-bootstrap',hook_event_name:'beforeSubmitPrompt',prompt:'fallback remains live'});
+    expect(readdirSync(join(captureDir(),'notices'))).toHaveLength(1);
+    expect(candidate.captureWorker).toBe('daemon-v1');return {supervised:true};
+  },ready:stage=>waitForDaemonReady(stage,1000),cleanup:()=>{}});
+  expect(result).toEqual({state:'activated'});expect(await worker).toBe(true);
+  importLegacyDaemonNotices(readCaptureConfig()!);
+  expect(readdirSync(join(captureDir(),'notices'))).toHaveLength(0);
+  const inbox=readdirSync(join(captureDir(),'daemon','inbox'));
+  expect(inbox).toHaveLength(1);
+  const notice=JSON.parse(readFileSync(join(captureDir(),'daemon','inbox',inbox[0]!),'utf8'));
+  expect(notice.record.event.prompt).toBe('fallback remains live');expect(notice.owner).toEqual(config.owner);
+}));
+test('failed bootstrap still captures and spools a fresh event through the legacy mechanism',()=>fixture(async config=>{
+  expect(await upgradeCaptureDaemon({install:async()=>{throw Error('no service manager');}})).toMatchObject({state:'fallback'});
+  await captureHook('cursor',{conversation_id:'fallback-proof',hook_event_name:'beforeSubmitPrompt',prompt:'retained fallback text'});
+  await drainCaptureNotices(config);
+  expect(readdirSync(join(captureDir(),'queue')).length).toBeGreaterThan(0);
+  expect(readCaptureConfig()).toEqual(config);
+}));
+test('late legacy notices recover after activation and cannot cross destinations',()=>fixture(async config=>{
+  await upgradeCaptureDaemon({install:async()=>({supervised:true})});
+  const current=readCaptureConfig()!,directory=join(captureDir(),'notices');mkdirSync(directory,{recursive:true});
+  const record={id:'late-notice',at:new Date().toISOString(),sequence:42,harness:'cursor',event:{conversation_id:'late',hook_event_name:'beforeSubmitPrompt',prompt:'late'}};
+  atomicJson(join(directory,'late.json'),record);importLegacyDaemonNotices(current);
+  const target=join(captureDir(),'daemon','inbox','42-late-notice.json'),first=readFileSync(target,'utf8');
+  // Crash replay after target publication preserves the same immutable identity.
+  atomicJson(join(directory,'late.json'),record);importLegacyDaemonNotices(current);
+  expect(readFileSync(target,'utf8')).toBe(first);
+  atomicJson(join(directory,'foreign.json'),record);
+  const changed={...current,owner:{...config.owner,userId:'another'}};atomicJson(join(captureDir(),'config.json'),changed);
+  importLegacyDaemonNotices(changed);expect(existsSync(join(directory,'foreign.json'))).toBe(true);
+}));
+
+test('macOS and Linux hooks schedule only a bounded detached migration for owned capture',()=>fixture(async config=>{
+  const {scheduleDaemonUpgrade}=await import('../src/capture/daemon-upgrade-launch.ts');
+  const {ChildProcess}=await import('node:child_process');
+  const prior=process.env.OPENCRAWL_NO_UPDATE;delete process.env.OPENCRAWL_NO_UPDATE;
+  try{
+    let launches=0;
+    const launch:typeof import('node:child_process').spawn=((file:string,args:string[],options:any)=>{
+      launches++;expect(file).toBe(process.execPath);expect(args).toEqual(['collect','upgrade-daemon','--json']);
+      expect(options.detached).toBe(true);expect(options.stdio).toBe('ignore');expect(options.env.OPENCRAWL_NO_UPDATE).toBe('1');
+      expect(readCaptureConfig()).toEqual(config);return new ChildProcess();
+    }) as typeof import('node:child_process').spawn;
+    for(const platform of ['darwin','linux'] as const){
+      const receipt=join(captureDir(),'daemon','upgrade-attempt.json');if(existsSync(receipt))unlinkSync(receipt);
+      const options={native:true,platform,launch,owned:()=>true,now:1000};
+      scheduleDaemonUpgrade({...options,owned:()=>false});
+      const before=launches;scheduleDaemonUpgrade(options);scheduleDaemonUpgrade(options);
+      expect(launches).toBe(before+1);
+      scheduleDaemonUpgrade({...options,now:1000+15*60_000});expect(launches).toBe(before+2);
+    }
+  }finally{if(prior===undefined)delete process.env.OPENCRAWL_NO_UPDATE;else process.env.OPENCRAWL_NO_UPDATE=prior;}
 }));
