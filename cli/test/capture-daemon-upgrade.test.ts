@@ -118,3 +118,18 @@ test('macOS and Linux hooks schedule only a bounded detached migration for owned
     }
   }finally{if(prior===undefined)delete process.env.OPENCRAWL_NO_UPDATE;else process.env.OPENCRAWL_NO_UPDATE=prior;}
 }));
+
+test('pre-harness-list installations retain their original implicit Claude and Codex selection',()=>fixture(async config=>{
+  delete config.harnesses;atomicJson(join(captureDir(),'config.json'),config);
+  expect(await upgradeCaptureDaemon({install:async()=>({supervised:true})})).toEqual({state:'activated'});
+  expect(readCaptureConfig()?.harnesses).toEqual(['claude-code','codex']);
+}));
+
+test('a cancelled staged worker exits without consuming legacy notices or changing capture',()=>fixture(async config=>{
+  const controller=new AbortController();let worker:Promise<boolean>|undefined;
+  const result=await upgrade({install:async()=>{
+    worker=awaitDaemonActivation({signal:controller.signal,pollMs:1});return {supervised:true};
+  },ready:async()=>{controller.abort();return false;},cleanup:()=>{}});
+  expect(result).toEqual({state:'fallback',reason:'readiness-unconfirmed'});
+  expect(await worker).toBe(false);expect(readCaptureConfig()).toEqual(config);expect(existsSync(bootstrapFile())).toBe(false);
+}));
