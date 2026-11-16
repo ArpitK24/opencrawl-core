@@ -350,6 +350,10 @@ isolatedTest('generation replacement stops before the first transcript pass',asy
 }));
 
 isolatedTest('supervisor result is factual and bootstrap failure propagates with enrollment retained',async()=>fixture(async f=>{
+  // Inject all Darwin-specific inputs even when the fixture runs on Windows.
+  const uid=Object.getOwnPropertyDescriptor(process,'getuid');
+  Object.defineProperty(process,'getuid',{configurable:true,value:()=>501});
+  try{
   const {installCaptureDaemon,launchAgent}=await import('../src/capture/daemon-service.ts');
   const config=readCaptureConfig()!,before=readFileSync(join(captureDir(),'config.json'),'utf8'),calls:string[][]=[];
   await expect(installCaptureDaemon({...config,installationId:'stale-installation'},{home:f.dir,platform:'darwin',run:(()=>{throw Error('must not run');}) as any})).rejects.toThrow('configuration changed');
@@ -358,15 +362,20 @@ isolatedTest('supervisor result is factual and bootstrap failure propagates with
   expect(readFileSync(join(captureDir(),'config.json'),'utf8')).toBe(before);
   expect(JSON.parse(readFileSync(join(daemonDir(),'service.json'),'utf8'))).toMatchObject({status:'failed',supervised:false});
   expect(calls.map(args=>args[0])).toEqual(['bootout','bootstrap']);
+  expect(calls[0][1]).toMatch(/^gui\/501\/com\.getopencrawl\.capture\.[a-f0-9]{12}$/);expect(calls[1][1]).toBe('gui/501');
   // The fake's file is intentionally retained as the same failed installation would be.
   const service=await installCaptureDaemon(config,{home:f.dir,platform:'linux',service:false,ensure:async()=>{}});
   expect(service).toMatchObject({kind:'process',supervised:false});
   const plist=launchAgent({...config,command:['/selected CLI/opencrawl']});
   expect(plist).toContain('/selected CLI/opencrawl');expect(plist).toContain('collect');expect(plist).toContain('daemon');
   expect(plist).not.toContain('synthetic-daemon-token');
-  // Avoid any real LaunchAgent removal in fixture cleanup after our fake installation.
-  const {unlinkSync}=await import('node:fs');
-  const agentDir=join(f.dir,'Library','LaunchAgents');for(const name of readdirSync(agentDir))unlinkSync(join(agentDir,name));
+  }finally{
+    if(uid)Object.defineProperty(process,'getuid',uid);else delete process.getuid;
+    // Never invoke a real supervisor during cleanup of this fake installation,
+    // including when an assertion above fails.
+    const {unlinkSync}=await import('node:fs'),agentDir=join(f.dir,'Library','LaunchAgents');
+    if(existsSync(agentDir))for(const name of readdirSync(agentDir))unlinkSync(join(agentDir,name));
+  }
 }));
 
 isolatedTest('first forward opt-in excludes the existing transcript prefix while the daemon captures later appends',async()=>fixture(async f=>{

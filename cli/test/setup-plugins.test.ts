@@ -227,8 +227,9 @@ test('modified or symlink obsolete manifests fail before new bundle files are wr
  expect((await installSetupPlugins(origin,['codex'],options)).results[0]?.status).toBe('pending');expect(existsSync(join(directory,'.codex-plugin/plugin.json'))).toBe(false);expect(readFileSync(target,'utf8')).toBe('private user file');
 }));
 
-test('a stale receipt cannot rebind a deployment plugin owned by another CLI profile',()=>fixture(async(home,options,calls)=>{
- for(const client of ['codex','claude-code','antigravity'] as const){
+// Each native installer is an independent ownership boundary. Keep each fixture
+// under its own unchanged test budget instead of aggregating three disk installs.
+for(const client of ['codex','claude-code','antigravity'] as const)test(`a stale receipt cannot rebind ${client} owned by another CLI profile`,()=>fixture(async(home,options,calls)=>{
   const first=await installSetupPlugins(origin,[client],options),directory=first.results[0]!.directory!,before=readFileSync(receipt(home,client),'utf8'),sourceBefore=readFileSync(join(directory,'.opencrawl-setup-plugin.json'),'utf8');
   const foreignConfig=join(home,'other-profile/config'),foreignRoot=join(home,'other-native-source',client),bundle=setupPluginFiles(client,origin,{command:options.command,configHome:foreignConfig});
   for(const [name,content] of Object.entries(bundle)){mkdirSync(dirname(join(foreignRoot,name)),{recursive:true});writeFileSync(join(foreignRoot,name),content);}
@@ -239,13 +240,10 @@ test('a stale receipt cannot rebind a deployment plugin owned by another CLI pro
   expect(result.results[0]?.status).toBe('pending');expect(result.results[0]?.message).toContain('another CLI profile');expect(calls).toHaveLength(1);
   expect(readFileSync(receipt(home,client),'utf8')).toBe(before);expect(readFileSync(join(directory,'.opencrawl-setup-plugin.json'),'utf8')).toBe(sourceBefore);
   expect(read(join(foreignRoot,'.opencrawl-setup-plugin.json')).configHome).toBe(foreignConfig);options.runner=native;
- }
 }));
-test('matching native profile ownership permits ordinary command upgrades for every native installer',()=>fixture(async(home,options)=>{
- for(const client of ['codex','claude-code','antigravity'] as const){
+for(const client of ['codex','claude-code','antigravity'] as const)test(`matching native profile ownership permits ordinary command upgrades for ${client}`,()=>fixture(async(home,options)=>{
   await installSetupPlugins(origin,[client],options);const prior=read(receipt(home,client));options.command=[join(home,'upgraded cli',client,'opencrawl')];
   expect((await installSetupPlugins(origin,[client],options)).results[0]?.status).toBe('prepared');expect(read(receipt(home,client)).digest).not.toBe(prior.digest);
- }
 }));
 
 test('current Codex cache inventory takes precedence over a stale saved path and rejects another profile',()=>fixture(async(home,options,calls)=>{

@@ -127,11 +127,18 @@ test('Windows uncertain removal retains receipt and command has explicit ownersh
 }));
 
 test('Mac stop uncertainty preserves state; verified service absence permits cleanup',()=>fixture(f=>{
-  const path=f.unit('darwin'),bytes=ownedUnit(path,f.config,'darwin');atomicJson(f.receipt,{kind:'launchd',status:'installed',label:f.label,path});
-  expect(()=>uninstallCaptureDaemon(f.root,{platform:'darwin',run:runner(()=>outcome(1))})).toThrow('preserved');
-  expect(readFileSync(path,'utf8')).toBe(bytes);expect(JSON.parse(readFileSync(f.receipt,'utf8')).status).toBe('stop-failed');
-  uninstallCaptureDaemon(f.root,{platform:'darwin',run:runner((_command,args)=>args[0]==='print'?outcome(113,'','Could not find service'):outcome(1))});
-  expect(existsSync(path)).toBe(false);expect(existsSync(f.receipt)).toBe(false);
+  // The platform and launchctl are injected; the UID must be independent of the
+  // host too (Windows has no process.getuid). Restore the exact property after.
+  const uid=Object.getOwnPropertyDescriptor(process,'getuid');
+  Object.defineProperty(process,'getuid',{configurable:true,value:()=>501});
+  try{
+    const path=f.unit('darwin'),bytes=ownedUnit(path,f.config,'darwin');atomicJson(f.receipt,{kind:'launchd',status:'installed',label:f.label,path});
+    const run=(absent:boolean)=>runner((command,args)=>{expect(command).toBe('launchctl');expect(args[1]).toBe('gui/501/'+f.label);return absent&&args[0]==='print'?outcome(113,'','Could not find service'):outcome(1);});
+    expect(()=>uninstallCaptureDaemon(f.root,{platform:'darwin',run:run(false)})).toThrow('preserved');
+    expect(readFileSync(path,'utf8')).toBe(bytes);expect(JSON.parse(readFileSync(f.receipt,'utf8')).status).toBe('stop-failed');
+    uninstallCaptureDaemon(f.root,{platform:'darwin',run:run(true)});
+    expect(existsSync(path)).toBe(false);expect(existsSync(f.receipt)).toBe(false);
+  }finally{if(uid)Object.defineProperty(process,'getuid',uid);else delete process.getuid;}
 }));
 
 test('paused no-startup installation remains stopped and detached spawn errors propagate',()=>fixture(async f=>{
