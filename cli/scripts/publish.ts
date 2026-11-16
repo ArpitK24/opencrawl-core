@@ -32,7 +32,9 @@ export async function publish({
     const result = run(['npm', 'dist-tag', 'ls', name, ...registryArgs], {stdout: 'pipe', stderr: 'pipe'});
     let tags: Record<string, string> = {};
     if (result.exitCode === 0) {
-      for (const line of result.stdout.toString().trim().split('\n').filter(Boolean)) {
+      const lines = result.stdout.toString().trim().split('\n').filter(Boolean);
+      if (!lines.length) throw new Error('Invalid CLI release tag response: ' + name);
+      for (const line of lines) {
         const match = /^(\S+):\s+(\S+)$/.exec(line.trim());
         if (!match || Object.hasOwn(tags, match[1]!)) throw new Error('Invalid CLI release tag response: ' + name);
         tags[match[1]!] = match[2]!;

@@ -24,7 +24,7 @@ function registry(dist: string) {
     published: new Set<string>(), downloaded: new Set<string>(),
     publishCalls: [] as string[], promotions: [] as string[],
     blocked: new Set<string>(), clock: 0, onSleep: () => {}, failPromotion: false, failAfterPromotions: Infinity,
-    stalePackumentTags: false, invalidTagResponse: false,
+    stalePackumentTags: false, tagResponse: undefined as string | undefined,
     metadata: new Map<string,Record<string,unknown>>(),
   };
   for (const folder of names) state.packageTags.set(folder === 'cli' ? cli : `${cli}-${folder}`, folder === 'cli' ? state.tags : {latest: '0.9.0', next: '0.9.0'});
@@ -52,7 +52,7 @@ function registry(dist: string) {
       return result(0);
     }
     if (args[1] === 'dist-tag') {
-      if (args[2] === 'ls') return result(0, state.invalidTagResponse ? 'unrecognized response' : Object.entries(state.packageTags.get(args[3])!).map(([tag, version]) => `${tag}: ${version}`).join('\n'));
+      if (args[2] === 'ls') return result(0, state.tagResponse ?? Object.entries(state.packageTags.get(args[3])!).map(([tag, version]) => `${tag}: ${version}`).join('\n'));
       expect(state.downloaded.size).toBe(6); // metadata alone is insufficient
       if (args[2] === 'rm') { delete state.packageTags.get(args[3])![args[4]]; return result(0); }
       if (state.failPromotion || state.promotions.length === state.failAfterPromotions) return result(1, '', 'temporary registry failure');
@@ -98,8 +98,10 @@ test('staging tags are removed even when package metadata lags behind tag writes
 }));
 
 test('unrecognized tag output fails before publishing', () => registryFixture(async ({state, execute}) => {
-  state.invalidTagResponse = true;
-  await expect(execute()).rejects.toThrow('Invalid CLI release tag response');
+  for (const output of ['', 'unrecognized response', 'latest: 1.0.0\nlatest: 0.9.0']) {
+    state.tagResponse = output;
+    await expect(execute()).rejects.toThrow('Invalid CLI release tag response');
+  }
   expect(state.publishCalls).toEqual([]);
 }));
 
