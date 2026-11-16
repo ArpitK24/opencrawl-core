@@ -152,7 +152,7 @@ export async function installCaptureDaemon(config:CaptureConfig,{home=homedir(),
     const readGeneration=()=>existsSync(generationFile)?readFileSync(generationFile,'utf8'):null;
     const beforeGeneration=readGeneration();
     const unchanged=(generation:string|null)=>{
-      if(!isDeepStrictEqual(readCaptureConfig(),config)||readGeneration()!==generation)
+      if(!isDeepStrictEqual(readCaptureConfig(),expectedConfig)||readGeneration()!==generation)
         throw new CliError('CAPTURE_CONFIG_CHANGED','Capture configuration or worker generation changed during service installation.');
     };
     const domain='gui/'+process.getuid!(),target=domain+'/'+label();

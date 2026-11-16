@@ -323,3 +323,13 @@ for(const mode of ['unknown','foreign','changed-config','changed-generation'] as
   expect(calls).toEqual(mode==='changed-generation'?['print','kickstart']:['print']);
  }finally{if(uid)Object.defineProperty(process,'getuid',uid);else delete process.getuid;}
 }));
+
+test('staged launchd bootstrap validates the legacy config while installing the daemon candidate',()=>fixture(async f=>{
+  const before={...f.config};delete before.captureWorker;
+  atomicJson(join(captureDir(),'config.json'),before);
+  const operations:string[]=[];
+  const run=runner((_command,args)=>{operations.push(args[0]!);return args[0]==='print'?outcome(113,'','Could not find service'):outcome();});
+  expect(await installCaptureDaemon(f.config,{expectedConfig:before,platform:'darwin',home:f.root,run})).toMatchObject({supervised:true});
+  expect(JSON.parse(readFileSync(join(captureDir(),'config.json'),'utf8'))).toEqual(before);
+  expect(operations).toEqual(['print','bootstrap']);
+}));
