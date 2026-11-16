@@ -33,8 +33,8 @@ const compressBatch=promisify(gzip);
 export const captureDir = () => join(configDir(),'capture');
 const read = (p:string, fallback:any=null) => {try{return JSON.parse(readFileSync(p,'utf8'));}catch(e:any){if(e.code==='ENOENT')return fallback;throw e;}};
 /** Bump when installed hook entries change so the next hook rewrites existing installs. */
-export const HOOK_MODE='native-v4';
-export type CaptureConfig = {disabled?:boolean,authPending?:boolean,captureWorker?:'daemon-v1',backgroundStartup?:boolean,claudeCapture?:'daemon-v1',exclusions?:CaptureExclusions,schemaVersion:1,hookOwnership?:'global'|'plugin',hookMode?:typeof HOOK_MODE|'managed-v3'|'managed-v2'|'managed',harnesses?:Harness[],historyHarnesses?:TranscriptHarness[],api:string,installationId:string,owner:{tenantId:string,userId:string,name?:string,email?:string},installedAt:string,roots:{'claude-code':string,codex:string,'grok-bot'?:string,cursor?:string,antigravity?:string,devin?:string},claudeDesktopSessionsRoot?:string,command:string[]};
+export const HOOK_MODE='native-v5';
+export type CaptureConfig = {disabled?:boolean,authPending?:boolean,captureWorker?:'daemon-v1',daemonRequested?:{backgroundStartup:boolean},backgroundStartup?:boolean,claudeCapture?:'daemon-v1',exclusions?:CaptureExclusions,schemaVersion:1,hookOwnership?:'global'|'plugin',hookMode?:typeof HOOK_MODE|'native-v4'|'managed-v3'|'managed-v2'|'managed',harnesses?:Harness[],historyHarnesses?:TranscriptHarness[],api:string,installationId:string,owner:{tenantId:string,userId:string,name?:string,email?:string},installedAt:string,roots:{'claude-code':string,codex:string,'grok-bot'?:string,cursor?:string,antigravity?:string,devin?:string},claudeDesktopSessionsRoot?:string,command:string[]};
 export const readCaptureConfig = ():CaptureConfig|null => read(join(captureDir(),'config.json'));
 /** claudeCapture is accepted only for the first opt-in daemon pilot. */
 export const captureDaemonEnabled=(config:CaptureConfig|null=readCaptureConfig())=>config?.captureWorker==='daemon-v1'||config?.claudeCapture==='daemon-v1';
@@ -121,7 +121,7 @@ export function recordError(error:any) {
 function ensureDirectories() {for(const dir of ['queue','state','blobs','notices','sources','rejected','uploads'])mkdirSync(join(captureDir(),dir),{recursive:true,mode:0o700});}
 /** Only the fixed notice header is needed for ordering. Filesystem timestamps
  * can tie on Linux; reading whole payloads here would unbound backlog memory. */
-function orderedNoticeNames() {
+export function orderedNoticeNames() {
   return readdirSync(join(captureDir(),'notices')).filter(name=>name.endsWith('.json')).map(name=>{
     const path=join(captureDir(),'notices',name),fd=openSync(path,'r'),buffer=Buffer.alloc(256);
     try {

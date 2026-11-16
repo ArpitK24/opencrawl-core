@@ -155,7 +155,7 @@ try {
     // Path spelling can differ through macOS /var or Windows 8.3 aliases.
     // Require the same file identity, not matching bytes in a different file.
     assertSameFile(nodeExecutable, migrated.command[0], join(env.XDG_CACHE_HOME,'opencrawl/releases',version,'node_modules/@getopencrawl','cli-'+platform,'bin',process.platform==='win32'?'opencrawl.exe':'opencrawl'));
-    assert.deepEqual({...migrated,command:config.command},{...config,hookMode:'native-v4'});
+    assert.deepEqual({...migrated,command:config.command},{...config,hookMode:'native-v5'});
     const selectedApi = (...args: string[]) => JSON.parse(sync(['node', launcher, 'skills', 'status', '--client', 'claude-code', '--json', ...args])).data.api;
     delete env.OPENCRAWL_API_URL;
     if (selectedApi() !== api) throw new Error('CLI ignored saved server configuration');

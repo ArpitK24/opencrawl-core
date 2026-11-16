@@ -9,6 +9,7 @@ import {captureExcluded} from './policy.ts';
 import {hash,readsTranscript,HARNESSES} from './parse.ts';
 import {recordNativeDaemonHook,daemonRegistration,daemonSubagent,daemonPathAllowed,sameDaemonBinding,daemonSession,type DaemonRegistration,type DaemonNotice} from './daemon-handoff.ts';
 import {pendingLiveSince} from './live-batches.ts';
+import {importLegacyDaemonNotices} from './daemon-legacy.ts';
 import {version,compiled} from '../distribution.ts';
 
 export const daemonDir=()=>join(captureDir(),'daemon');
@@ -33,7 +34,7 @@ export type DaemonOptions={signal?:AbortSignal,flushMs?:number,reconcileMs?:numb
 export async function runCaptureDaemon({signal,flushMs=10_000,reconcileMs=30_000,settleMs=2000,idleMs=300_000,retryMs=1000,onReady,processStartupTask}:DaemonOptions={}) {
   const initial=readCaptureConfig();if(!initial||!captureDaemonEnabled(initial)||initial.disabled&&!initial.backgroundStartup)return;
   directories();
-  try{return await withSessionLock('capture:daemon',async()=>{
+  try{return await withSessionLock('capture:daemon',()=>withSessionLock('capture:worker',async()=>{
     const active=new Map<string,Active>(),rootWatchers:FSWatcher[]=[];
     if(initial.backgroundStartup&&!processStartupTask)throw Error('Background session startup is configured but its handler is unavailable');
     let stopped=false,wakeCapture=()=>{},wakeUpload=()=>{},wakeStartup=()=>{},inboxDirty=true,queueDirty=true,startupDirty=true;
@@ -161,6 +162,10 @@ export async function runCaptureDaemon({signal,flushMs=10_000,reconcileMs=30_000
     for(const [path,changed] of [[join(daemonDir(),'inbox'),()=>{inboxDirty=true;inboxRetryAt=0;startupDirty=true;wakeCapture();wakeStartup();}],[join(captureDir(),'queue'),()=>{queueDirty=true;wakeUpload();wakeCapture();}]] as const){
       const watcher=watch(path,changed);watcher.on('error',stop);rootWatchers.push(watcher);
     }
+    if(existsSync(join(daemonDir(),'legacy-handoff.json'))){
+      const pending=join(captureDir(),'notices');mkdirSync(pending,{recursive:true,mode:0o700});
+      const watcher=watch(pending,()=>{inboxDirty=true;inboxRetryAt=0;wakeCapture();});watcher.on('error',()=>{watcher.close();});rootWatchers.push(watcher);
+    }
     const configWatch=watch(captureDir(),(_event,name)=>{if(!name||name.toString()==='config.json'){if(!current())stop();else{wakeCapture();wakeUpload();startupDirty=true;wakeStartup();}}});
     configWatch.on('error',stop);rootWatchers.push(configWatch);
     const statusFile=join(daemonDir(),'status.json');
@@ -182,7 +187,7 @@ export async function runCaptureDaemon({signal,flushMs=10_000,reconcileMs=30_000
         }
         if(paused){paused=false;for(const item of active.values())item.dirty=true;}
         if(config.authPending){try{await refreshCaptureIdentity(config);Object.assign(initial,config);}catch(error){recordError(error);await wait('capture',60_000);continue;}}
-        if(inboxDirty&&Date.now()>=inboxRetryAt){await inbox();await yieldToOwner();}
+        if(inboxDirty&&Date.now()>=inboxRetryAt){const remaining=importLegacyDaemonNotices(config);await inbox();if(remaining)inboxDirty=true;await yieldToOwner();}
         let next=Math.min(nextReconcile,inboxDirty?inboxRetryAt||Date.now():Infinity);
         for(const [id,item] of active){
           if(stopped)break;
@@ -301,5 +306,5 @@ export async function runCaptureDaemon({signal,flushMs=10_000,reconcileMs=30_000
       stop();signal?.removeEventListener('abort',stop);for(const watcher of rootWatchers)watcher.close();for(const item of active.values())for(const watcher of item.watchers.values())watcher.close();
       atomicJson(statusFile,{pid:process.pid,stoppedAt:new Date().toISOString(),state:'stopped',executable:process.execPath,version,compiled:compiled(),...counters});
     }
-  },0);}catch(error:any){if(error.code!=='SESSION_BUSY')throw error;}
+  },60_000,signal),0);}catch(error:any){if(error.code!=='SESSION_BUSY')throw error;}
 }

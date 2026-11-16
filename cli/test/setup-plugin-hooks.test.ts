@@ -30,7 +30,7 @@ test('all four native plugin formats include synchronous startup and supported c
   if(client==='codex'){
    expect(hooks.SessionEnd[0].async).toBeUndefined();expect(hooks.SessionEnd[0].timeout).toBe(3);expect(hooks.SessionEnd[0].command).not.toContain('--managed');
    expect(hooks.PostToolUse[0].async).toBe(true);expect(hooks.PostToolUse[0].command).not.toContain('--managed');
-  }else if(client==='claude-code'){expect(Object.keys(hooks).sort()).toEqual(['PreToolUse','SessionEnd','SessionStart']);expect(hooks.SessionEnd[0]).toMatchObject({async:true,timeout:10});expect(start[1].command).not.toContain('--managed');}
+  }else if(client==='claude-code'){expect(Object.keys(hooks).sort()).toEqual(['PreToolUse','SessionEnd','SessionStart','Stop','UserPromptSubmit']);expect(hooks.SessionEnd[0]).toMatchObject({async:true,timeout:120});expect(start[1].command).not.toContain('--managed');}
   else if(client==='cursor'){
    expect(JSON.parse(files['hooks/hooks.json']).version).toBe(1);
    expect(hooks.stop[0].command).toContain('$CURSOR_PLUGIN_ROOT/');expect(hooks.postToolUseFailure).toHaveLength(1);expect(hooks.preCompact).toHaveLength(1);

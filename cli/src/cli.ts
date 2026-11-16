@@ -3,6 +3,7 @@ import {boardCommand, boardInput, writeBoardOutput} from './board.ts';
 import {fetchMany} from './fetch-many.ts';
 import {commandHelp} from './help.ts';
 import {upgradeCaptureHooks} from './capture/install.ts';
+import {scheduleDaemonUpgrade} from './capture/daemon-upgrade-launch.ts';
 import {collectCommand} from './capture/command.ts';
 import {readCaptureConfig} from './capture/runtime.ts';
 import {scheduleMemoryRefresh} from './capture/memory.ts';
@@ -251,6 +252,7 @@ export async function main(args = process.argv.slice(2)) {
     applyDaemonEnvironment(args);
     if(!hasPluginContext()&&readCaptureConfig()?.hookOwnership!=='plugin'){
       await automaticNativeMigration();
+      try{scheduleDaemonUpgrade();}catch{}
       try{wakeApprovedHistory();}catch{}
     }
     return sessionStartCommand(args.slice(2));
@@ -302,11 +304,12 @@ export async function main(args = process.argv.slice(2)) {
         if(data!==null)emit(data,formatSetupOutput(data));return 0;
       });
     }
-    const captureHandoff=command==='collect'&&['hook','daemon'].includes(parsed.positionals[1]??'');
+    const captureHandoff=command==='collect'&&['hook','daemon','upgrade-daemon'].includes(parsed.positionals[1]??'');
     if(command!=='install'&&!captureHandoff)await automaticNativeMigration();
     // Installing the executable does not enroll or refresh native integrations.
     if(command==='install'){if(!compiled())throw new CliError('INSTALL_UNAVAILABLE','Run install from a released executable.');const data=await installBinary();emit(data,`Installed opencrawl ${data.version} at ${data.path}. Add its directory to PATH if needed.`);return 0;}
     if(command==='update'){const data=await updateCli();emit(data,data.updated?`Installed opencrawl ${data.version}. Your next invocation will use it.`:`opencrawl ${data.version} is current.`);return 0;}
+    if(!['setup','logout','install','skills','verify-installation'].includes(command)&&!(command==='collect'&&parsed.positionals[1]!=='hook'))try{scheduleDaemonUpgrade();}catch{}
     const pluginHookInvocation=captureHandoff||hasPluginContext();
     if(!pluginHookInvocation)updateJob=scheduleCliUpdate();
     const api = apiOrigin((parsed.values.api as string | undefined) ?? process.env.OPENCRAWL_API_URL

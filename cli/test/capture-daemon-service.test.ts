@@ -1,5 +1,5 @@
 import {test,expect} from 'bun:test';
-import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync,existsSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync,existsSync,symlinkSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,dirname,resolve} from 'node:path';
 import {ChildProcess,spawnSync as executeSync,type spawnSync,type spawn,type SpawnSyncReturns} from 'node:child_process';
@@ -324,6 +324,18 @@ for(const mode of ['unknown','foreign','changed-config','changed-generation'] as
  }finally{if(uid)Object.defineProperty(process,'getuid',uid);else delete process.getuid;}
 }));
 
+test('staged launchd bootstrap validates the legacy config while installing the daemon candidate',()=>fixture(async f=>{
+  const uid=Object.getOwnPropertyDescriptor(process,'getuid');Object.defineProperty(process,'getuid',{value:()=>501,configurable:true});
+  try{
+  const before={...f.config};delete before.captureWorker;
+  atomicJson(join(captureDir(),'config.json'),before);
+  const operations:string[]=[];
+  const run=runner((_command,args)=>{operations.push(args[0]!);return args[0]==='print'?outcome(113,'','Could not find service'):outcome();});
+  expect(await installCaptureDaemon(f.config,{expectedConfig:before,platform:'darwin',home:f.root,run})).toMatchObject({supervised:true});
+  expect(JSON.parse(readFileSync(join(captureDir(),'config.json'),'utf8'))).toEqual(before);
+  expect(operations).toEqual(['print','bootstrap']);
+  }finally{if(uid)Object.defineProperty(process,'getuid',uid);else delete process.getuid;}
+}));
 
 async function macReplacement(run:(f:{config:CaptureConfig,path:string,receipt:string,generation:string,queue:string,label:string,home:string,original:string,receiptBefore:string,generationBefore:string})=>Promise<void>){
   return fixture(async f=>{
@@ -435,6 +447,27 @@ test('Mac replacement never starts through a worker that retains the singleton',
   }finally{release();await oldWorker;}
 }),35_000);
 
+for(const foreign of [false,true])(process.platform==='win32'?test.skip:test)(`Mac service ownership ${foreign?'rejects a different file with identical content':'accepts canonical aliases of the same plist'}`,()=>fixture(async f=>{
+  const uid=Object.getOwnPropertyDescriptor(process,'getuid');Object.defineProperty(process,'getuid',{value:()=>501,configurable:true});
+  try{
+    const path=f.unit('darwin'),bytes=ownedUnit(path,f.config,'darwin');
+    const aliasHome=join(f.root,'home-alias');symlinkSync(f.root,aliasHome,'dir');
+    const aliasPath=join(aliasHome,'Library','LaunchAgents',f.label+'.plist');
+    const loadedPath=foreign?join(f.root,'other.plist'):aliasPath;
+    if(foreign)writeFileSync(loadedPath,bytes);
+    atomicJson(f.receipt,{kind:'launchd',status:'installed',label:f.label,path:aliasPath});
+    const before=readFileSync(f.receipt,'utf8'),calls:string[]=[];
+    const run=runner((_command,args)=>{calls.push(args[0]!);if(args[0]==='print')return outcome(0,'path = '+loadedPath);if(args[0]==='kickstart')return outcome();throw Error('Unexpected service replacement');});
+    if(foreign){
+      await expect(installCaptureDaemon(f.config,{home:f.root,platform:'darwin',run})).rejects.toMatchObject({code:'CAPTURE_SUPERVISION_CONFLICT'});
+      expect(calls).toEqual(['print']);expect(readFileSync(f.receipt,'utf8')).toBe(before);
+    }else{
+      expect(await installCaptureDaemon(f.config,{home:f.root,platform:'darwin',run})).toMatchObject({supervised:true});
+      expect(calls).toEqual(['print','kickstart']);
+    }
+    expect(readFileSync(path,'utf8')).toBe(bytes);
+  }finally{if(uid)Object.defineProperty(process,'getuid',uid);else delete process.getuid;}
+}));
 
 test('Mac repeat setup accepts a restart acknowledgement after the short inspection deadline',()=>fixture(async f=>{
   const uid=Object.getOwnPropertyDescriptor(process,'getuid');Object.defineProperty(process,'getuid',{configurable:true,value:()=>501});

@@ -1,5 +1,5 @@
-import {existsSync,readFileSync,readdirSync,mkdirSync,unlinkSync,openSync,writeFileSync,fsyncSync,closeSync,renameSync} from 'node:fs';
-import {join,dirname} from 'node:path';
+import {existsSync,readFileSync,readdirSync,mkdirSync,unlinkSync,openSync,writeFileSync,fsyncSync,closeSync,renameSync,realpathSync} from 'node:fs';
+import {join,dirname,isAbsolute} from 'node:path';
 import {homedir} from 'node:os';
 import {isDeepStrictEqual} from 'node:util';
 import {spawn,spawnSync} from 'node:child_process';
@@ -116,8 +116,8 @@ export async function ensureCaptureDaemon(config=readCaptureConfig(),{platform=p
 
 /** User-scoped OS supervision; hosts without a user manager receive an explicit
  * profile-bound foreground command for their own supervisor. */
-export async function installCaptureDaemon(config:CaptureConfig,{home=homedir(),service=true,platform=process.platform,run=spawnSync,ensure=ensureCaptureDaemon,hostRun}:{home?:string;service?:boolean;platform?:NodeJS.Platform;run?:typeof spawnSync;ensure?:typeof ensureCaptureDaemon;hostRun?:HostInvoke}={}) {
-  if(!isDeepStrictEqual(readCaptureConfig(),config))throw Error('Capture configuration changed before service installation');
+export async function installCaptureDaemon(config:CaptureConfig,{home=homedir(),service=true,platform=process.platform,run=spawnSync,ensure=ensureCaptureDaemon,hostRun,expectedConfig=config}:{expectedConfig?:CaptureConfig;home?:string;service?:boolean;platform?:NodeJS.Platform;run?:typeof spawnSync;ensure?:typeof ensureCaptureDaemon;hostRun?:HostInvoke}={}) {
+  if(!isDeepStrictEqual(readCaptureConfig(),expectedConfig))throw Error('Capture configuration changed before service installation');
   const queue=join(captureDir(),'queue'),pending=existsSync(queue)&&readdirSync(queue).some(name=>name.endsWith('.json'));
   if(!captureDaemonEnabled(config)||!config.backgroundStartup&&(config.disabled||!captureDaemonHarnesses(config).length&&!pending)){
     uninstallCaptureDaemon(home,{platform,run,hostRun});return {kind:'not-required',supervised:false,queuedDataPreserved:true};
@@ -143,7 +143,7 @@ export async function installCaptureDaemon(config:CaptureConfig,{home=homedir(),
       verifyHostService(hostService(config),hostRun);
     }
   }
-  if(!isDeepStrictEqual(readCaptureConfig(),config))throw Error('Capture configuration changed before service installation');
+  if(!isDeepStrictEqual(readCaptureConfig(),expectedConfig))throw Error('Capture configuration changed before service installation');
   mkdirSync(directory(),{recursive:true,mode:0o700});
   if(platform!=='darwin'||!service)atomicJson(join(directory(),'generation.json'),{generation:crypto.randomUUID()});
   if(platform==='darwin'&&service){
@@ -153,7 +153,7 @@ export async function installCaptureDaemon(config:CaptureConfig,{home=homedir(),
     const readGeneration=()=>existsSync(generationFile)?readFileSync(generationFile,'utf8'):null;
     const beforeGeneration=readGeneration();
     const unchanged=(generation:string|null)=>{
-      if(!isDeepStrictEqual(readCaptureConfig(),config)||readGeneration()!==generation)
+      if(!isDeepStrictEqual(readCaptureConfig(),expectedConfig)||readGeneration()!==generation)
         throw new CliError('CAPTURE_CONFIG_CHANGED','Capture configuration or worker generation changed during service installation.');
     };
     const domain='gui/'+process.getuid!(),target=domain+'/'+label();
@@ -174,12 +174,19 @@ export async function installCaptureDaemon(config:CaptureConfig,{home=homedir(),
       return recordFailure(error);
     };
     const isAbsent=(result:ReturnType<typeof spawnSync>)=>result.status===113&&!result.error&&!result.signal&&String(result.stderr).includes('Could not find service');
-    const loadedFromPath=(result:ReturnType<typeof spawnSync>)=>String(result.stdout).split('\n').some(line=>line.trim()==='path = '+path);
+    const sameServicePath=(candidate:unknown)=>{
+      if(typeof candidate!=='string'||!isAbsolute(candidate))return false;
+      if(candidate===path)return true;
+      try{return realpathSync(candidate)===realpathSync(path);}catch{return false;}
+    };
+    const loadedFromPath=(result:ReturnType<typeof spawnSync>)=>String(result.stdout).split('\n').some(line=>{
+      const value=line.trim();return value.startsWith('path = ')&&sameServicePath(value.slice(7));
+    });
     const checked=invoke('print',['print',target]);
     const absent=isAbsent(checked);
     if(checked.status!==0&&!absent)failed('print',checked);
     if(checked.status===0){
-      const owned=previous?.kind==='launchd'&&previous.label===label()&&previous.path===path&&existing!==null;
+      const owned=previous?.kind==='launchd'&&previous.label===label()&&sameServicePath(previous.path)&&existing!==null;
       if(!owned||!loadedFromPath(checked))throw new CliError('CAPTURE_SUPERVISION_CONFLICT','The loaded LaunchAgent is not bound to this profile receipt and service file. Its registration was preserved.');
     }
     unchanged(beforeGeneration);
