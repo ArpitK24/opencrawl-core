@@ -36,6 +36,19 @@ try{
   const killedAt=performance.now();process.kill(pid!,'SIGKILL');
   await wait(()=>status()?.state==='running'&&status().pid!==pid&&alive(status().pid),90_000);
   pid=status().pid;receipt.restartedPid=pid;receipt.restartMs=performance.now()-killedAt;
+  if(process.platform==='win32'){
+    // Keep the restart deadline above unchanged; observe the same worker across
+    // a subsequent one-minute recovery interval before testing uninstall.
+    const stableAt=performance.now(),stableForMs=65_000;
+    while(performance.now()-stableAt<stableForMs){
+      const current=status();
+      if(current?.state!=='running'||current.pid!==pid||!alive(pid!))throw Error('Restarted worker did not stay running across the recovery interval');
+      await Bun.sleep(100);
+    }
+    const current=status();
+    if(current?.state!=='running'||current.pid!==pid||!alive(pid!))throw Error('Restarted worker changed at the end of the recovery interval');
+    receipt.restartStability={pid,observedMs:performance.now()-stableAt,recoveryIntervalMs:60_000,samePidRunning:true};
+  }
   uninstallCaptureDaemon(home);installed=false;serviceRemoved=true;await wait(()=>!alive(pid!),10_000);
   await withSessionLock('capture:daemon',async()=>{},0);workerStopped=true;
   receipt.uninstallStoppedWorker=true;receipt.passed=true;
