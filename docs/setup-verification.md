@@ -82,6 +82,9 @@ status. It is not required to enable capture to search existing authorized data.
 The self-host application implements these seams with local Better Auth OAuth and
 its existing storage/search adapters. It requires no hosted OpenCrawl credentials.
 The local regression covers real durable ingest, SQLite indexing, authenticated MCP
-transport, search/fetch provenance, and captured native correlation. User acceptance
-still requires a real blank-machine run and the user's existing-machine run before
-this onboarding release is shipped.
+transport, search/fetch provenance, and captured native correlation.
+
+The first release offers Claude Code and Codex client setup on macOS. Record
+actual native capture, authenticated MCP, search and fetch evidence separately
+from these fixtures; deferred clients and platforms remain unverified until
+their own journeys pass.

@@ -39,9 +39,12 @@ three-step completion is not a current navigation gate.
 
 ## Actual user journeys
 
-Run actual onboarding on a clean Linux machine and an existing Mac. Cover both
-Cloud and self-hosted authentication and every supported native plugin surface;
-record which combinations ran and which remain untested. Use normal installers,
+The first release targets Claude Code and Codex client enrollment on macOS.
+Verify those native journeys against the paired deployment and record the exact
+source, platform and client combinations exercised. Linux client onboarding and
+the remaining native clients are later acceptance work; do not report them as
+complete from macOS evidence. Cover both Cloud and self-hosted authentication
+as those release paths become available. Use normal installers,
 sign-in, native plugin loading, trust and MCP controls. Preserve existing user
 configuration and consent. Do not copy credentials, approve trust on the user's
 behalf, change sandbox policy or use seeded identities as substitutes.

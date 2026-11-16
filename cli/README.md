@@ -40,7 +40,7 @@ sidebar and never blocks the rest of the app. Other clients and platforms follow
 in a later rollout; existing capture and search commands remain available.
 
 For your own server, add `--api https://your-opencrawl.example`.
-See [onboarding](../docs/onboarding.md) for the complete flow.
+See [onboarding](https://github.com/getopencrawl/opencrawl-core/blob/main/docs/onboarding.md) for the complete flow.
 
 ## Existing installations and other platforms
 

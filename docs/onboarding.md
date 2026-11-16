@@ -14,6 +14,15 @@ self-host uses the core single-tenant adapters. Authentication and resource
 permissions still apply to every route. Nonblocking setup does not mean
 unauthenticated access.
 
+## Launch availability
+
+New setup currently offers Claude Code and Codex on macOS. Other clients and
+client operating systems are deferred; their adapters and existing installations
+remain supported. Saved deferred selections may continue or be turned off, but
+cannot be newly enabled. A legacy installation containing deferred clients stops
+before changing configuration. This client availability is separate from the
+operating system running a self-hosted server.
+
 ## Cloud and self-hosted authentication
 
 **Cloud:** run `opencrawl setup` against the hosted deployment, or use the
@@ -41,8 +50,8 @@ remains an alternative. Installation failure must stop before setup executes.
 1. **Authenticate the CLI.** Reuse a valid saved sign-in. Complete the normal
    browser handoff when required, then establish the current API, owner and
    installation binding before changing clients.
-2. **Choose plugins and future recording.** Claude Code, Codex, Cursor and
-   Antigravity have native OpenCrawl plugin bundles. Detected supported clients
+2. **Choose plugins and future recording.** The first release offers native
+   Claude Code and Codex plugins on macOS. Detected offered clients
    start selected; saved off choices remain off. Recording requires that client's
    plugin: turning its plugin off also turns recording off, and turning recording
    on selects the plugin. A plugin may remain installed for search with recording
@@ -51,8 +60,8 @@ remains an alternative. Installation failure must stop before setup executes.
    “Import past sessions so your agents can find previous decisions, fixes, and
    context.” Available supported histories start selected, subject to saved
    choices; importing none is valid. History is independent of plugin and future
-   recording choices. The current selector offers available Claude Code, Codex
-   and Antigravity histories. Save the approved file snapshot and start its
+   recording choices. The current selector offers available Claude Code and Codex
+   histories on macOS. Save the approved file snapshot and start its
    background worker; do not wait for the archive to finish.
 4. **Continue in the coding agent.** The handoff reuses the exact installed CLI
    invocation and saved choices. Explain only the next required native trust,
@@ -64,8 +73,9 @@ remains an alternative. Installation failure must stop before setup executes.
    verification requirement. One primary agent may coordinate these steps but
    cannot supply another client's native tool evidence.
 
-Normal setup bundles both startup and capture hooks inside each of the four
-native plugins. The CLI owns collector configuration, queues and history workers;
+Native plugin bundles contain both startup and capture hooks. The first release
+offers the Claude Code and Codex bundles through setup. The CLI owns collector
+configuration, queues and history workers;
 it does not install global client hook or startup-skill files for this flow.
 Capture still requires the saved recording choice. Plugin identities are scoped
 to the deployment and their installation receipts bind the CLI profile, preserving

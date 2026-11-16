@@ -77,7 +77,7 @@ jobs:
           - {os: macos-15, runner: blacksmith-6vcpu-macos-15}
           - {os: windows-2025, runner: blacksmith-4vcpu-windows-2025}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -111,6 +111,62 @@ jobs:
       - name: Migrate the original bootstrap with its previously updated cache
         run: bun cli/scripts/legacy-upgrade-smoke.ts --bootstrap-version=0.2.0
       - run: bun cli/scripts/native-install-smoke.ts
+      - name: Prepare the ephemeral Linux runner user supervisor
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/daemon-supervisor-evidence"
+          OC_RUNNER_UID=$(id -u)
+          OC_RUNNER_USER=$(id -un)
+          test "$OC_RUNNER_UID" -ne 0
+          export XDG_RUNTIME_DIR="/run/user/$OC_RUNNER_UID"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          OC_MANAGER_MODE=existing
+          if ! systemctl --user show-environment >/dev/null 2>&1; then
+            test "$(cat /proc/1/comm)" = systemd
+            OC_LINGER_BEFORE=$(loginctl show-user "$OC_RUNNER_UID" --property=Linger --value)
+            case "$OC_LINGER_BEFORE" in
+              no)
+                # Record restoration before the mutation, including partial failures.
+                printf '%s\n' "$OC_RUNNER_USER" > "$RUNNER_TEMP/opencrawl-native-linger-enabled"
+                sudo loginctl enable-linger "$OC_RUNNER_USER"
+                ;;
+              yes) ;;
+              *) echo 'Cannot establish prior user-manager state'; exit 1 ;;
+            esac
+            sudo systemctl start "user@$OC_RUNNER_UID.service"
+            OC_MANAGER_MODE=prepared-on-ephemeral-runner
+          fi
+          systemctl --user show-environment >/dev/null
+          printf 'XDG_RUNTIME_DIR=%s\nDBUS_SESSION_BUS_ADDRESS=%s\n' "$XDG_RUNTIME_DIR" "$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+          export OC_RUNNER_UID OC_MANAGER_MODE
+          node -e 'require("node:fs").writeFileSync(require("node:path").join(process.env.RUNNER_TEMP,"daemon-supervisor-evidence/linux-user-supervisor.json"),JSON.stringify({uid:Number(process.env.OC_RUNNER_UID),mode:process.env.OC_MANAGER_MODE,userManagerReachable:true,runnerOnly:true})+"\n")'
+      - name: Verify actual native user supervision, restart and removal
+        shell: bash
+        run: |
+          set -euo pipefail
+          NATIVE_BINARY="$(node -e 'const p=require("node:path");console.log(p.resolve("cli/dist",process.platform+"-"+process.arch,"bin",process.platform==="win32"?"opencrawl.exe":"opencrawl"))')"
+          bun cli/scripts/daemon-supervisor-smoke.ts "$RUNNER_TEMP/daemon-supervisor-evidence" "$NATIVE_BINARY"
+      - name: Restore only linger enabled for this ephemeral runner check
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f "$RUNNER_TEMP/opencrawl-native-linger-enabled" ]; then
+            OC_RUNNER_USER=$(cat "$RUNNER_TEMP/opencrawl-native-linger-enabled")
+            test "$OC_RUNNER_USER" = "$(id -un)"
+            sudo loginctl disable-linger "$OC_RUNNER_USER"
+            rm "$RUNNER_TEMP/opencrawl-native-linger-enabled"
+          fi
+      - name: Retain native supervisor evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: cli-supervisor-${{ matrix.os }}-${{ github.sha }}
+          path: ${{ runner.temp }}/daemon-supervisor-evidence/
+          retention-days: 7
+          if-no-files-found: warn
       - name: Capture ownership under non-reaping PID 1
         if: runner.os == 'Linux'
         run: |

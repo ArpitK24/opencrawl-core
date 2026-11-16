@@ -401,3 +401,28 @@ test('availability rechecks consent and binding without treating worker progress
   }finally{globalThis.fetch=original;}
  }
 }));
+
+
+test('unbound saved deferred choices cannot enter run, plan, or apply implicitly',async()=>fixture(async(api,dir,observations,_set,calls)=>{
+ const scope={api,tenantId:'tenant',userId:'user'},acceptedAt='2026-01-01T00:00:00.000Z';let installs=0,launches=0,choices=0;
+ const dependencies={interactive:true,choose:async()=>{choices++;throw new Error('Unbound choices reached the selector');},installPlugins:async()=>{installs++;throw new Error('Unbound choices reached installation');},launchHistory:()=>{launches++;throw new Error('Unbound choices launched history');}};
+ const savedChoices:SetupState['selections'][]=[
+  {plugins:{codex:true,cursor:true},forward:{codex:false,cursor:false},history:{codex:false}},
+  {plugins:{codex:true,cursor:false},forward:{codex:false,cursor:true},history:{codex:false}},
+  {plugins:{codex:true},forward:{codex:false},history:{codex:false,antigravity:true}},
+ ];
+ for(const selections of savedChoices){
+  await updateSetupState(scope,()=>({schemaVersion:1,scope,installationId:'orphaned-installation',acceptedAt,selections,historyJob:{id:'retained-approved-job',clients:['antigravity'],files:[{harness:'antigravity',path:join(dir,'bounded-old.json'),bytes:1,ino:1,mtimeMs:1}],state:'complete',completedClients:['antigravity'],createdAt:acceptedAt,updatedAt:acceptedAt}}));
+  const before=readSetupState(scope);
+  for(const action of ['run','plan','apply']){
+   await expect(setupCommand(action,api,action==='apply'?{yes:true}:{},dependencies)).rejects.toMatchObject({code:'SETUP_CLIENT_NOT_AVAILABLE'});
+   expect(readSetupState(scope)).toEqual(before);expect(readCaptureConfig()).toBeNull();
+  }
+ }
+ expect(installs).toBe(0);expect(launches).toBe(0);expect(choices).toBe(0);expect(observations).toEqual([]);expect(calls).toHaveLength(9);expect(calls.every(path=>path==='/api/setup')).toBe(true);expect(existsSync(join(dir,'config','opencrawl','capture'))).toBe(false);
+ // An interrupted approval containing only available Mac clients still recovers.
+ await updateSetupState(scope,()=>({schemaVersion:1,scope,acceptedAt,selections:{plugins:{codex:true},forward:{codex:false},history:{codex:false}}}));
+ await setupCommand('resume',api,{json:true},setupCodex);
+ expect(readCaptureConfig()).toMatchObject({harnesses:[],historyHarnesses:[],owner:{tenantId:'tenant',userId:'user'}});
+ expect(readSetupState(scope)?.selections).toEqual({plugins:{codex:true},forward:{codex:false},history:{codex:false}});expect(readSetupState(scope)?.historyJob).toBeUndefined();
+}));

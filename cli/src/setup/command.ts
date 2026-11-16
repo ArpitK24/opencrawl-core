@@ -191,6 +191,9 @@ export async function setupCommand(action:string,api:string,values:Values,{platf
  const clients=setupInventory({api,platform,workload}),existing=readCaptureConfig(),legacyForward=existing?.api===api&&existing.owner.tenantId===scope.tenantId&&existing.owner.userId===scope.userId?(existing.disabled?[]:existing.harnesses??['claude-code','codex']):undefined;
  let selections=preserveRecordingOff(defaultSelections(clients,previous?.selections,legacyForward),scope);
  for(const group of ['plugins','forward','history'] as const)selections[group]=selectOfferedGroup(values[group]===undefined?undefined:String(values[group]),group,clients,selections,admitted?.selections);
+ // Defaults may include an interrupted setup row without a capture binding.
+ // Only exact admitted choices can retain deferred clients, even implicitly.
+ if(!workload)assertSetupAvailability(platform,Object.fromEntries((['plugins','forward','history'] as const).map(group=>[group,list(chosen(selections,group))])),admitted?.selections);
  if(!interactive||action!=='run')assertPluginSelection(selections);
  const retainedHistory=workload?[]:Object.keys(previous?.selections.history??{}).filter(client=>!newSetupClientAvailable(client,platform));
  const availableHistory=()=>[...historyFiles(api).filter(file=>!retainedHistory.includes(file.harness)&& (workload||newSetupClientAvailable(file.harness,platform))),...(previous?.historyJob?.files??[]).filter(file=>retainedHistory.includes(file.harness))];
