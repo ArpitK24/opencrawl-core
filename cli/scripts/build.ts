@@ -29,8 +29,9 @@ for (const [os, arch, target] of selected) {
     const binary = join(directory, 'bin/opencrawl');
     if (Bun.spawnSync(['codesign', '--force', '--sign', '-', binary]).exitCode !== 0 || Bun.spawnSync(['codesign', '--verify', '--strict', binary]).exitCode !== 0) throw new Error('macOS signing failed.');
   }
-  writeFileSync(join(directory, 'package.json'), JSON.stringify({name, version: pkg.version, ...(pkg.opencrawlRevision?{opencrawlRevision:pkg.opencrawlRevision}:{}), description: `OpenCrawl binary for ${os}/${arch}`, license: pkg.license, repository: pkg.repository, os: [os], cpu: [arch], files: [os === 'win32' ? 'bin/opencrawl.exe' : 'bin/opencrawl','runtime','LICENSE','THIRD_PARTY_NOTICES.txt'], publishConfig: pkg.publishConfig}, null, 2) + '\n');
+  writeFileSync(join(directory, 'package.json'), JSON.stringify({name, version: pkg.version, ...(pkg.opencrawlRevision?{opencrawlRevision:pkg.opencrawlRevision}:{}), description: `OpenCrawl CLI binary for ${os}/${arch}. Installed automatically by @getopencrawl/cli.`, license: pkg.license, repository: pkg.repository, homepage: pkg.homepage, bugs: pkg.bugs, os: [os], cpu: [arch], files: [os === 'win32' ? 'bin/opencrawl.exe' : 'bin/opencrawl','runtime','README.md','LICENSE','THIRD_PARTY_NOTICES.txt'], publishConfig: pkg.publishConfig}, null, 2) + '\n');
   copyReleaseFiles(directory);
+  writeFileSync(join(directory, 'README.md'), `# ${name}\n\nPlatform binary for [OpenCrawl CLI](https://www.npmjs.com/package/@getopencrawl/cli). Installed automatically for ${os}/${arch}.\n\nInstall OpenCrawl:\n\n\`\`\`sh\nnpm install -g @getopencrawl/cli\n\`\`\`\n`);
   optionalDependencies[name] = pkg.version;
 }
 const launcher = join(dist, 'cli');
