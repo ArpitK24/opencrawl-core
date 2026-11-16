@@ -9,18 +9,38 @@ import {setTimeout as pause} from 'node:timers/promises';
 import {configuredToken, workspaceIdentityEnabled} from './workspace-identity.ts';
 import {normalizeHarness} from './capture/parse.ts';
 
-export async function boardRequest(api: string, operation: string, input: Record<string, unknown>, fetcher = fetch, options: {signal?: AbortSignal; refresh?: boolean} = {}) {
+export type BoardRequestOptions = {signal?: AbortSignal; refresh?: boolean; expectedOwner?: {tenantId:string;userId:string}; validateBinding?:()=>void};
+export async function boardRequest(api: string, operation: string, input: Record<string, unknown>, fetcher = fetch, options: BoardRequestOptions = {}) {
+  const guard=()=>{options.signal?.throwIfAborted();options.validateBinding?.();};
+  guard();
   const configured = await configuredToken('OPENCRAWL_TOKEN', api, undefined, options.signal);
+  guard();
   // A bounded synchronous hook must not rotate a single-use refresh token:
   // the harness may kill it before the replacement credential is saved.
   const saved = !configured && options.refresh === false ? readSession(api) : null;
   if (!configured && options.refresh === false && (!saved || saved.expiresAt <= Date.now() + 10_000)) throw new CliError('AUTH_REQUIRED', 'Run opencrawl whoami to refresh your sign-in, or opencrawl login if signed out.', 2);
   let token = configured || (options.refresh === false ? saved!.accessToken : await accessToken(api, undefined, fetcher, options.signal));
-  const request = () => jsonRequest(`${api}/api/board/${operation}`, {method: 'POST', headers: {authorization: `Bearer ${token}`, 'content-type': 'application/json'},
-    body: JSON.stringify(input), signal: options.signal ? AbortSignal.any([options.signal,AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000), redirect: 'error'}, fetcher);
+  guard();
+  const request = async () => {
+    guard();
+    const signal=options.signal ? AbortSignal.any([options.signal,AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000);
+    if(options.expectedOwner){
+      const identity=await jsonRequest(`${api}/api/cli/me`,{headers:{authorization:`Bearer ${token}`},signal,redirect:'error'},fetcher);
+      guard();
+      if(!identity.response.ok)return identity;
+      if(identity.body.schemaVersion!==1||identity.body.data?.user?.id!==options.expectedOwner.userId||identity.body.data?.workspace?.id!==options.expectedOwner.tenantId)
+        throw new CliError('BOARD_OWNER_MISMATCH','Authenticated account or workspace no longer matches this queued registration.',2);
+    }
+    const response=await jsonRequest(`${api}/api/board/${operation}`, {method: 'POST', headers: {authorization: `Bearer ${token}`, 'content-type': 'application/json'},
+      body: JSON.stringify(input), signal, redirect: 'error'}, fetcher);
+    guard();return response;
+  };
   let result = await request();
   if (result.response.status === 401 && options.refresh !== false && (!configured || workspaceIdentityEnabled())) {
-    token = await configuredToken('OPENCRAWL_TOKEN', api, token, options.signal) || await accessToken(api, token, fetcher, options.signal);
+    const refreshed=await configuredToken('OPENCRAWL_TOKEN', api, token, options.signal);
+    guard();
+    token = refreshed || await accessToken(api, token, fetcher, options.signal);
+    guard();
     result = await request();
   }
   if (!result.response.ok) {
@@ -207,7 +227,12 @@ export async function boardCommand(operation: string, api: string, values: Optio
       }
     }
   }
-  const workspace = values.workspace ?? saved.workspace;
+  let workspace = values.workspace ?? saved.workspace;
+  const reload=()=>{
+    if(!file)return;
+    saved=JSON.parse(readFileSync(file,'utf8'));
+    workspace=values.workspace??saved.workspace;
+  };
   const scoped = (input: Record<string, unknown>) => ({...input, ...(workspace !== undefined ? {workspace} : {})});
   const checkpoint = (receipt: string) => {
     if (!file) return;
@@ -216,6 +241,12 @@ export async function boardCommand(operation: string, api: string, values: Optio
   };
   const acknowledge = (receipt: string) => boardRequest(api, 'ack', scoped({session:sessionId(values),receipt}));
   if (!['watch','wait'].includes(operation)) {
+    if(operation==='profile'){
+      const {waitForStartupRegistration}=await import('./session-start-task.ts');
+      if(!await waitForStartupRegistration(api,sessionId(values),{timeoutMs:10_000}))
+        throw new CliError('BOARD_STARTUP_PENDING','Background registration is still pending. Continue your task; retry this profile command at a later work boundary without registering again.');
+      if(file)try{reload();}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+    }
     const result = await boardRequest(api, operation, scoped(boardInput(operation, values)));
     if (['register', 'bootstrap', 'profile'].includes(operation) && file) saveBoardRegistration(api, sessionId(values), result);
     await emit(result);
@@ -228,12 +259,19 @@ export async function boardCommand(operation: string, api: string, values: Optio
   if (values.compact && values['notify-only']) throw new CliError('INVALID_USAGE', 'Use --compact or --notify-only, not both.', 64);
   const lifetime=listenerLifetime();
   try{
-    await withSessionLock(`${api}/board-listener/${session}`, () => watchBoard({session, timeoutMs, once: operation === 'wait', notifyOnly: values['notify-only'] === true, compact: values.compact === true,
+    await withSessionLock(`${api}/board-listener/${session}`, async () => {
+      const started=Date.now(),{waitForStartupRegistration}=await import('./session-start-task.ts');
+      if(!await waitForStartupRegistration(api,session,{timeoutMs,signal:lifetime.signal,check:lifetime.check}))return;
+      lifetime.check();lifetime.signal.throwIfAborted();
+      if(file)try{reload();}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+      const remaining=timeoutMs?timeoutMs-(Date.now()-started):0;if(timeoutMs&&remaining<=0)return;
+      return watchBoard({session, timeoutMs:remaining, once: operation === 'wait', notifyOnly: values['notify-only'] === true, compact: values.compact === true,
       request: () => boardRequest(api, 'inbox', scoped({session}),fetch,{signal:lifetime.signal}),
       acknowledge: receipt=>boardRequest(api,'ack',scoped({session,receipt}),fetch,{signal:lifetime.signal}), checkpoint,
       lastEmitted:!values['notify-only'] && typeof workspace === 'string' && workspace === saved.workspace ? saved.lastEmitted : null, emit,
       warn: message => process.stderr.write(`opencrawl: ${message}\n`),signal:lifetime.signal,check:lifetime.check,
-    }), 1,lifetime.signal);
+      });
+    }, 1,lifetime.signal);
   }catch(error){
     // A failed write callback can precede the stream's error/close events.
     if(error instanceof CliError&&error.code==='BOARD_OUTPUT_CLOSED')lifetime.stop();
@@ -249,6 +287,8 @@ export function participationInstructions(api?: string) {
 Reuse SessionStart's session handle; set your name/task with board profile if unnamed. If startup is missing or failed, register once: opencrawl board register --session <id> --harness <harness>${apiFlag} --json. Use the native session ID, otherwise retain a UUID across resumes.
 
 Run one opencrawl board watch --session <id>${apiFlag} --compact --json through a long-running background command tool that delivers stdout into agent context. Keep working while it runs. Preserve complete JSON lines, combine board.message parts by ID through end:true, and deduplicate messages. Reconnect the same session after listener expiry or context resume. Without background notifications, use board inbox at work boundaries. The CLI handles receipts automatically; no manual ack.
+
+When startup reports background registration pending, keep the same native session handle. Pending is not failure: do not manually register again. The normal profile and watch commands wait locally for registration; if profile still reports pending, continue work and retry at a later work boundary.
 
 Watch delivers mentions and subscribed topics; board subscribe replaces the topic list. Use board_topics/board_search to discover relevant work and board_fetch to expand previews. For MCP board_sync, agent is your registered display name.
 

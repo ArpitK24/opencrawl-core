@@ -599,30 +599,27 @@ for (const width of [1280,390]) test(`shared setup does not ask each member to i
  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
 });
 
-for (const width of [1280,390]) test(`Replicas installation stays in workspace settings, outside onboarding at ${width}px`, async ({page,request}) => {
+for (const width of [1280,390]) test(`Replicas installation is absent from every onboarding presentation at ${width}px`, async ({page,request}) => {
   await page.setViewportSize({width,height:844});
-  await page.addInitScript(() => Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async(text:string)=>{if(sessionStorage.getItem('deny'))throw new Error('denied');sessionStorage.setItem('copied',text);}}}));
-  await page.goto('/onboarding');
-  await expect(page.getByRole('button',{name:'Install on Replicas',exact:true})).toHaveCount(0);
-  await expect(page.getByRole('button',{name:'Copy setup prompt',exact:true})).toBeVisible();
-  await request.post('/__test/state',{data:{status:{shared:{...receipt,id:'approved',name:'Replicas',owner:'shared'}}}});
-  await page.reload();
-  await expect(page.getByRole('heading',{name:'Your team’s Replicas setup is ready'})).toBeVisible();
-  await expect(page.getByRole('button',{name:'Install on Replicas',exact:true})).toHaveCount(0);
-  await expect(page.getByRole('link',{name:'Open workspace',exact:true})).toBeVisible();
-  await page.goto('/workspace/settings');
-  await page.getByRole('button',{name:'Install on Replicas',exact:true}).click();
-  expect(await page.evaluate(()=>sessionStorage.getItem('copied'))).toContain('Use workspace_identity');
-  await page.evaluate(()=>sessionStorage.setItem('deny','yes'));
-  await page.reload();
-  await page.getByRole('button',{name:'Install on Replicas',exact:true}).click();
-  await expect(page.getByLabel('Prompt to copy')).toBeFocused();
-  await expect(page.getByLabel('Prompt to copy')).toHaveValue(/Install OpenCrawl in this Replicas environment/);
-  await page.getByRole('button',{name:'I’ve copied it'}).click();
-  await expect(page.getByRole('button',{name:'Copied',exact:true})).toBeFocused();
-  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
-  await page.goto('/workspace/settings?role=member');
-  await expect(page.getByRole('button',{name:'Install on Replicas'})).toHaveCount(0);
+  for (const path of ['/onboarding','/workspace/settings']) for (const role of ['admin','member']) for (const shared of [false,true]) {
+    await request.post('/__test/state',{data:{status:shared?{shared:{...receipt,id:'approved',name:'Replicas',owner:'shared'}}:{}}});
+    await page.goto(`${path}?role=${role}`);
+    if (shared) {
+      await expect(page.getByRole('heading',{name:'Your team’s Replicas setup is ready'})).toBeVisible();
+      await expect(page.getByRole('link',{name:'Open workspace',exact:true})).toBeVisible();
+    } else await expect(page.getByRole('button',{name:'Copy setup prompt',exact:true})).toBeVisible();
+    await expect(page.getByRole('button',{name:'Install on Replicas',exact:true})).toHaveCount(0);
+    await expect(page.getByRole('region',{name:'Replicas installation'})).toHaveCount(0);
+    if (shared) {
+      await page.getByRole('button',{name:'Set up a personal computer'}).click();
+      await expect(page.getByRole('heading',{name:'Connect your primary coding agent'})).toBeVisible();
+      await expect(page.getByRole('button',{name:'Copy setup prompt',exact:true})).toBeVisible();
+      await expect(page.getByRole('button',{name:'Install on Replicas',exact:true})).toHaveCount(0);
+      await page.getByRole('button',{name:'Back to shared setup'}).click();
+      await expect(page.getByRole('heading',{name:'Your team’s Replicas setup is ready'})).toBeVisible();
+    }
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  }
 });
 
 

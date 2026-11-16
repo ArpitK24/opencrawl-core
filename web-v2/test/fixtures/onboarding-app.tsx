@@ -1,9 +1,9 @@
 /** Browser-test fixture only. It is never a product entrypoint or published asset. */
 import {useEffect} from 'react';
 import {createRoot} from 'react-dom/client';
-import {AgentOnboarding, AppRouter, AppShell, Button, ConsoleDataProvider, FocusedFrame, InviteOnboarding, Page, Route, Routes, SourcesOnboarding, SourcesPage, useLocation, useNavigate, type OnboardingAdapter} from '../../src/index.ts';
+import {AgentOnboarding, AppRouter, AppShell, OpenCrawlApp, Button, ConsoleDataProvider, FocusedFrame, InviteOnboarding, Page, Route, Routes, SourcesOnboarding, SourcesPage, useLocation, useNavigate, type OnboardingAdapter} from '../../src/index.ts';
 import {CopyPromptButton} from '../../src/onboarding/copy.tsx';
-import type {TeamAdapter, SourcesAdapter} from '../../src/application/api.ts';
+import type {TeamAdapter, SourcesAdapter, ProductApi, Bootstrap, SetupStatus} from '../../src/application/api.ts';
 import '../../src/styles.css';
 import {TeamPage} from '../../src/application/team.tsx';
 import {ConsoleApiError} from '../../src/application/errors.ts';
@@ -49,6 +49,13 @@ const sourcesAdapter: SourcesAdapter = {
   saveCredential: (id, value, signal) => request(`/api/integrations/credentials/${encodeURIComponent(id)}`, signal ?? never, {value}),
 };
 const teamAdapter: TeamAdapter = {team: signal => request('/api/console/team', signal ?? never), invite: (email,signal) => request('/api/console/team/invite',signal ?? never,{email}), changeRole: async (userId,role) => ({ok:true,userId,role}), renameOrganization: async name => ({ok:true,name}), removeMember: (userId,signal) => request('/api/console/team/remove',signal ?? never,{userId})};
+const fullApi: ProductApi = {
+  ...sourcesAdapter,...teamAdapter,...usageAdapter,library:libraryAdapter,
+  bootstrap:signal=>request<Bootstrap>('/api/console/bootstrap',signal??never),
+  setupStatus:async signal=>(await request<{data:SetupStatus}>('/api/setup',signal??never)).data,
+  onboardingStatus:async signal=>({data:await adapter.status(signal??never)}),
+  onboardingSources:adapter.sources,onboardingInvitations:adapter.invitations,onboardingInvite:adapter.invite,finishOnboarding:adapter.finish,
+};
 export const setupPrompt = 'Set up OpenCrawl across all coding agents and environments I use. Inspect existing setup, reuse valid configuration and authentication, and complete what is missing. Keep credentials out of chats and repositories. Confirm recording and history import consent, then verify a newly recorded session.';
 const account = <form className="header-account" method="post" action="/auth/logout"><Button variant="quiet" type="submit">Sign out</Button></form>;
 
@@ -92,4 +99,4 @@ function Fixture() {
 }
 const mount = document.getElementById('root');
 if (!mount) throw new Error('Fixture mount is missing');
-createRoot(mount).render(<AppRouter><Fixture /></AppRouter>);
+createRoot(mount).render(new URLSearchParams(window.location.search).has('full-app')?<OpenCrawlApp api={fullApi}/>:<AppRouter><Fixture /></AppRouter>);

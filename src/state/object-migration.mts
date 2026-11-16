@@ -1,3 +1,6 @@
+import {createSetupState} from './setup.mjs';
+import {validateSetupState} from '../setup/state.mjs';
+import {sessionScope} from '../sessions/event-identity.mjs';
 import {gunzipSync} from 'node:zlib';
 import {isDeepStrictEqual} from 'node:util';
 import {z} from 'zod';
@@ -88,7 +91,7 @@ export function createBoundObjectMigration({database,prefix,tenantIds,store,regi
   }
   const roots=credentialPurpose==='agent'?[prefix+'/']:[prefix+'/', 'control/connectors/write-barriers/v1/','connector-credentials/v1/','connector-settings/v1/','derived/indexing/','raw/v1/source=slack/','_opencrawl/counts/'];
   const controls=createPostgresControls(database),deletions=createPostgresDeletionRequests(database,prefix),accounts=createAccountState(database),secrets=createConnectorSecrets(database),
-    replicas=createReplicasState(database),reports=createValueReports(database),receipts=createPostgresIndexingReceipts(database),slack=createPostgresSlackCapture(database),counts=createConnectorCounts({database,legacyBucket:store.bucket}),board=createPostgresBoardState(database),retirements=createSchedulerRetirements(database),connectorRetirements=createConnectorCacheRetirements(database),retiredReceipts=createRetiredSessionReceipts(database);
+    setup=createSetupState(database),replicas=createReplicasState(database),reports=createValueReports(database),receipts=createPostgresIndexingReceipts(database),slack=createPostgresSlackCapture(database),counts=createConnectorCounts({database,legacyBucket:store.bucket}),board=createPostgresBoardState(database),retirements=createSchedulerRetirements(database),connectorRetirements=createConnectorCacheRetirements(database),retiredReceipts=createRetiredSessionReceipts(database);
   const preparations=new Map<string,Promise<void>>();
   async function prepare(name:string,run:()=>Promise<void>){let pending=preparations.get(name);if(!pending){pending=run();preparations.set(name,pending);}await pending;}
   // Missing domain tables mean an uninitialized target. Every other SQL error
@@ -116,6 +119,7 @@ export function createBoundObjectMigration({database,prefix,tenantIds,store,regi
         ??match(new RegExp(`^identity/replicas-v1/organizations/(${U})\\.json$`),'replicas-connections')
         ??match(new RegExp(`^identity/replicas-v1/tenants/(${H})/(${U})\\.json$`),'replicas-index')
         ??match(new RegExp(`^identity/replicas-v1/setup/(${H})\\.json$`),'replicas-setup')
+        ??match(new RegExp(`^tenants/(${H})/users/(${H})/setup/status-v1\\.json$`),'setup-status',256*1024)
         ??match(new RegExp(`^(tenants/(${H})/users/${H})/onboarding/(cli|mcp|mcpTest|session|history|completed)\\.json$`),'onboarding')
         ??match(new RegExp(`^value/tenants/(${H})\\.json$`),'value-reports')
         ??match(new RegExp(`^index-pending/tenants/(${H})/users/(${H})/(${H})\\.json$`),'session-scheduler-retirement',32768)
@@ -217,6 +221,11 @@ export function createBoundObjectMigration({database,prefix,tenantIds,store,regi
       case 'credential-generations':{
         tenantDigest(parts[1]);source=z.strictObject({generation:hash}).parse(json(bytes));
         if(write){await prepare('accounts',accounts.ready);await accounts.importGeneration(parts[0],source,credentialPurpose);}target=await read(()=>accounts.exportGeneration(parts[0],credentialPurpose));break;
+      }
+      case 'setup-status':{
+        const value=validateSetupState(json(bytes));tenant(value.scope.tenantId);
+        if(prefix+'/'+sessionScope(value.scope)+'/setup/status-v1.json'!==key)fail('Setup state key differs from its owner');
+        source=value;if(write){await prepare('setup',setup.ready);await setup.importStatus(value);}target=(await read(()=>setup.read(value.scope)))?.record??null;break;
       }
       case 'onboarding':{
         tenantDigest(parts[1]);source=onboardingReceiptSchema.parse(json(bytes));const kind=parts[2] as OnboardingKind;

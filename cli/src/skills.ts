@@ -68,6 +68,10 @@ Session tool output and the identified calling chat are excluded by default. Ena
 CLI fallback: opencrawl search "terms" --json; opencrawl fetch <id>... --json.
 
 ${participationInstructions()}
+## Continue setup
+
+Continue in this same conversation using the native plugin's opencrawl-setup skill and its bound CLI command, profile and server. Read local setup status to reuse saved plugin, future-recording and history choices; preserve opt-outs and do not repeat the questionnaire. Complete only remaining native trust/MCP steps, then use that plugin's installation_status and verify_installation. A connection alone does not prove searchable capture.
+
 ## Maintenance
 
 Use the configured server and approved access. CLI updates replace this managed skill; keep customization elsewhere. Preserve capture hooks, queues and cursors; history import requires user approval. Use opencrawl --help for setup and commands.
