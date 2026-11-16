@@ -5,9 +5,28 @@ import {mkdtempSync,writeFileSync,readFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {createHash} from 'node:crypto';
 import {configuration,plan,airbyteValues,prepareAirbyteChart,applicationName} from './install.mts';
 const root=dirname(fileURLToPath(import.meta.url));
 const input={context:'test',url:'https://opencrawl.example.com',image:{tag:'sha-test'}};
+test('release packaging versions both archives without changing source or building images',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'opencrawl-release-package-'));
+  const original=readFileSync(join(root,'opencrawl/Chart.yaml'),'utf8');
+  try{
+    const manifest=JSON.stringify({manifests:['amd64','arm64'].map(architecture=>({platform:{os:'linux',architecture}}))});
+    const stub=join(dir,'registry.mjs');
+    writeFileSync(stub,`globalThis.fetch=async url=>{if(String(url).startsWith('https://ghcr.io/token?'))return Response.json({token:'fixture'});if(String(url).startsWith('https://ghcr.io/v2/'))return new Response(${JSON.stringify(manifest)},{headers:{'docker-content-digest':${JSON.stringify('sha256:'+createHash('sha256').update(manifest).digest('hex'))}}});throw Error('Unexpected network request')};`);
+    const out=join(dir,'out');
+    const p=spawnSync(process.execPath,['--import',stub,join(root,'release-kit.mts'),'--source',root,'--revision','a'.repeat(40),'--version','7.2.3','--out',out],{encoding:'utf8'});
+    assert.equal(p.status,0,p.stderr);
+    const chart=spawnSync(process.env.HELM||'helm',['show','chart',join(out,'opencrawl-7.2.3.tgz')],{encoding:'utf8'});
+    assert.equal(chart.status,0,chart.stderr);assert.match(chart.stdout,/^version: 7\.2\.3$/m);
+    const kit=spawnSync('tar',['-xOf',join(out,'opencrawl-selfhost-7.2.3.tgz'),'./opencrawl/Chart.yaml'],{encoding:'utf8'});
+    assert.equal(kit.status,0,kit.stderr);assert.match(kit.stdout,/^version: 7\.2\.3$/m);
+    assert.equal(JSON.parse(readFileSync(join(out,'release.json'),'utf8')).version,'7.2.3');
+    assert.equal(readFileSync(join(root,'opencrawl/Chart.yaml'),'utf8'),original);
+  }finally{rmSync(dir,{recursive:true,force:true});}
+});
 test('all shipped agent tools parse without installing dependencies',()=>{
   for(const file of ['install.mts','verify.mts','release-kit.mts','runtime/probe.mts']){const r=spawnSync(process.execPath,['--check',join(root,file)],{encoding:'utf8'});assert.equal(r.status,0,r.stderr);}
 });

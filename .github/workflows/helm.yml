@@ -1,10 +1,10 @@
 name: Helm
 on:
   pull_request:
-    paths: ['deploy/helm/**', '.github/workflows/helm.yml']
+    paths: ['deploy/helm/**', '.github/workflows/helm.yml', '.github/workflows/selfhost-release.yml']
   push:
     branches: [main, codex/helm-v1]
-    paths: ['deploy/helm/**', '.github/workflows/helm.yml']
+    paths: ['deploy/helm/**', '.github/workflows/helm.yml', '.github/workflows/selfhost-release.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -28,7 +28,7 @@ jobs:
         run: |
           curl -fsSLo "$AIRBYTE_CHART" https://airbytehq.github.io/charts/airbyte-2.4.0.tgz
           echo 'ec25fcddc952dbef05183f426149553f78db0f7e61642c9d13c77e32c93433a3  /tmp/airbyte.tgz' | sha256sum -c -
-          node --test deploy/helm/test.mts
+          node --test deploy/helm/test.mts deploy/helm/release.test.mts
       - name: Package the chart and agent installer
         run: |
           mkdir -p artifacts
