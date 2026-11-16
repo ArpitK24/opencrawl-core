@@ -102,3 +102,15 @@ live('registry importer preserves pending intents and every original field with 
   await database.pool.query("UPDATE opencrawl_integrations SET record=jsonb_set(record,'{resourceVersion}','\"changed\"') WHERE namespace=$1",[database.namespace]);
   await assert.rejects(migrateRegistrySqlite({...input,mode:'migrate'}),/verification failed/);
 });
+
+live('registry digest spans cursor pages and rejects a foreign scope beyond the first page',async t=>{
+ const database=await applicationDatabaseFixture(t),path=join(await scratch(t),'registry-pages.sqlite'),source=new DatabaseSync(path);
+ source.exec('CREATE TABLE integration_binding(id INTEGER PRIMARY KEY,organization TEXT NOT NULL,environment TEXT NOT NULL);CREATE TABLE integrations(id TEXT PRIMARY KEY,user_id TEXT NOT NULL,record TEXT NOT NULL)');
+ source.prepare('INSERT INTO integration_binding VALUES(1,?,?)').run(organizationId,'selfhost');
+ for(let i=0;i<300;i++){const record={tenantId:organizationId,userId:'user_owner',integrationId:'int_'+i.toString(16).padStart(26,'0'),environment:'selfhost',provider:'slack',scope:'team',status:'connecting',createdAt:'2026-01-01T00:00:00Z',updatedAt:'2026-01-01T00:00:00Z',retained:'é中😀'};source.prepare('INSERT INTO integrations VALUES(?,?,?)').run(record.integrationId,record.userId,JSON.stringify(record));}source.close();
+ const input={database,path,organizationId},migrated=await migrateRegistrySqlite({...input,mode:'migrate'});assert.equal(migrated.tables.find(table=>table.table==='integrations').target.rows,300);
+ assert.deepEqual((await migrateRegistrySqlite({...input,mode:'verify'})).tables,migrated.tables);
+ await database.pool.query("INSERT INTO opencrawl_integrations(namespace,environment,tenant_id,user_id,integration_id,provider,status,record) VALUES($1,'selfhost','org_foreign','user_owner',$2,'slack','connecting','{}')",[database.namespace,'int_'+'f'.repeat(26)]);
+ await assert.rejects(migrateRegistrySqlite({...input,mode:'verify'}),/Target registry contains foreign scope/);
+ assert.equal((await database.pool.query("SELECT count(*)::int n FROM opencrawl_integrations WHERE namespace=$1 AND tenant_id='org_foreign'",[database.namespace])).rows[0].n,1);
+});

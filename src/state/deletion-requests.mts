@@ -2,7 +2,7 @@ import type {Principal} from '../sessions/types.mjs';
 import {isSessionHarness} from '../sessions/types.mjs';
 import {digest,sessionScope} from '../sessions/event-identity.mjs';
 import type {SessionDeletionRequest} from '../sessions/deletion-requests.mjs';
-import type {ApplicationDatabase} from './postgres.mjs';
+import {ensureByteOrderIndex,type ApplicationDatabase} from './postgres.mjs';
 export interface SessionDeletionRequests {
   read(key:string):Promise<SessionDeletionRequest|null>;
   readFor(owner:Pick<Principal,'tenantId'|'userId'>,session:{harness:string;sessionId:string}):Promise<SessionDeletionRequest|null>;
@@ -15,6 +15,7 @@ export async function ensureDeletionRequestSchema(database:ApplicationDatabase){
     await client.query(`CREATE TABLE IF NOT EXISTS opencrawl_session_deletions(namespace text NOT NULL,request_key text NOT NULL,source_prefix text NOT NULL,
       tenant_id text NOT NULL,owner_id text NOT NULL,harness text NOT NULL,session_id text NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),
       PRIMARY KEY(namespace,request_key),UNIQUE(namespace,source_prefix,tenant_id,owner_id,harness,session_id))`);
+    await ensureByteOrderIndex(client,'opencrawl_session_deletions','opencrawl_session_deletions_byte_order',['namespace','source_prefix','request_key']);
   });
 }
 export function createPostgresDeletionRequests(database:ApplicationDatabase,prefix:string):SessionDeletionRequests&{importRequest(key:string,request:SessionDeletionRequest):Promise<void>}{

@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import type {Environment,IntegrationRecord} from '../integrations/types.mjs';
 import {ensureRegistrySchema} from '../integrations/local-registry.mjs';
 import type {ApplicationDatabase} from './postgres.mjs';
-import {canonical,openLegacySqlite,sourceTables,sourceColumns,sourceRows,digestRows,type ImportMode,type ImportTable,type ImportReceipt} from './sqlite-import.mjs';
+import {canonical,openLegacySqlite,sourceTables,sourceColumns,sourceRows,digestRows,orderedMigrationRows,type ImportMode,type ImportTable,type ImportReceipt} from './sqlite-import.mjs';
 
 const binding:ImportTable={name:'integration_binding',columns:{id:'number',organization:'text',environment:'text'},primary:['id'],order:0};
 const integrations:ImportTable={name:'integrations',columns:{id:'text',user_id:'text',record:'json'},primary:['id'],order:1};
@@ -39,15 +39,13 @@ export async function migrateRegistrySqlite({database,path,organizationId,enviro
       const bindingExists=Boolean((await client.query("SELECT to_regclass('public.opencrawl_integration_bindings') AS name")).rows[0]?.name);
       const recordsExist=Boolean((await client.query("SELECT to_regclass('public.opencrawl_integrations') AS name")).rows[0]?.name);
       const targetBinding=bindingExists?digestRows((await client.query('SELECT 1 AS id,organization_id AS organization,environment FROM opencrawl_integration_bindings WHERE namespace=$1',[database.namespace])).rows):null;
-      // Keyset pages bound memory, while the digest covers every row in the
+      // Cursor pages bound memory, while the digest covers every row in the
       // namespace, including any unexpected foreign scope or extra target row.
       let targetRecords:ReturnType<typeof digestRows>|null=null;
       if(recordsExist){
-        const hash=createHash('sha256');let count=0,cursor:string[]|undefined;
-        for(;;){
-          const {rows}=await client.query(`SELECT integration_id AS id,user_id,record,environment,tenant_id FROM opencrawl_integrations WHERE namespace=$1${cursor?' AND (integration_id COLLATE "C",environment COLLATE "C",tenant_id COLLATE "C")>($2,$3,$4)':''} ORDER BY integration_id COLLATE "C",environment COLLATE "C",tenant_id COLLATE "C" LIMIT 256`,[database.namespace,...(cursor??[])]);
-          for(const row of rows){if(row.environment!==environment||row.tenant_id!==organizationId)throw new Error('Target registry contains foreign scope');hash.update(canonical({id:row.id,user_id:row.user_id,record:row.record})+'\n');count++;}
-          if(rows.length<256)break;const row=rows.at(-1)!;cursor=[row.id,row.environment,row.tenant_id];
+        const hash=createHash('sha256');let count=0;
+        for await(const row of orderedMigrationRows(client,`SELECT integration_id AS id,user_id,record,environment,tenant_id FROM opencrawl_integrations WHERE namespace=$1 ORDER BY integration_id COLLATE "C",environment COLLATE "C",tenant_id COLLATE "C"`,[database.namespace])){
+          if(row.environment!==environment||row.tenant_id!==organizationId)throw new Error('Target registry contains foreign scope');hash.update(canonical({id:row.id,user_id:row.user_id,record:row.record})+'\n');count++;
         }
         targetRecords={rows:count,sha256:hash.digest('hex')};
       }
