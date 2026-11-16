@@ -32,13 +32,13 @@ test('upstream Airbyte references only supplied credentials in bundled and exter
       const values=airbyteValues(c,'opencrawl-credentials','postgres','synthetic-test-only'),path=join(dir,'airbyte.json');writeFileSync(path,JSON.stringify({airbyte:values}));
       const render=spawnSync(process.env.HELM||'helm',['template','sample',wrapper,'-f',path],{encoding:'utf8',maxBuffer:16*1024*1024});assert.equal(render.status,0,render.stderr);
       assert.ok(render.stdout.includes('DATABASE_URL: '+JSON.stringify(values.global.database.jdbcUrl)));
-      for(const document of render.stdout.split('\n---'))for(const key of ['DATABASE_URL','CONFIG_DATABASE_REPLICA_URL'])assert.ok([...document.matchAll(new RegExp('^\\s*- name: '+key+'$','gm'))].length<=1,`Duplicate ${key} breaks Helm upgrades`);
+      for(const document of render.stdout.split('\n---'))for(const key of ['DATABASE_URL','CONFIG_DATABASE_REPLICA_URL','POSTGRES_TLS_DISABLE_HOST_VERIFICATION','SQL_TLS_DISABLE_HOST_VERIFICATION'])assert.ok([...document.matchAll(new RegExp('^\\s*- name: '+key+'$','gm'))].length<=1,`Duplicate ${key} breaks Helm upgrades`);
       let checked=0;for(const match of render.stdout.matchAll(/secretKeyRef:\s*\n\s+name: ([^\n]+)\n\s+key: ([^\n]+)/g)){
         const name=match[1].replaceAll('"','').trim(),key=match[2].replaceAll('"','').trim();
         if(name==='opencrawl-credentials'){assert.ok(generated.has(key),`Generated credentials lack upstream key ${key}`);checked++;}
         if(name==='external-db'){assert.ok(['DATABASE_USER','DATABASE_PASSWORD'].includes(key),`Undocumented external key ${key}`);checked++;}
       }
-      assert.ok(checked>=8);assert.match(render.stdout,new RegExp('POSTGRES_TLS_ENABLED: "'+String(tls)+'"'));assert.equal(values.temporal.env_vars.POSTGRES_TLS_DISABLE_HOST_VERIFICATION,'false');
+      assert.ok(checked>=8);assert.match(render.stdout,new RegExp('POSTGRES_TLS_ENABLED: "'+String(tls)+'"'));assert.match(render.stdout,/POSTGRES_TLS_DISABLE_HOST_VERIFICATION: "false"/);assert.match(render.stdout,/SQL_TLS_DISABLE_HOST_VERIFICATION: "false"/);
     }
   }finally{rmSync(dir,{recursive:true});}
 });

@@ -35,8 +35,8 @@ Airbyte's pre-install bootloader needs its database to exist already. Separate
 releases preserve the upstream chart's lifecycle. The installer validates the
 downloaded Airbyte chart checksum and uses a separate Temporal server for Airbyte.
 It never deploys application workloads into Airbyte's Temporal namespace.
-An enclosing chart overrides only the upstream JDBC URL template to enforce the
-selected PostgreSQL TLS mode without duplicate environment variables. Upstream
+An enclosing chart overrides the upstream JDBC URL and Temporal hostname-verification
+templates to enforce PostgreSQL TLS settings without duplicate environment variables. Upstream
 bootstrap hooks and resource templates remain intact.
 
 Generated Kubernetes Secrets persist across reruns. Local `.opencrawl-helm/`
