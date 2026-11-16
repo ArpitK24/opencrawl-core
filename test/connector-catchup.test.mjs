@@ -70,3 +70,35 @@ test('real Temporal full catch-up retries an activity, follows the actual workfl
  assert.deepEqual(JSON.parse(Buffer.from(started.input.payloads[0].data).toString()),{...ref,generation:'v1'});
  assert.deepEqual(await activateConnectorCatchup(f.options),result);assert.equal(processed,1);
 });
+
+const additional=(receipts=2,receiptIdentity='d'.repeat(64))=>({receipts,buckets:receipts?['discarded-bucket']:[],receiptIdentity});
+test('additional verified discarded checkpoints require catch-up without core retirements and resume durably',{skip:!postgresUrl},async t=>{
+ const f=await fixture(t,{retired:false});f.options.additionalRequirement=async()=>additional();
+ const first=await activateConnectorCatchup(f.options);assert.equal(first.required,true);assert.equal(f.starts.length,1);
+ assert.deepEqual(await activateConnectorCatchup(f.options),first);assert.equal(f.starts.length,1);
+ f.options.additionalRequirement=async()=>additional(2,'e'.repeat(64));const changed=await activateConnectorCatchup(f.options);
+ assert.notEqual(changed.activationId,first.activationId);assert.equal(f.starts.length,2,'different original audit evidence cannot reuse completion');
+ assert.equal((await f.retirement.required()).receipts,0,'no synthetic core retirement rows');
+});
+test('additional requirement adds to original retirements and cannot suppress them',{skip:!postgresUrl},async t=>{
+ const f=await fixture(t);f.options.additionalRequirement=async()=>additional();await activateConnectorCatchup(f.options);
+ const rows=(await f.database.pool.query('SELECT required_receipts FROM opencrawl_connector_catchups WHERE namespace=$1',[f.database.namespace])).rows;
+ assert.equal(Number(rows[0].required_receipts),3);assert.equal((await f.retirement.required()).receipts,1);
+ const g=await fixture(t);g.options.additionalRequirement=async()=>additional(0);assert.equal((await activateConnectorCatchup(g.options)).required,true);assert.equal(g.starts.length,1);
+});
+test('additional provenance or core retirement drift prevents completion and remains resumable',{skip:!postgresUrl},async t=>{
+ const f=await fixture(t);let reads=0;f.options.additionalRequirement=async()=>additional(2,++reads===1?'d'.repeat(64):'e'.repeat(64));
+ await assert.rejects(activateConnectorCatchup(f.options),/scope changed/);
+ assert.equal((await f.database.pool.query('SELECT completed_at FROM opencrawl_connector_catchups WHERE namespace=$1',[f.database.namespace])).rows[0].completed_at,null);
+ f.options.additionalRequirement=async()=>additional();assert.equal((await activateConnectorCatchup(f.options)).completed,true);assert.equal(f.starts.length,1);
+ const g=await fixture(t);g.options.additionalRequirement=async()=>additional();const handle=g.options.client.workflow.getHandle;
+ g.options.client.workflow.getHandle=id=>({...handle(id),result:async()=>{await g.retirement.importRetirement({version:1,kind:'object',bucket:source.bucket,key:'legacy/new.json',sourceHash:'a'.repeat(64),disposition:'full-temporal-connector-catchup',receipt:{pipeline:'old-v1',key:'raw/other',sha256:'b'.repeat(64),sourceRecords:1,records:1}});return {cursor:null,failed:0};}});
+ await assert.rejects(activateConnectorCatchup(g.options),/scope changed/);
+});
+test('malformed additional counts, buckets and provenance fail before inventory or dispatch',{skip:!postgresUrl},async t=>{
+ const f=await fixture(t,{retired:false});f.options.discover=async()=>assert.fail('invalid requirement must fail before inventory');
+ for(const value of [null,additional(-1),additional(1.5),additional(NaN),additional(Number.MAX_SAFE_INTEGER+1),{...additional(),buckets:[]},{...additional(),buckets:['same','same']},{...additional(),buckets:[null]},{...additional(),buckets:['bad\nname']},{...additional(),buckets:Array.from({length:10001},(_,i)=>String(i))},{...additional(),receiptIdentity:'unverified'},{...additional(),unexpected:true}]){
+  f.options.additionalRequirement=async()=>value;await assert.rejects(activateConnectorCatchup(f.options),/Invalid additional/);
+ }
+ assert.equal(f.starts.length,0);
+});
