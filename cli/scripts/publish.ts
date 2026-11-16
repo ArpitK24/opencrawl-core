@@ -27,9 +27,19 @@ export async function publish({
   const tagsByFolder = new Map<string, Record<string, string>>();
   function readTags(folder: string) {
     const name = folder === 'cli' ? cli.name : `${cli.name}-${folder}`;
-    const result = run(['npm', 'view', name, 'dist-tags', '--json', ...registryArgs], {stdout: 'pipe', stderr: 'pipe'});
+    // Package metadata can lag behind tag writes. Use npm's tag endpoint, which
+    // also backs dist-tag add/rm, for promotion guards and staging cleanup.
+    const result = run(['npm', 'dist-tag', 'ls', name, ...registryArgs], {stdout: 'pipe', stderr: 'pipe'});
     let tags: Record<string, string> = {};
-    if (result.exitCode === 0) tags = JSON.parse(result.stdout.toString());
+    if (result.exitCode === 0) {
+      const lines = result.stdout.toString().trim().split('\n').filter(Boolean);
+      if (!lines.length) throw new Error('Invalid CLI release tag response: ' + name);
+      for (const line of lines) {
+        const match = /^(\S+):\s+(\S+)$/.exec(line.trim());
+        if (!match || Object.hasOwn(tags, match[1]!)) throw new Error('Invalid CLI release tag response: ' + name);
+        tags[match[1]!] = match[2]!;
+      }
+    }
     else if (!result.stderr.toString().includes('E404')) throw new Error('Could not determine CLI release channel.');
     for (const tag of channels) {
       if (tags[tag] && launcher.compare(tags[tag], cli.version) > 0) throw new Error('Refusing to downgrade the CLI release channel: ' + name + '@' + tag);
