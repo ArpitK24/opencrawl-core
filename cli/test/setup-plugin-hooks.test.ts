@@ -32,6 +32,7 @@ test('all four native plugin formats include synchronous startup and supported c
    expect(hooks.PostToolUse[0].async).toBe(true);expect(hooks.PostToolUse[0].command).toContain('--managed');
   }else if(client==='claude-code'){expect(hooks.PostToolUseFailure).toHaveLength(1);expect(hooks.SessionEnd[0].async).toBe(true);}
   else if(client==='cursor'){
+   expect(JSON.parse(files['hooks/hooks.json']).version).toBe(1);
    expect(hooks.stop[0].command).toContain('$CURSOR_PLUGIN_ROOT/');expect(hooks.postToolUseFailure).toHaveLength(1);expect(hooks.preCompact).toHaveLength(1);
    expect(hooks.postToolUse).toHaveLength(2);expect(hooks.postToolUse[0].command).toBe(start[0].command+' --after-tool');
    expect(hooks.postToolUse[0].timeout).toBe(7);expect(hooks.postToolUse[0].async).toBeUndefined();expect(hooks.postToolUse[1].command).toContain('collect hook');
@@ -79,7 +80,7 @@ test('Windows bundles use native command shells and protect profile percent and 
   const first=entries(client,files)[client==='cursor'?'sessionStart':'SessionStart'][0];
   if(client==='claude-code'||client==='codex'){expect(first.shell).toBe(client==='claude-code'?'powershell':undefined);expect(first.command).toContain('$env:'+(client==='codex'?'PLUGIN_ROOT':'CLAUDE_PLUGIN_ROOT'));}
   else if(client==='antigravity')expect(first.command).toStartWith('".\\scripts\\opencrawl-hook.cmd"');
-  else expect(first.command).toContain('%CURSOR_PLUGIN_ROOT%');
+  else {expect(JSON.parse(files['hooks/hooks.json']).version).toBe(1);expect(first.command).toContain('%CURSOR_PLUGIN_ROOT%');}
  }
 });
 

@@ -49,7 +49,7 @@ export function pluginHookFiles(client:PluginClient,binding:PluginHookBinding,pl
   const hooks:Record<string,unknown[]>=Object.fromEntries(GROK_BOT_HOOK_EVENTS.map(event=>{const entry=capture(event);return [event,[{command:entry.command,timeout:entry.timeout}]];}));
   hooks.sessionStart.unshift({command:startup.command,timeout:startup.timeout});
   hooks.postToolUse.unshift({command:startup.command+' --after-tool',timeout:startup.timeout});
-  return {[runner]:script,'hooks/hooks.json':json({hooks})};
+  return {[runner]:script,'hooks/hooks.json':json({version:1,hooks})};
  }
  if(client==='antigravity'){
   const entry=(event:string)=>{const hook=capture(event);return {type:hook.type,command:hook.command,timeout:hook.timeout};};
