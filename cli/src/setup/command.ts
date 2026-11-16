@@ -117,7 +117,10 @@ async function applyClients(scope:SetupScope,selections:SetupSelections,installP
  const configured=readCaptureConfig();
  if(!configured||configured.api!==scope.api||configured.installationId!==capture.installationId||configured.owner.tenantId!==scope.tenantId||configured.owner.userId!==scope.userId||JSON.stringify([...(configured.harnesses??[])].sort())!==JSON.stringify(forward)||configured.backgroundStartup!==(chosen(selections,'plugins').length>0))throw new CliError('SETUP_SCOPE_CHANGED','The local installation changed before starting its capture worker.');
  const daemonHarnesses=captureDaemonHarnesses(configured);
- const worker=ready&&configured.hookOwnership==='plugin'?{...await installDaemon(configured),harnesses:configured.disabled?[]:daemonHarnesses,startup:configured.backgroundStartup===true}:undefined;
+ // Plugin-owned clients can make progress independently. Legacy ownership
+ // still switches only after every selected bundle is ready above.
+ const preparedClient=plugins.results.some(row=>selections.plugins[row.client]&&['installed','unchanged','prepared'].includes(row.status));
+ const worker=(ready||preparedClient)&&configured.hookOwnership==='plugin'?{...await installDaemon(configured),harnesses:configured.disabled?[]:daemonHarnesses,startup:configured.backgroundStartup===true}:undefined;
  const pluginResults=[...(previous?.pluginResults??[]).filter(row=>!selections.plugins[row.client]&&['installed','unchanged'].includes(row.status)),...plugins.results];
  const humanTasks:SetupHumanTask[]=[...plugins.humanTasks];
  const state=await updateSetupState(scope,current=>({...current!,installationId:capture.installationId,machine:current?.machine??{id:capture.installationId,label:hostname()},pluginResults,humanTasks,worker}));

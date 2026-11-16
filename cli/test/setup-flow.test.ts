@@ -257,6 +257,34 @@ test('setup starts only the implemented worker after plugin files are ready and 
  expect(observations).toHaveLength(2);expect(readCaptureConfig()?.historyHarnesses).toEqual([]);
 }));
 
+test('one pending plugin does not block another plugin worker in an existing plugin-owned profile',async()=>fixture(async api=>{
+ for(const stalledStatus of ['pending','error'] as const){
+  let launches=0;
+  const result=await setupCommand('apply',api,{yes:true,plugins:'claude-code,codex',forward:'claude-code,codex',history:'none'},{
+   inspectHooks:nativeUnknown,launchHistory:()=>({state:'not_started'}),
+   installPlugins:async()=>({results:[{client:'claude-code',status:'prepared'},{client:'codex',status:stalledStatus}],humanTasks:[]}),
+   installDaemon:async config=>{launches++;expect(config).toMatchObject({hookOwnership:'plugin',harnesses:['claude-code','codex']});return {kind:'systemd',status:'installed',supervised:true,label:'fixture',path:'fixture'};}
+  });
+  expect(launches).toBe(1);expect(result).toMatchObject({status:'needs_attention',worker:{readiness:'configured',startup:true}});
+  const saved=readSetupState({api,tenantId:'tenant',userId:'user'})!;
+  expect(saved.selections.forward).toMatchObject({'claude-code':true,codex:true});expect(saved.selections.history.codex).toBe(false);
+  expect(saved.pluginResults).toContainEqual({client:'codex',status:stalledStatus});
+ }
+}));
+
+test('partial plugin preparation cannot activate legacy global ownership or replace its worker',async()=>fixture(async(api,dir)=>{
+ await installCapture(api,{home:dir,harnesses:['codex'],command:['legacy-cli']});
+ const original=readCaptureConfig()!,file=join(dir,'codex','hooks.json'),hooks=readFileSync(file,'utf8'),runner=hookRunner('capture',['legacy-cli']);
+ let launches=0;
+ await setupCommand('apply',api,{yes:true,plugins:'claude-code,codex',forward:'claude-code,codex',history:'none'},{
+  inspectHooks:nativeUnknown,launchHistory:()=>({state:'not_started'}),
+  installPlugins:async()=>({results:[{client:'claude-code',status:'prepared'},{client:'codex',status:'pending'}],humanTasks:[]}),
+  installDaemon:async()=>{launches++;throw Error('Legacy ownership must remain unchanged');}
+ });
+ expect(launches).toBe(0);expect(readCaptureConfig()).toMatchObject({hookOwnership:'global',installationId:original.installationId});
+ expect(readFileSync(file,'utf8')).toBe(hooks);expect(readFileSync(runner.file,'utf8')).toBe(runner.script);
+}));
+
 test('pending plugins defer the service while selected search plugins enable only their supported lanes',async()=>fixture(async api=>{
  let launches=0;
  const dependencies={inspectHooks:nativeUnknown,launchHistory:()=>({state:'not_started'}),installDaemon:async()=>{launches++;return {kind:'process',status:'requested',supervised:false,command:[]};}};
