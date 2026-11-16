@@ -60,7 +60,7 @@ export function windowsTaskScript(config:CaptureConfig){
   return `$ErrorActionPreference='Stop'\n$task=${task}\n$description=${description}\n$previous=Get-ScheduledTask -TaskPath '\\' -ErrorAction Stop | Where-Object {$_.TaskName -eq $task}\nif($previous -and $previous.Description -ne $description){throw 'Capture task name is already owned by another program'}\nif($previous){Stop-ScheduledTask -TaskName $task}\n$user=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value\n$action=New-ScheduledTaskAction -Execute ${powershellQuote(executable)} -Argument ${powershellQuote(args)}\n$principal=New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited\n$triggers=@(New-ScheduledTaskTrigger -AtLogOn -User $user)\n${recovery}$settings=New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -Priority 7\nRegister-ScheduledTask -TaskName $task -Description $description -Action $action -Principal $principal -Trigger $triggers -Settings $settings -Force | Out-Null\nStart-ScheduledTask -TaskName $task\n`;
 }
 const powershell=(script:string,run:typeof spawnSync=spawnSync)=>run('powershell.exe',['-NoProfile','-NonInteractive','-Command',script],{stdio:'pipe',timeout:15_000,windowsHide:true});
-function launchdOperation(operation:'bootout'|'bootstrap',result:Pick<ReturnType<typeof spawnSync>,'status'|'signal'|'error'>){
+function launchdOperation(operation:'print'|'bootout'|'bootstrap'|'kickstart',result:Pick<ReturnType<typeof spawnSync>,'status'|'signal'|'error'>){
   const errorCode=(result.error as NodeJS.ErrnoException|undefined)?.code;
   return {operation,exitStatus:Number.isInteger(result.status)?result.status:null,
     signal:result.signal?(/^SIG[A-Z0-9]{1,16}$/.test(result.signal)?result.signal:'UNKNOWN'):null,
@@ -144,24 +144,58 @@ export async function installCaptureDaemon(config:CaptureConfig,{home=homedir(),
   }
   if(!isDeepStrictEqual(readCaptureConfig(),config))throw Error('Capture configuration changed before service installation');
   mkdirSync(directory(),{recursive:true,mode:0o700});
-  atomicJson(join(directory(),'generation.json'),{generation:crypto.randomUUID()});
+  if(platform!=='darwin'||!service)atomicJson(join(directory(),'generation.json'),{generation:crypto.randomUUID()});
   if(platform==='darwin'&&service){
-    const path=join(home,'Library','LaunchAgents',label()+'.plist');mkdirSync(dirname(path),{recursive:true});
-    const domain='gui/'+process.getuid!();
-    const bootout=run('launchctl',['bootout',domain+'/'+label()],{stdio:'ignore',timeout:5000});
-    // LaunchAgents belongs to the user, not to our config store. Preserve its
-    // permissions while atomically replacing only our own service file.
-    writeServiceFile(path,launchAgent(config));
-    const service={kind:'launchd',status:'installed',supervised:true,label:label(),path},serviceFile=join(directory(),'service.json');
-    atomicJson(serviceFile,service);
-    const result=run('launchctl',['bootstrap',domain,path],{stdio:'pipe',timeout:5000});
-    if(result.status!==0){
-      // Persist only OS outcome fields, never command output or error messages.
-      const failure=launchdOperation('bootstrap',result),operations=[launchdOperation('bootout',bootout),failure];
-      const error=new CliError('CAPTURE_SUPERVISION_FAILED',`Could not install the capture LaunchAgent: launchctl bootstrap failed (exit=${failure.exitStatus??'none'}, signal=${failure.signal??'none'}, error=${failure.errorCode??'none'}). Check this user's LaunchAgent registration, then rerun setup resume.`);
-      atomicJson(serviceFile,{...service,status:'failed',supervised:false,operations});recordError(error);throw error;
+    const path=join(home,'Library','LaunchAgents',label()+'.plist'),definition=launchAgent(config);
+    const existing=existsSync(path)?readFileSync(path,'utf8'):null;
+    const generationFile=join(directory(),'generation.json');
+    const readGeneration=()=>existsSync(generationFile)?readFileSync(generationFile,'utf8'):null;
+    const beforeGeneration=readGeneration();
+    const unchanged=(generation:string|null)=>{
+      if(!isDeepStrictEqual(readCaptureConfig(),config)||readGeneration()!==generation)
+        throw new CliError('CAPTURE_CONFIG_CHANGED','Capture configuration or worker generation changed during service installation.');
+    };
+    const domain='gui/'+process.getuid!(),target=domain+'/'+label();
+    const service={kind:'launchd',status:'installed',supervised:true,label:label(),path};
+    const operations:ReturnType<typeof launchdOperation>[]=[];
+    const invoke=(operation:Parameters<typeof launchdOperation>[0],args:string[])=>{
+      const result=run('launchctl',args,{stdio:'pipe',timeout:5000});
+      operations.push(launchdOperation(operation,result));return result;
+    };
+    const failed=(operation:Parameters<typeof launchdOperation>[0],result:ReturnType<typeof spawnSync>):never=>{
+      const failure=launchdOperation(operation,result);
+      const error=new CliError('CAPTURE_SUPERVISION_FAILED',`Could not install the capture LaunchAgent: launchctl ${operation} failed (exit=${failure.exitStatus??'none'}, signal=${failure.signal??'none'}, error=${failure.errorCode??'none'}). Check this user's LaunchAgent registration, then rerun setup resume.`);
+      atomicJson(receipt,{...service,status:'failed',supervised:false,operations});recordError(error);throw error;
+    };
+    const checked=invoke('print',['print',target]);
+    const absent=checked.status===113&&!checked.error&&!checked.signal&&String(checked.stderr).includes('Could not find service');
+    if(checked.status!==0&&!absent)failed('print',checked);
+    if(checked.status===0){
+      const owned=previous?.kind==='launchd'&&previous.label===label()&&previous.path===path&&existing!==null;
+      const loadedFromPath=String(checked.stdout).split('\n').some(line=>line.trim()==='path = '+path);
+      if(!owned||!loadedFromPath)throw new CliError('CAPTURE_SUPERVISION_CONFLICT','The loaded LaunchAgent is not bound to this profile receipt and service file. Its registration was preserved.');
     }
-    return service;
+    unchanged(beforeGeneration);
+    if(checked.status===0&&existing===definition){
+      // Keep the verified registration. -k runs the current managed wrapper,
+      // including a new binary behind an unchanged command path.
+      const restarted=invoke('kickstart',['kickstart','-k',target]);
+      unchanged(beforeGeneration);if(restarted.status!==0)failed('kickstart',restarted);
+      atomicJson(receipt,service);return service;
+    }
+    if(checked.status===0){
+      const stopped=invoke('bootout',['bootout',target]);
+      unchanged(beforeGeneration);if(stopped.status!==0)failed('bootout',stopped);
+    }
+    atomicJson(generationFile,{generation:crypto.randomUUID()});
+    const generation=readGeneration();
+    // Missing jobs bootstrap normally; changed definitions retain their explicit
+    // replacement path. Exit 5 is generic EIO, not permission for a blind retry.
+    if(existing!==definition)writeServiceFile(path,definition);
+    unchanged(generation);
+    const result=invoke('bootstrap',['bootstrap',domain,path]);
+    unchanged(generation);if(result.status!==0)failed('bootstrap',result);
+    atomicJson(receipt,service);return service;
   }
   if(platform==='linux'&&service){
     const path=join(process.env.XDG_CONFIG_HOME||join(home,'.config'),'systemd','user',label()+'.service');
