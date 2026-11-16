@@ -122,6 +122,48 @@ test('legacy callbacks into plugin-owned profiles exit silently without waiting 
  }finally{f.close();}
 },10_000);
 
+test('imported Cursor startup hooks stay silent while native plugin startup still registers',async()=>{
+ const requests:string[]=[];
+ const server=Bun.serve({hostname:'127.0.0.1',port:0,async fetch(request){
+  expect(new URL(request.url).pathname).toBe('/api/board/bootstrap');
+  expect(request.headers.get('authorization')).toBe('Bearer disposable-test-token');
+  const input=await request.json();requests.push(input.harness);
+  return Response.json({schemaVersion:1,data:{session:input.session,workspace:'test-tenant',agent:'a'.repeat(64),name:null,task:null}});
+ }});
+ try{for(const client of ['claude-code','codex','cursor'] as const){
+  const f=fixture(client,`http://127.0.0.1:${server.port}`);try{
+   const credentials=sessionFile(f.binding.api);
+   f.write(credentials,{auth:{clientId:'fixture',tokenEndpoint:f.binding.api+'/unused-token'},accessToken:'disposable-test-token',refreshToken:'not-used',expiresAt:Date.now()+60_000});
+   const savedCredentials=readFileSync(credentials,'utf8'),savedPaths=readdirSync(f.configHome,{recursive:true}).sort(),before=requests.length;
+   const run=async(payload:unknown)=>{
+    const child=Bun.spawn([process.execPath,cli,'session','start','--harness',client,'--api',f.binding.api],{env:f.env,stdin:new Blob([JSON.stringify(payload)]),stdout:'pipe',stderr:'pipe'});
+    const timer=setTimeout(()=>child.kill(),3000);
+    try{
+     const [code,out,err]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]);
+     expect(code).toBe(0);expect(err).toBe('');return out;
+    }finally{clearTimeout(timer);}
+   };
+   if(client!=='cursor'){
+    // Cursor runs imported hooks with its native payload. Even an otherwise
+    // valid standard event must not register as the imported plugin's client.
+    for(const payload of [{hook_event_name:'sessionStart',session_id:'native-session',cursor_version:'fixture'},{...f.event,cursor_version:'fixture'}])
+     expect(await run(payload)).toBe('');
+    expect(requests).toHaveLength(before);expect(existsSync(f.activation)).toBe(false);
+    expect(readdirSync(f.configHome,{recursive:true}).sort()).toEqual(savedPaths);
+    expect(readFileSync(credentials,'utf8')).toBe(savedCredentials);
+    expect(readFileSync(f.configFile,'utf8')).toBe(json(f.config));
+   }
+   // Do not silence genuinely invalid native inputs or suppress Cursor itself.
+   expect(await run({...f.event,session_id:'invalid\nidentity'})).toContain('did not supply a valid native session identity');
+   expect(requests).toHaveLength(before);expect(existsSync(f.activation)).toBe(false);
+   expect(await run(f.event)).toContain('OpenCrawl: registered with');
+   expect(requests.slice(before)).toEqual([client]);
+   expect(JSON.parse(readFileSync(f.activation,'utf8'))).toMatchObject({client,event:client==='cursor'?'sessionStart':'SessionStart'});
+   expect(readFileSync(f.configFile,'utf8')).toBe(json(f.config));
+  }finally{f.close();}
+ }}finally{server.stop(true);}
+},15_000);
+
 test('bad plugin binding is rejected by real CLI before capture consumes stdin or writes state',async()=>{
  const f=fixture();try{
   const env={...f.env,OPENCRAWL_PLUGIN_API:'https://another.example'};

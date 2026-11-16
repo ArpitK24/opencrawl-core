@@ -126,6 +126,10 @@ export async function sessionStartCommand(args: string[], input: Readable = proc
     const api = apiOrigin(parsed.values.api ?? process.env.OPENCRAWL_API_URL ?? readCaptureConfig()?.api ?? DEFAULT_API_ORIGIN);
     const plugin=pluginHookContext(api,harness);
     const event = await readStartEvent(input, 1000, parsed.values['after-tool'] ? 8 * 1024 * 1024 : 16_384);
+    // Cursor also runs imported hooks. Its own plugin owns startup; do not
+    // emit a false failure or register it as the imported plugin's client.
+    if ((harness === 'claude-code' || harness === 'codex') && event !== null && typeof event === 'object' &&
+        'cursor_version' in event && typeof event.cursor_version === 'string') return 0;
     recordPluginActivation(plugin,event);
     result = await withEnvironmentTokenOrigin(parsed.values.api ?? process.env.OPENCRAWL_API_URL,
       () => parsed.values['after-tool'] ? cursorToolContext(api, event) : sessionStart(api, harness, event));
