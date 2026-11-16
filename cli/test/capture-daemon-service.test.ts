@@ -325,6 +325,8 @@ for(const mode of ['unknown','foreign','changed-config','changed-generation'] as
 }));
 
 test('staged launchd bootstrap validates the legacy config while installing the daemon candidate',()=>fixture(async f=>{
+  const uid=Object.getOwnPropertyDescriptor(process,'getuid');Object.defineProperty(process,'getuid',{value:()=>501,configurable:true});
+  try{
   const before={...f.config};delete before.captureWorker;
   atomicJson(join(captureDir(),'config.json'),before);
   const operations:string[]=[];
@@ -332,4 +334,5 @@ test('staged launchd bootstrap validates the legacy config while installing the 
   expect(await installCaptureDaemon(f.config,{expectedConfig:before,platform:'darwin',home:f.root,run})).toMatchObject({supervised:true});
   expect(JSON.parse(readFileSync(join(captureDir(),'config.json'),'utf8'))).toEqual(before);
   expect(operations).toEqual(['print','bootstrap']);
+  }finally{if(uid)Object.defineProperty(process,'getuid',uid);else delete process.getuid;}
 }));
