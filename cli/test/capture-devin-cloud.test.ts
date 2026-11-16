@@ -1,5 +1,6 @@
 import {expect, test} from 'bun:test';
-import {mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync} from 'node:fs';
+import {mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync} from 'node:fs';
+import {realpath} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {devinEvents, devinOverflow, DEVIN_MAX_HOOK_BYTES} from '../src/capture/devin.ts';
@@ -47,7 +48,7 @@ test('failed or pending message_user attempts never fabricate delivered assistan
 });
 
 test('worker restores the complete observed overflow shape and reports unavailable output honestly', async () => {
-  const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'opencrawl-devin-overflow-')));
+  const scratch = await realpath(mkdtempSync(join(tmpdir(), 'opencrawl-devin-overflow-')));
   try {
     const pool = join(scratch, 'pool'), dir = join(pool, 'shell-synthetic');
     mkdirSync(dir, {recursive: true});
@@ -76,7 +77,7 @@ test('worker restores the complete observed overflow shape and reports unavailab
 });
 
 test('worker overflow admission accepts native Windows relative separators without relaxing file guards', async () => {
-  const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'opencrawl-devin-separators-')));
+  const scratch = await realpath(mkdtempSync(join(tmpdir(), 'opencrawl-devin-separators-')));
   try {
     const pool = join(scratch, 'pool'), dir = join(pool, 'shell-synthetic');
     mkdirSync(dir, {recursive: true});
@@ -115,7 +116,7 @@ test('worker overflow admission accepts native Windows relative separators witho
 });
 
 test('overflow reads are confined to regular native output files, never arbitrary tool paths', async () => {
-  const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'opencrawl-devin-scope-')));
+  const scratch = await realpath(mkdtempSync(join(tmpdir(), 'opencrawl-devin-scope-')));
   try {
     const pool = join(scratch, 'pool'), native = join(pool, 'shell-test');
     mkdirSync(native, {recursive: true});
