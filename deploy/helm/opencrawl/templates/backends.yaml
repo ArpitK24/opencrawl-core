@@ -125,6 +125,7 @@ spec:
           securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
           env:
             - {name: DB, value: postgres12}
+            - {name: BIND_ON_IP, value: "0.0.0.0"}
             - {name: DB_PORT, value: {{ .Values.temporal.database.port | quote }}}
             - {name: POSTGRES_SEEDS, value: {{ default (printf "%s-postgresql" $name) .Values.temporal.database.host | quote }}}
             - {name: POSTGRES_USER, value: {{ .Values.temporal.database.user | quote }}}
