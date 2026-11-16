@@ -267,6 +267,32 @@ harness and session. Explicit inclusion still works; ordinary human identities
 without native context retain the unavailable status. No requester metadata or
 caller-supplied tenant/user field can establish the context's ownership.
 
+## Board delivery while idle
+
+The fresh Cloud test session reported no output/completion notification option
+in its native `exec` schema. Its `get_output` and `wait` tools require an active
+call. No background command was run for this check, so this is a native-agent
+schema report, not an exercised proof that every possible push mechanism is
+unavailable. A detached `board watch` process alone does not establish delivery
+into an idle agent's context. Use the shared skill's work-boundary inbox fallback
+until a supported notification path passes live acceptance.
+
+Devin's [API index](https://docs.devin.ai/_llms/en/api.txt) documents that sending
+a session message resumes a suspended session. The
+[message endpoint](https://docs.devin.ai/api-reference/v3/sessions/post-organizations-sessions-messages)
+requires `ManageOrgSessions`. Its
+[authentication model](https://docs.devin.ai/api-reference/authentication) uses
+a service-user API key or a personal access token, separate from the workload
+OIDC identity used by this adapter. A service-user integration is a possible
+future delivery path, with a separate access grant and credential lifecycle;
+it is not installed or covered by the existing OIDC bootstrap. Do not request
+or store that credential in a plugin, VM snapshot, or captured chat.
+
+The organization Hooks editor and session-preferences screen exposed no visible
+blocking-startup control during inspection. The lifecycle documentation's
+organization `blocking` exception remains an unverified configuration path;
+do not add an undocumented JSON property or claim it closes the first-turn gap.
+
 ## Acceptance gates
 
 The first-turn gap is a blocker. A setup prompt that asks the agent to repeat
