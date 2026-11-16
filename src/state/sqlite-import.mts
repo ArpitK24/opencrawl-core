@@ -1,6 +1,6 @@
 /** Offline migration only. Runtime repositories never import node:sqlite. */
 import {DatabaseSync} from 'node:sqlite';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {stat} from 'node:fs/promises';
 import type {PoolClient} from 'pg';
 export type ImportMode='check'|'migrate'|'verify';
@@ -45,17 +45,23 @@ export function* sourceRows(source:DatabaseSync,table:ImportTable,columns:string
 export function digestRows(rows:Iterable<Record<string,unknown>>):ImportDigest{
   const hash=createHash('sha256');let count=0;for(const row of rows){hash.update(canonical(row)+'\n');count++;}return {rows:count,sha256:hash.digest('hex')};
 }
+/** Caller owns a transaction. One ordered query avoids repeating a full sort
+ * for each page when a provider-owned index uses a different collation. */
+export async function* orderedMigrationRows(client:PoolClient,query:string,values:unknown[]=[]):AsyncGenerator<Record<string,unknown>>{
+  const cursor=identifier('oc_migration_'+randomUUID().replaceAll('-',''));
+  await client.query(`DECLARE ${cursor} NO SCROLL CURSOR FOR ${query}`,values);
+  let failed=false;
+  try{
+    for(;;){const {rows}=await client.query(`FETCH FORWARD 256 FROM ${cursor}`);for(const row of rows)yield row;if(rows.length<256)break;}
+  }catch(error){failed=true;throw error;}
+  finally{try{await client.query(`CLOSE ${cursor}`);}catch(error){if(!failed)throw error;}}
+}
 export async function targetDigest(client:PoolClient,schema:string,table:ImportTable,columns:string[]):Promise<ImportDigest|null>{
   const qualified=identifier(schema)+'.'+identifier(table.name);
   if(!(await client.query('SELECT to_regclass($1) AS name',[qualified])).rows[0]?.name)return null;
-  const hash=createHash('sha256');let count=0,last:unknown[]|undefined;
-  for(;;){
-    const fields=columns.map(identifier).join(','),keys=table.primary.map(column=>identifier(column)+(table.columns[column]==='text'?' COLLATE "C"':''));
-    const where=last?` WHERE (${keys.join(',')}) > (${last.map((_,i)=>'$'+(i+1)).join(',')})`:'';
-    const {rows}=await client.query(`SELECT ${fields} FROM ${qualified}${where} ORDER BY ${order(table)} LIMIT 256`,last);
-    for(const row of rows){const normalized=normalizedRow(row,table,columns);hash.update(canonical(normalized)+'\n');count++;}
-    if(rows.length<256)break;
-    last=table.primary.map(column=>rows.at(-1)![column]);
+  const hash=createHash('sha256');let count=0;
+  for await(const row of orderedMigrationRows(client,`SELECT ${columns.map(identifier).join(',')} FROM ${qualified} ORDER BY ${order(table)}`)){
+    hash.update(canonical(normalizedRow(row,table,columns))+'\n');count++;
   }
   return {rows:count,sha256:hash.digest('hex')};
 }

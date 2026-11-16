@@ -83,6 +83,16 @@ missing previous installation from being treated as a new empty installation.
 The coordinated upgrader supplies both flags. Omit them for a provably empty new
 installation. Already-ready installations validate their binding and receipts
 without requiring retained legacy files to remain forever.
+
+The same upgrade sequence applies to installations already using PostgreSQL,
+including `0.4.1-cd.478.ge5cc8bc3ec70`. Run the supported upgrade or migration
+command before starting the new runtime: its schema preparation adds the
+byte-order indexes before checking the saved manifest. It preserves the existing
+migration ID, source hashes and receipts, and does not reimport legacy objects.
+The first index build belongs in this stopped-writer upgrade phase; later
+readiness checks validate the existing index without rebuilding it. Keep the
+original upgrade journal and backup when resuming an interrupted upgrade.
+
 The supported single-organization installation uses one landing bucket. A legacy
 integration pointing at another bucket stops migration before any import; its
 state requires an explicitly reviewed multi-store inventory, not an assumed

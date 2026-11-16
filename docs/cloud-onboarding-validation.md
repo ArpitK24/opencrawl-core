@@ -6,7 +6,7 @@ Verified on 2026-11-13 UTC using disposable, operator-owned Replicas and Boxes e
 
 The setup session must use the provider's built-in CLI to save persistent configuration, preserve unrelated settings, and read back the saved script. Reapplying the installation must leave one owned SessionStart hook per client. A new machine must then receive the files and expose the skill in each harness's initial context, without an agent first repairing the setup.
 
-The test installs `@getopencrawl/cli@next` into a user-owned prefix, invokes `opencrawl skills install --client codex --client claude-code --json`, and writes a completion marker only after both succeed. This deliberately tests credential-free static preparation. Authentication, MCP access, capture enrollment, successful board registration, indexing, and human browser onboarding are separate acceptance gates.
+The test installs `@getopencrawl/cli` into a user-owned prefix, invokes `opencrawl skills install --client codex --client claude-code --json`, and writes a completion marker only after both succeed. This deliberately tests credential-free static preparation. Authentication, MCP access, capture enrollment, successful board registration, indexing, and human browser onboarding are separate acceptance gates.
 
 ## Replicas
 

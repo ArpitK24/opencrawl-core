@@ -15,23 +15,27 @@ function registry(dist: string) {
   const revision='a'.repeat(40),integrity='sha512-fixture';
   for (const folder of names) {
     mkdirSync(join(dist, folder));
-    writeFileSync(join(dist, folder, 'package.json'), JSON.stringify({name: folder === 'cli' ? cli : `${cli}-${folder}`, version: '1.0.0',opencrawlRevision:revision,...(folder==='cli'?{optionalDependencies:Object.fromEntries(names.filter(x=>x!=='cli').map(x=>[cli+'-'+x,'1.0.0']))}:{})}));
+    writeFileSync(join(dist, folder, 'README.md'), '# OpenCrawl CLI\n\nCapture and search workspace knowledge.\n');
+    writeFileSync(join(dist, folder, 'package.json'), JSON.stringify({name: folder === 'cli' ? cli : `${cli}-${folder}`, version: '1.0.0',opencrawlRevision:revision,license:'Apache-2.0',homepage:'https://getopencrawl.com',repository:{url:'https://github.com/getopencrawl/opencrawl-core.git',directory:'cli'},bugs:{url:'https://github.com/getopencrawl/opencrawl-core/issues'},...(folder==='cli'?{optionalDependencies:Object.fromEntries(names.filter(x=>x!=='cli').map(x=>[cli+'-'+x,'1.0.0']))}:{})}));
   }
   const state = {
-    tags: {next: '0.9.0'} as Record<string, string>,
+    tags: {latest: '0.9.0', next: '0.9.0', 'next-pending': '0.9.0'} as Record<string, string>,
+    packageTags: new Map<string, Record<string, string>>(),
     published: new Set<string>(), downloaded: new Set<string>(),
     publishCalls: [] as string[], promotions: [] as string[],
-    blocked: new Set<string>(), clock: 0, onSleep: () => {}, failPromotion: false,
+    blocked: new Set<string>(), clock: 0, onSleep: () => {}, failPromotion: false, failAfterPromotions: Infinity,
+    stalePackumentTags: false, tagResponse: undefined as string | undefined,
     metadata: new Map<string,Record<string,unknown>>(),
   };
+  for (const folder of names) state.packageTags.set(folder === 'cli' ? cli : `${cli}-${folder}`, folder === 'cli' ? state.tags : {latest: '0.9.0', next: '0.9.0'});
   const result = (exitCode: number, stdout = '', stderr = '') => ({exitCode, stdout: Buffer.from(stdout), stderr: Buffer.from(stderr)});
   const run = ((args: string[], options: {cwd?: string}) => {
-    if (args[1] === 'pack') return result(0, JSON.stringify([{integrity,files: ['LICENSE', 'THIRD_PARTY_NOTICES.txt', 'runtime/opencrawl.js'].map(path => ({path}))}]));
+    if (args[1] === 'pack') return result(0, JSON.stringify([{integrity,files: ['README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.txt', 'runtime/opencrawl.js'].map(path => ({path}))}]));
     // The repository's GitHub Packages scope must never override these commands.
     expect(args).toContain('--registry=https://registry.npmjs.org');
     expect(args).toContain('--@getopencrawl:registry=https://registry.npmjs.org');
     if (args[1] === 'view') {
-      if (args[3] === 'dist-tags') return result(0, JSON.stringify(state.tags));
+      if (args[3] === 'dist-tags') return result(0, JSON.stringify(state.stalePackumentTags ? {latest: '0.9.0', next: '0.9.0'} : state.packageTags.get(args[2])));
       const name = args[2].slice(0, args[2].lastIndexOf('@'));
       return state.published.has(name) ? result(0, JSON.stringify(state.metadata.get(name)??{version:'1.0.0',opencrawlRevision:revision,dist:{integrity}})) : result(1, '', 'E404');
     }
@@ -42,16 +46,19 @@ function registry(dist: string) {
       state.publishCalls.push(pkg.name);
       if (pkg.name === cli) {
         expect(state.downloaded.size).toBe(5);
-        expect(args[args.indexOf('--tag') + 1]).toBe('next-pending');
-        state.tags['next-pending'] = pkg.version;
       }
+      expect(args[args.indexOf('--tag') + 1]).toBe('latest-pending');
+      state.packageTags.get(pkg.name)!['latest-pending'] = pkg.version;
       return result(0);
     }
     if (args[1] === 'dist-tag') {
+      if (args[2] === 'ls') return result(0, state.tagResponse ?? Object.entries(state.packageTags.get(args[3])!).map(([tag, version]) => `${tag}: ${version}`).join('\n'));
       expect(state.downloaded.size).toBe(6); // metadata alone is insufficient
-      if (state.failPromotion) return result(1, '', 'temporary registry failure');
-      state.promotions.push(args[3]);
-      state.tags[args[4]] = '1.0.0';
+      if (args[2] === 'rm') { delete state.packageTags.get(args[3])![args[4]]; return result(0); }
+      if (state.failPromotion || state.promotions.length === state.failAfterPromotions) return result(1, '', 'temporary registry failure');
+      const name = args[3].slice(0, args[3].lastIndexOf('@'));
+      state.promotions.push(args[3] + ':' + args[4]);
+      state.packageTags.get(name)![args[4]] = '1.0.0';
       return result(0);
     }
     throw new Error(`Unexpected npm operation ${args[1]}`);
@@ -66,7 +73,7 @@ function registry(dist: string) {
     if (!state.published.has(name)) return new Response('', {status: 404});
     return Response.json(state.metadata.get(name)??{version:'1.0.0',opencrawlRevision:revision,dist: {integrity,tarball: `https://registry.npmjs.org/${name}`}});
   }) as typeof fetch;
-  const execute = (dryRun = false) => publish({dist, channel: 'next', dryRun, run, fetcher, now: () => state.clock, sleep: async () => { state.onSleep(); state.clock += 20 * 60_000; }});
+  const execute = (dryRun = false) => publish({dist, dryRun, run, fetcher, now: () => state.clock, sleep: async () => { state.onSleep(); state.clock += 20 * 60_000; }});
   return {state, execute, cli,dist,revision,integrity};
 }
 
@@ -74,13 +81,28 @@ test('launcher remains staged until its own tarball is downloadable', () => regi
   state.blocked.add(cli);
   state.onSleep = () => {
     expect(state.tags.next).toBe('0.9.0');
-    expect(state.tags['next-pending']).toBe('1.0.0');
+    expect(state.tags['latest-pending']).toBe('1.0.0');
     expect(state.promotions).toEqual([]);
     state.blocked.delete(cli);
   };
   await execute();
-  expect(state.promotions).toEqual([`${cli}@1.0.0`]);
+  expect(state.promotions.length).toBe(12);
+  for (const tags of state.packageTags.values()) expect(tags).toEqual({latest: '1.0.0', next: '1.0.0'});
   expect(state.tags.next).toBe('1.0.0');
+}));
+
+test('staging tags are removed even when package metadata lags behind tag writes', () => registryFixture(async ({state, execute}) => {
+  state.stalePackumentTags = true;
+  await execute();
+  for (const tags of state.packageTags.values()) expect(tags).toEqual({latest: '1.0.0', next: '1.0.0'});
+}));
+
+test('unrecognized tag output fails before publishing', () => registryFixture(async ({state, execute}) => {
+  for (const output of ['', 'unrecognized response', 'latest: 1.0.0\nlatest: 0.9.0']) {
+    state.tagResponse = output;
+    await expect(execute()).rejects.toThrow('Invalid CLI release tag response');
+  }
+  expect(state.publishCalls).toEqual([]);
 }));
 
 test('availability timeout leaves channel unchanged and a rerun resumes immutable packages', () => registryFixture(async ({state, execute, cli}) => {
@@ -91,9 +113,9 @@ test('availability timeout leaves channel unchanged and a rerun resumes immutabl
   state.blocked.clear();
   await execute();
   expect(state.publishCalls.length).toBe(6);
-  expect(state.promotions.length).toBe(1);
+  expect(state.promotions.length).toBe(12);
   await execute(); // already promoted is idempotent
-  expect(state.promotions.length).toBe(1);
+  expect(state.promotions.length).toBe(12);
 }));
 
 test('a native tarball timeout cannot publish or promote the launcher', () => registryFixture(async ({state, execute, cli}) => {
@@ -116,7 +138,7 @@ test('a failed promotion can resume without republishing packages', () => regist
   state.failPromotion = false;
   await execute();
   expect(state.publishCalls.length).toBe(6);
-  expect(state.promotions.length).toBe(1);
+  expect(state.promotions.length).toBe(12);
 }));
 
 test('an existing launcher outside the current release is rejected', () => registryFixture(async ({state, execute, cli}) => {
@@ -158,4 +180,40 @@ test('a launcher pointing at another platform version is rejected before publish
   const file=join(dist,'cli','package.json'),pkg=JSON.parse(readFileSync(file,'utf8'));
   pkg.optionalDependencies[cli+'-linux-arm64']='0.9.0';writeFileSync(file,JSON.stringify(pkg));
   await expect(execute()).rejects.toThrow('launcher dependency');expect(state.publishCalls).toEqual([]);
+}));
+
+test('a partially promoted release resumes every package and both install tags', () => registryFixture(async ({state, execute}) => {
+  state.failAfterPromotions = 3;
+  await expect(execute()).rejects.toThrow('promotion failed');
+  expect(state.tags.latest).toBe('0.9.0');
+  state.failAfterPromotions = Infinity;
+  await execute();
+  expect(state.publishCalls.length).toBe(6);
+  expect(state.promotions.length).toBe(12);
+  for (const tags of state.packageTags.values()) expect(tags).toEqual({latest: '1.0.0', next: '1.0.0'});
+}));
+test('a newer platform default prevents the whole release from downgrading', () => registryFixture(async ({state, execute, cli}) => {
+  state.packageTags.get(cli + '-linux-x64')!.latest = '1.1.0';
+  await expect(execute()).rejects.toThrow('downgrade');
+  expect(state.publishCalls).toEqual([]);
+}));
+test('promotion rechecks channels after waiting for archive availability', () => registryFixture(async ({state, execute, cli}) => {
+  state.blocked.add(cli);
+  state.onSleep = () => { state.blocked.clear(); state.tags.latest = '1.1.0'; };
+  await expect(execute()).rejects.toThrow('downgrade');
+  expect(state.promotions).toEqual([]);
+}));
+
+test('incorrect repository metadata cannot reach npm', () => registryFixture(async ({state, execute, dist}) => {
+  const file=join(dist,'cli','package.json'),pkg=JSON.parse(readFileSync(file,'utf8'));
+  pkg.repository.url='https://github.com/1patch/OpenCrawl.git';writeFileSync(file,JSON.stringify(pkg));
+  await expect(execute()).rejects.toThrow('Invalid public package metadata');
+  expect(state.publishCalls).toEqual([]);
+}));
+test('README links must be absolute and product copy must stay short and current', () => registryFixture(async ({state, execute, dist}) => {
+  for (const text of ['[Guide](../docs/guide.md)', '# OpenCrawl v2', 'legacy product', 'npm install @getopencrawl/cli@next', 'x'.repeat(4097)]) {
+    writeFileSync(join(dist,'cli','README.md'),text);
+    await expect(execute()).rejects.toThrow('Invalid public package README');
+  }
+  expect(state.publishCalls).toEqual([]);
 }));
