@@ -14,6 +14,10 @@ import {withEnvironmentTokenOrigin} from '../src/environment-token.ts';
 
 type Fixture={api:string;dir:string;bundle:string;profile:string;observations:Record<string,unknown>[];calls:string[];start:(session?:string)=>ReturnType<typeof startDevinPlugin>;setOwner:(id:string)=>void;setSession:(id:string)=>void;failPublish:(value:boolean)=>void;changeDuringSetup:(stage:'setup'|'capture')=>void};
 const nativeSession='devin-native-session',startup={hook_event_name:'SessionStart',source:'startup',session_id:nativeSession};
+// Bundle export is portable; runtime fixtures execute the Linux Cloud shell
+// helper and exercise a POSIX VM profile. Windows validates export below, not
+// this runtime, whose native acceptance runs on Linux.
+const cloudRuntimeTest=test.skipIf(!['linux','darwin'].includes(process.platform));
 async function fixture(run:(f:Fixture)=>Promise<void>,recording=true){
  const dir=mkdtempSync(join(tmpdir(),'opencrawl-devin-plugin-')),profile=join(dir,'profile'),bundle=join(dir,'bundle'),helper=join(dir,'helpers'),saved={...process.env};
  let userId='workload_devin_fixture',publishFailure=false,changeAt:'setup'|'capture'|undefined,identityCalls=0,sessionId=nativeSession;
@@ -51,18 +55,29 @@ async function fixture(run:(f:Fixture)=>Promise<void>,recording=true){
  }
 }
 
-test('Cloud bundle has public profile binding, native stdio MCP and no local-client installation state',()=>fixture(async f=>{
- const files=setupPluginFiles('devin',f.api,{command:[join(f.dir,'opencrawl')],configHome:f.profile,recording:true});
+test('Cloud bundle exports on any host with Linux target paths and public configuration only',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'opencrawl-devin-export-')),bundle=join(dir,'bundle'),api='https://cloud-fixture.example';
+ const options={command:['/usr/local/bin/opencrawl'],configHome:'/home/ubuntu/.config/opencrawl-cloud',recording:true};
+ try{
+ const result=writeDevinPlugin(bundle,api,options),files=setupPluginFiles('devin',api,options);
+ expect(result).toMatchObject({client:'devin',api,directory:bundle,recording:true,installed:false});
+ for(const [name,content] of Object.entries(files))expect(readFileSync(join(bundle,name),'utf8')).toBe(content);
+ expect(JSON.parse(files['.opencrawl-devin.json']!)).toEqual({schemaVersion:1,api,...options});
  expect(JSON.parse(files['.devin-plugin/plugin.json']!).platforms).toEqual(['cloud']);
- expect(JSON.parse(files['.mcp.json']!).mcpServers[setupPluginIdentity(f.api).name]).toEqual({command:'/bin/sh',args:['${PLUGIN_ROOT}/scripts/opencrawl-hook.sh','mcp','--api',f.api]});
+ expect(JSON.parse(files['.mcp.json']!).mcpServers[setupPluginIdentity(api).name]).toEqual({command:'/bin/sh',args:['${PLUGIN_ROOT}/scripts/opencrawl-hook.sh','mcp','--api',api]});
  const hooks=JSON.parse(files['hooks.json']!);expect(Object.keys(hooks).sort()).toEqual(['PostCompaction','PostToolUse','SessionStart','Stop','UserPromptSubmit']);
  expect(hooks.SessionStart[0].hooks[0].command).toContain('workload start');
  expect(JSON.stringify(files)).not.toContain('fixture-tenant');expect(JSON.stringify(files)).not.toContain('workload_devin_fixture');
+ expect(readdirSync(dir)).toEqual(['bundle']);
+ }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+cloudRuntimeTest('Cloud bundle validation creates no local-client installation state or network requests',()=>fixture(async f=>{
  expect(readCaptureConfig()).toBeNull();expect(f.calls).toHaveLength(0);expect(readDevinPlugin(f.api).recording).toBe(true);
  expect(existsSync(join(f.dir,'codex'))).toBe(false);expect(existsSync(join(f.dir,'claude'))).toBe(false);
 }));
 
-test.skipIf(process.platform==='win32')('Cloud runner uses the exact executable without Node on PATH and rejects ambient human credentials',()=>fixture(async f=>{
+cloudRuntimeTest('Cloud runner uses the exact executable without Node on PATH and rejects ambient human credentials',()=>fixture(async f=>{
  writeFileSync(join(f.dir,'opencrawl'),'#!/bin/sh\nprintf "%s\\n" "$OPENCRAWL_AUTH" "$OPENCRAWL_CONFIG_HOME" "$OPENCRAWL_PLUGIN_API" "$PATH" "$@"\n',{mode:0o700});
  const run=async(extra:NodeJS.ProcessEnv={})=>{
   const child=Bun.spawn(['/bin/sh',join(f.bundle,'scripts/opencrawl-hook.sh'),'mcp','--api',f.api],{env:{HOME:f.dir,...extra},stdout:'pipe',stderr:'pipe'});
@@ -72,7 +87,7 @@ test.skipIf(process.platform==='win32')('Cloud runner uses the exact executable 
  for(const extra of [{OPENCRAWL_TOKEN:'must-not-use'},{OPENCRAWL_SESSIONS_TOKEN:'must-not-use'},{OPENCRAWL_AUTH:'replicas-workspace'}])expect(await run(extra)).toEqual({code:1,output:'',error:''});
 }));
 
-test('fresh Cloud startup binds the verified native owner through shared setup, capture and durable registration',()=>fixture(async f=>{
+cloudRuntimeTest('fresh Cloud startup binds the verified native owner through shared setup, capture and durable registration',()=>fixture(async f=>{
  const output=await f.start(),config=readCaptureConfig()!;
  expect(config).toMatchObject({api:f.api,hookOwnership:'plugin',harnesses:['devin'],backgroundStartup:true,owner:{tenantId:'fixture-tenant',userId:'workload_devin_fixture'}});
  expect(config.installationId).not.toBe('pending');expect(config.roots.devin).toBeDefined();
@@ -86,13 +101,13 @@ test('fresh Cloud startup binds the verified native owner through shared setup, 
  for(const client of ['claude','codex','cursor','agy','desktop'])expect(existsSync(join(f.dir,client))).toBe(false);
 }));
 
-test('search-only Cloud startup keeps recording off and creates no capture notice',()=>fixture(async f=>{
+cloudRuntimeTest('search-only Cloud startup keeps recording off and creates no capture notice',()=>fixture(async f=>{
  await f.start();expect(readCaptureConfig()?.harnesses).toEqual([]);
  expect(readdirSync(join(captureDir(),'daemon','inbox')).every(name=>name.startsWith('startup-'))).toBe(true);
  expect(f.observations.at(-1)).toMatchObject({clients:[{client:'devin',installed:true,forward:false}]});
 },false));
 
-test('resume preserves installation, recording opt-out and a deselected plugin',()=>fixture(async f=>{
+cloudRuntimeTest('resume preserves installation, recording opt-out and a deselected plugin',()=>fixture(async f=>{
  await f.start();const initial=readCaptureConfig()!,scope={api:f.api,...initial.owner};
  atomicJson(join(captureDir(),'config.json'),{...initial,disabled:true});await f.start();
  expect(readCaptureConfig()).toMatchObject({installationId:initial.installationId,disabled:true,harnesses:[]});
@@ -101,32 +116,32 @@ test('resume preserves installation, recording opt-out and a deselected plugin',
  const before=readFileSync(join(captureDir(),'config.json'),'utf8');await expect(f.start()).rejects.toMatchObject({code:'DEVIN_PLUGIN_NOT_SELECTED'});expect(readFileSync(join(captureDir(),'config.json'),'utf8')).toBe(before);
 }));
 
-test('wrong native session or changed owner cannot create or rebind an installation',()=>fixture(async f=>{
+cloudRuntimeTest('wrong native session or changed owner cannot create or rebind an installation',()=>fixture(async f=>{
  await expect(f.start('devin-other-session')).rejects.toMatchObject({code:'DEVIN_IDENTITY_MISMATCH'});expect(readCaptureConfig()).toBeNull();expect(f.observations).toHaveLength(0);
  await f.start();const before=readFileSync(join(captureDir(),'config.json'),'utf8'),count=f.observations.length;
  f.setOwner('different-workload');await expect(f.start()).rejects.toMatchObject({code:'DEVIN_PROFILE_CHANGED'});expect(readFileSync(join(captureDir(),'config.json'),'utf8')).toBe(before);expect(f.observations).toHaveLength(count);
 }));
 
-test('bundle tampering and mixed authentication fail before network or setup mutation',()=>fixture(async f=>{
+cloudRuntimeTest('bundle tampering and mixed authentication fail before network or setup mutation',()=>fixture(async f=>{
  process.env.OPENCRAWL_TOKEN='must-not-use';await expect(f.start()).rejects.toMatchObject({code:'DEVIN_PLUGIN_INVALID'});delete process.env.OPENCRAWL_TOKEN;
  process.env.OPENCRAWL_AUTH='replicas-workspace';await expect(f.start()).rejects.toMatchObject({code:'DEVIN_PLUGIN_INVALID'});process.env.OPENCRAWL_AUTH='devin-cloud';
  writeFileSync(join(f.bundle,'AGENTS.md'),'tampered');await expect(f.start()).rejects.toMatchObject({code:'DEVIN_PLUGIN_INVALID'});
  expect(f.calls).toHaveLength(0);expect(readCaptureConfig()).toBeNull();
 }));
 
-for(const stage of ['setup','capture'] as const)test('identity changing during '+stage+' cannot create an installation',()=>fixture(async f=>{
+for(const stage of ['setup','capture'] as const)cloudRuntimeTest('identity changing during '+stage+' cannot create an installation',()=>fixture(async f=>{
  f.changeDuringSetup(stage);
  await expect(f.start()).rejects.toMatchObject({code:stage==='setup'?'SETUP_SCOPE_CHANGED':'DEVIN_IDENTITY_MISMATCH'});
  expect(readCaptureConfig()).toBeNull();expect(f.observations).toHaveLength(0);
 }));
 
-test('another authenticated session in the same organization cannot inherit a previous VM profile',()=>fixture(async f=>{
+cloudRuntimeTest('another authenticated session in the same organization cannot inherit a previous VM profile',()=>fixture(async f=>{
  await f.start();const before=readFileSync(join(captureDir(),'config.json'),'utf8'),count=f.observations.length;
  f.setSession('devin-next-vm');await expect(f.start('devin-next-vm')).rejects.toMatchObject({code:'DEVIN_IDENTITY_MISMATCH'});
  expect(readFileSync(join(captureDir(),'config.json'),'utf8')).toBe(before);expect(f.observations).toHaveLength(count);
 }));
 
-test('interrupted server publication resumes the same installation and rejects foreign native activation',()=>fixture(async f=>{
+cloudRuntimeTest('interrupted server publication resumes the same installation and rejects foreign native activation',()=>fixture(async f=>{
  f.failPublish(true);await expect(f.start()).rejects.toMatchObject({code:'SETUP_UNAVAILABLE'});const initial=readCaptureConfig()!;
  f.failPublish(false);await f.start();expect(readCaptureConfig()?.installationId).toBe(initial.installationId);
  const context=pluginHookContext(f.api,'devin');expect(context).not.toBeNull();
