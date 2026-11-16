@@ -2,16 +2,16 @@ import {test,expect} from 'bun:test';
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync,existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,dirname,resolve} from 'node:path';
-import {ChildProcess,type spawnSync,type spawn,type SpawnSyncReturns} from 'node:child_process';
+import {ChildProcess,spawnSync as executeSync,type spawnSync,type spawn,type SpawnSyncReturns} from 'node:child_process';
 import {launchAgent,systemdUnit,windowsTaskScript,installCaptureDaemon,uninstallCaptureDaemon,ensureCaptureDaemon} from '../src/capture/daemon-service.ts';
 import {applyDaemonEnvironment} from '../src/capture/daemon-environment.ts';
 import {captureDir,type CaptureConfig} from '../src/capture/runtime.ts';
-import {atomicJson,configDir} from '../src/session.ts';
+import {atomicJson,configDir,withSessionLock} from '../src/session.ts';
 import {hash} from '../src/capture/parse.ts';
 import {CliError} from '../src/oauth.ts';
 
 const outcome=(status=0,stdout='',stderr=''):SpawnSyncReturns<Buffer>=>({pid:0,output:[null,Buffer.from(stdout),Buffer.from(stderr)],stdout:Buffer.from(stdout),stderr:Buffer.from(stderr),status,signal:null});
-const runner=(fn:(command:string,args:string[])=>SpawnSyncReturns<Buffer>)=>((command:string,args?:readonly string[])=>fn(command,[...(args??[])])) as typeof spawnSync;
+const runner=(fn:(command:string,args:string[],options?:{timeout?:number})=>SpawnSyncReturns<Buffer>)=>((command:string,args?:readonly string[],options?:{timeout?:number})=>fn(command,[...(args??[])],options)) as typeof spawnSync;
 const forbidden=runner(()=>{throw Error('Unexpected supervisor invocation');});
 async function fixture(run:(f:{root:string,config:CaptureConfig,label:string,receipt:string,unit:(platform:'linux'|'darwin')=>string})=>Promise<void>|void){
   const root=mkdtempSync(join(tmpdir(),'opencrawl-service-unit-')),before={...process.env};
@@ -285,18 +285,18 @@ test('Mac missing job with stale receipt bootstraps; changed owned definition ex
   const run=runner((_command,args)=>{calls.push(args[0]!);if(args[0]==='print')return loaded?outcome(0,'path = '+path):outcome(113,'','Could not find service');if(args[0]==='bootstrap'){loaded=true;return outcome();}if(args[0]==='bootout'){loaded=false;return outcome();}throw Error('Unexpected command');});
   await installCaptureDaemon(f.config,{home:f.root,platform:'darwin',run});expect(calls).toEqual(['print','bootstrap']);
   const next={...f.config,command:[join(f.root,'new selected CLI')]};atomicJson(join(captureDir(),'config.json'),next);calls.length=0;
-  await installCaptureDaemon(next,{home:f.root,platform:'darwin',run});expect(calls).toEqual(['print','bootout','bootstrap']);expect(readFileSync(path,'utf8')).toBe(launchAgent(next));
+  await installCaptureDaemon(next,{home:f.root,platform:'darwin',run});expect(calls).toEqual(['print','bootout','print','bootstrap']);expect(readFileSync(path,'utf8')).toBe(launchAgent(next));
  }finally{if(uid)Object.defineProperty(process,'getuid',uid);else delete process.getuid;}
 }));
 
-test('Mac kickstart failure retains exact registration and safe actionable diagnostics',()=>fixture(async f=>{
+for(const timeout of [false,true])test(`Mac kickstart ${timeout?'timeout':'exit'} retains exact registration and safe actionable diagnostics`,()=>fixture(async f=>{
  const uid=Object.getOwnPropertyDescriptor(process,'getuid');Object.defineProperty(process,'getuid',{configurable:true,value:()=>501});
  try{
   const path=f.unit('darwin'),bytes=ownedUnit(path,f.config,'darwin');atomicJson(f.receipt,{kind:'launchd',status:'installed',label:f.label,path});
   const calls:string[]=[];const generation=join(captureDir(),'daemon','generation.json');atomicJson(generation,{generation:'existing-worker'});const generationBefore=readFileSync(generation,'utf8');
-  await expect(installCaptureDaemon(f.config,{home:f.root,platform:'darwin',run:runner((_command,args)=>{calls.push(args[0]!);return args[0]==='print'?outcome(0,'path = '+path):outcome(5,'private-output','private-error');})})).rejects.toMatchObject({code:'CAPTURE_SUPERVISION_FAILED'});
+  await expect(installCaptureDaemon(f.config,{home:f.root,platform:'darwin',run:runner((_command,args)=>{calls.push(args[0]!);return args[0]==='print'?outcome(0,'path = '+path):timeout?{...outcome(),status:null,signal:'SIGTERM',error:Object.assign(Error('private-error'),{code:'ETIMEDOUT'})}:outcome(5,'private-output','private-error');})})).rejects.toMatchObject({code:'CAPTURE_SUPERVISION_FAILED'});
   expect(calls).toEqual(['print','kickstart']);expect(readFileSync(path,'utf8')).toBe(bytes);expect(readFileSync(generation,'utf8')).toBe(generationBefore);
-  const receipt=readFileSync(f.receipt,'utf8');expect(JSON.parse(receipt)).toMatchObject({status:'failed',supervised:false,operations:[{operation:'print',exitStatus:0},{operation:'kickstart',exitStatus:5}]});expect(receipt).not.toContain('private-');
+  const receipt=readFileSync(f.receipt,'utf8');expect(JSON.parse(receipt)).toMatchObject({status:'failed',supervised:false,operations:[{operation:'print',exitStatus:0},{operation:'kickstart',exitStatus:timeout?null:5,signal:timeout?'SIGTERM':null,errorCode:timeout?'ETIMEDOUT':null}]});expect(receipt).not.toContain('private-');
  }finally{if(uid)Object.defineProperty(process,'getuid',uid);else delete process.getuid;}
 }));
 
@@ -323,3 +323,139 @@ for(const mode of ['unknown','foreign','changed-config','changed-generation'] as
   expect(calls).toEqual(mode==='changed-generation'?['print','kickstart']:['print']);
  }finally{if(uid)Object.defineProperty(process,'getuid',uid);else delete process.getuid;}
 }));
+
+
+async function macReplacement(run:(f:{config:CaptureConfig,path:string,receipt:string,generation:string,queue:string,label:string,home:string,original:string,receiptBefore:string,generationBefore:string})=>Promise<void>){
+  return fixture(async f=>{
+    const uid=Object.getOwnPropertyDescriptor(process,'getuid');Object.defineProperty(process,'getuid',{configurable:true,value:()=>501});
+    try{
+      const path=f.unit('darwin'),original=ownedUnit(path,f.config,'darwin');
+      atomicJson(f.receipt,{kind:'launchd',status:'installed',supervised:true,label:f.label,path});
+      const generation=join(captureDir(),'daemon','generation.json');atomicJson(generation,{generation:'old-worker'});
+      const queue=join(captureDir(),'queue','retained.json');mkdirSync(dirname(queue));writeFileSync(queue,'retained-private-queue');
+      const config={...f.config,command:[join(f.root,'versions','new','opencrawl')]};atomicJson(join(captureDir(),'config.json'),config);
+      await run({config,path,receipt:f.receipt,generation,queue,label:f.label,home:f.root,original,receiptBefore:readFileSync(f.receipt,'utf8'),generationBefore:readFileSync(generation,'utf8')});
+    }finally{if(uid)Object.defineProperty(process,'getuid',uid);else delete process.getuid;}
+  });
+}
+
+test('Mac changed executable waits for exact service removal and real kernel release before one bootstrap',()=>macReplacement(async f=>{
+  let release!:()=>void,ready!:()=>void;const started=new Promise<void>(r=>{ready=r;});
+  const oldWorker=withSessionLock('capture:daemon',async()=>{ready();await new Promise<void>(r=>{release=r;});},0);
+  await started;
+  let stopping=false,observations=0,bootstrapLock:Promise<boolean>|undefined;const calls:string[]=[];
+  const before=readFileSync(join(captureDir(),'config.json'),'utf8');
+  try{
+    const service=await installCaptureDaemon(f.config,{home:f.home,platform:'darwin',run:runner((_command,args)=>{
+      calls.push(args[0]!);
+      if(args[0]==='print'){
+        if(!stopping)return outcome(0,'path = '+f.path);
+        observations++;
+        expect(readFileSync(f.path,'utf8')).toBe(f.original);expect(readFileSync(f.generation,'utf8')).toBe(f.generationBefore);
+        if(observations===4)release();
+        return observations<=2?outcome(0,'path = '+f.path+'\nstate = removing'):outcome(113,'','Could not find service');
+      }
+      if(args[0]==='bootout'){stopping=true;return outcome();}
+      if(args[0]==='bootstrap'){
+        expect(observations).toBeGreaterThanOrEqual(4);
+        expect(readFileSync(f.path,'utf8')).toBe(launchAgent(f.config));
+        // Try the real lock at the exact bootstrap call, not only after install.
+        bootstrapLock=withSessionLock('capture:daemon',async()=>{},0).then(()=>true,()=>false);
+        return outcome();
+      }
+      throw Error('Unexpected supervisor command');
+    })});
+    expect(service.supervised).toBe(true);expect(await bootstrapLock).toBe(true);
+    expect(calls.filter(x=>x==='bootout')).toHaveLength(1);expect(calls.filter(x=>x==='bootstrap')).toHaveLength(1);
+    expect(readFileSync(f.generation,'utf8')).not.toBe(f.generationBefore);
+    expect(readFileSync(join(captureDir(),'config.json'),'utf8')).toBe(before);
+    expect(readFileSync(f.queue,'utf8')).toBe('retained-private-queue');
+  }finally{release();await oldWorker;}
+}));
+
+for(const failure of ['bootout','unknown','signaled','wrong-absence','foreign'] as const)test(`Mac replacement ${failure} cannot bootstrap or rotate the old generation`,()=>macReplacement(async f=>{
+  let stopping=false;const calls:string[]=[];
+  const code=failure==='foreign'?'CAPTURE_SUPERVISION_CONFLICT':'CAPTURE_SUPERVISION_FAILED';
+  await expect(installCaptureDaemon(f.config,{home:f.home,platform:'darwin',run:runner((_command,args)=>{
+    calls.push(args[0]!);
+    if(args[0]==='print'){
+      if(!stopping)return outcome(0,'path = '+f.path);
+      if(failure==='foreign')return outcome(0,'path = /unrelated/foreign.plist');
+      if(failure==='signaled')return {...outcome(113,'','Could not find service'),signal:'SIGTERM'};
+      if(failure==='wrong-absence')return outcome(113,'','Private unrelated error');
+      return {...outcome(),status:null,error:Object.assign(Error('private-error'),{code:'ETIMEDOUT'})};
+    }
+    if(args[0]==='bootout'){stopping=true;return outcome(failure==='bootout'?5:0);}
+    throw Error('Must not bootstrap');
+  })})).rejects.toMatchObject({code});
+  expect(calls).toEqual(failure==='bootout'?['print','bootout']:['print','bootout','print']);
+  expect(readFileSync(f.path,'utf8')).toBe(f.original);expect(readFileSync(f.generation,'utf8')).toBe(f.generationBefore);
+  expect(readFileSync(f.queue,'utf8')).toBe('retained-private-queue');
+  const receipt=readFileSync(f.receipt,'utf8');expect(receipt).not.toContain('private-error');expect(receipt).not.toContain('Private unrelated error');
+  if(failure==='foreign')expect(receipt).toBe(f.receiptBefore);else expect(JSON.parse(receipt)).toMatchObject({status:'failed',supervised:false});
+}));
+
+for(const changed of ['consent','owner','roots','generation','plist','receipt'] as const)test(`Mac replacement preserves a concurrent ${changed} change while removal is pending`,()=>macReplacement(async f=>{
+  let stopping=false,modified=false;const calls:string[]=[];
+  await expect(installCaptureDaemon(f.config,{home:f.home,platform:'darwin',run:runner((_command,args)=>{
+    calls.push(args[0]!);
+    if(args[0]==='bootout'){stopping=true;return outcome();}
+    if(args[0]!=='print')throw Error('Must not bootstrap');
+    if(stopping&&!modified){modified=true;queueMicrotask(()=>{
+      if(changed==='generation')atomicJson(f.generation,{generation:'successor'});
+      else if(changed==='plist')writeFileSync(f.path,'successor-owned-service');
+      else if(changed==='receipt')atomicJson(f.receipt,{kind:'successor'});
+      else atomicJson(join(captureDir(),'config.json'),{...f.config,...(changed==='consent'?{disabled:true,backgroundStartup:false}:changed==='owner'?{owner:{tenantId:'other',userId:'other'}}:{roots:{...f.config.roots,codex:join(f.home,'other-root')}})});
+    });}
+    return outcome(0,'path = '+f.path);
+  })})).rejects.toMatchObject({code:changed==='plist'||changed==='receipt'?'CAPTURE_SUPERVISION_CONFLICT':'CAPTURE_CONFIG_CHANGED'});
+  expect(calls).toEqual(['print','bootout','print']);expect(modified).toBe(true);
+  expect(readFileSync(f.path,'utf8')).toBe(changed==='plist'?'successor-owned-service':f.original);
+  expect(readFileSync(f.generation,'utf8')).toBe(changed==='generation'?JSON.stringify({generation:'successor'})+'\n':f.generationBefore);
+  expect(readFileSync(f.receipt,'utf8')).toBe(changed==='receipt'?JSON.stringify({kind:'successor'})+'\n':f.receiptBefore);
+  expect(readFileSync(f.queue,'utf8')).toBe('retained-private-queue');
+}));
+
+test('Mac replacement never starts through a worker that retains the singleton',()=>macReplacement(async f=>{
+  let release!:()=>void,ready!:()=>void;const started=new Promise<void>(r=>{ready=r;});
+  const oldWorker=withSessionLock('capture:daemon',async()=>{ready();await new Promise<void>(r=>{release=r;});},0);await started;
+  let stopping=false,observations=0;
+  try{
+    const startedAt=performance.now();
+    await expect(installCaptureDaemon(f.config,{home:f.home,platform:'darwin',run:runner((_command,args)=>{
+      if(args[0]==='bootout'){stopping=true;return outcome();}
+      if(args[0]!=='print')throw Error('Must not bootstrap over a live worker');
+      if(stopping)observations++;
+      return stopping?outcome(113,'','Could not find service'):outcome(0,'path = '+f.path);
+    })})).rejects.toMatchObject({code:'CAPTURE_SUPERVISION_TIMEOUT'});
+    expect(performance.now()-startedAt).toBeGreaterThanOrEqual(30_000);expect(observations).toBeGreaterThan(1);
+    expect(readFileSync(f.path,'utf8')).toBe(f.original);expect(readFileSync(f.generation,'utf8')).toBe(f.generationBefore);
+    expect(JSON.parse(readFileSync(f.receipt,'utf8'))).toMatchObject({status:'failed',supervised:false});
+    expect(readFileSync(f.queue,'utf8')).toBe('retained-private-queue');
+  }finally{release();await oldWorker;}
+}),35_000);
+
+
+test('Mac repeat setup accepts a restart acknowledgement after the short inspection deadline',()=>fixture(async f=>{
+  const uid=Object.getOwnPropertyDescriptor(process,'getuid');Object.defineProperty(process,'getuid',{configurable:true,value:()=>501});
+  try{
+    const path=f.unit('darwin'),bytes=ownedUnit(path,f.config,'darwin');atomicJson(f.receipt,{kind:'launchd',status:'installed',label:f.label,path});
+    const generation=join(captureDir(),'daemon','generation.json');atomicJson(generation,{generation:'existing'});
+    const beforeGeneration=readFileSync(generation,'utf8'),beforeConfig=readFileSync(join(captureDir(),'config.json'),'utf8');
+    const calls:string[]=[];let elapsed=0;
+    const service=await installCaptureDaemon(f.config,{home:f.root,platform:'darwin',run:runner((command,args,options)=>{
+      expect(command).toBe('launchctl');calls.push(args[0]!);
+      if(args[0]==='print'){expect(options?.timeout).toBe(5000);return outcome(0,'path = '+path);}
+      if(args[0]!=='kickstart')throw Error('An identical definition must not be removed');
+      expect(args).toEqual(['kickstart','-k','gui/501/'+f.label]);
+      // A real disposable process acknowledges after six seconds. Forward the
+      // actual production deadline: the former five-second limit kills it.
+      const started=performance.now();
+      const result=executeSync(process.execPath,['-e','setTimeout(()=>process.stdout.write("ready"),6000)'],{stdio:'pipe',timeout:options?.timeout});
+      elapsed=performance.now()-started;expect(result.stdout.toString()).toBe('ready');return result;
+    })});
+    expect(service).toMatchObject({status:'installed',supervised:true});expect(elapsed).toBeGreaterThan(5000);
+    expect(calls).toEqual(['print','kickstart']);expect(readFileSync(path,'utf8')).toBe(bytes);
+    expect(readFileSync(generation,'utf8')).toBe(beforeGeneration);expect(readFileSync(join(captureDir(),'config.json'),'utf8')).toBe(beforeConfig);
+  }finally{if(uid)Object.defineProperty(process,'getuid',uid);else delete process.getuid;}
+}),15_000);
