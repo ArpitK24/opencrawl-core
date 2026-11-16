@@ -53,6 +53,7 @@ test('history, old events, unrelated clients, other installations, hooks and for
     {events:[{...f.batch().events[0],timestamp:null}]},
     {events:[{...f.batch().events[0],kind:'hook'}]},
     {events:[{...f.batch().events[0],data:{role:'system',content:f.proof.marker}}]},
+    {events:[{...f.batch().events[0],data:{role:'assistant',content:[{type:'thinking',thinking:f.proof.marker}]}}]},
     {events:[{...f.batch().events[0],data:{role:'user',content:[{type:'tool_result',tool_use_id:'terminal',content:f.proof.marker}]}}]},
   ])await f.setup.session(owner,f.batch(changed));
   await assert.rejects(f.setup.session({...owner,userId:'bob'},f.batch()),{status:403});
