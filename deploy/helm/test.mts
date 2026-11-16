@@ -30,7 +30,8 @@ test('upstream Airbyte references only supplied credentials in bundled and exter
     for(const external of [false,true])for(const tls of [false,true]){
       const c=configuration({...input,databases:{airbyte:{...(external?{mode:'external',host:'pg.example',user:'airbyte',name:'airbyte',existingSecret:'external-db'}:{}),tls}}});
       const values=airbyteValues(c,'opencrawl-credentials','postgres','synthetic-test-only'),path=join(dir,'airbyte.json');writeFileSync(path,JSON.stringify({airbyte:values}));
-      const render=spawnSync(process.env.HELM||'helm',['template','sample',wrapper,'-f',path],{encoding:'utf8',maxBuffer:16*1024*1024});assert.equal(render.status,0,render.stderr);
+      const render=spawnSync(process.env.HELM||'helm',['template',c.release+'-airbyte',wrapper,'-f',path],{encoding:'utf8',maxBuffer:16*1024*1024});assert.equal(render.status,0,render.stderr);
+      const serviceHost=new URL(values.global.airbyteUrl).hostname;assert.ok(render.stdout.includes('name: '+serviceHost+'\n'),'Configured API host must match the upstream Service');
       assert.ok(render.stdout.includes('DATABASE_URL: '+JSON.stringify(values.global.database.jdbcUrl)));
       for(const document of render.stdout.split('\n---'))for(const key of ['DATABASE_URL','CONFIG_DATABASE_REPLICA_URL','POSTGRES_TLS_DISABLE_HOST_VERIFICATION','SQL_TLS_DISABLE_HOST_VERIFICATION'])assert.ok([...document.matchAll(new RegExp('^\\s*- name: '+key+'$','gm'))].length<=1,`Duplicate ${key} breaks Helm upgrades`);
       let checked=0;for(const match of render.stdout.matchAll(/secretKeyRef:\s*\n\s+name: ([^\n]+)\n\s+key: ([^\n]+)/g)){
