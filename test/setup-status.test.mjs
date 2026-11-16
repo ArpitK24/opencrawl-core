@@ -60,6 +60,22 @@ test('history, old events, unrelated clients, other installations, hooks and for
   assert.equal((await f.setup.verify(owner,selection)).proof.state,'waiting_capture');assert.equal(f.searches,0);
 });
 
+test('plugin preparation is an optional local observation, separate from activation and server proof',async()=>{
+  const f=await fixture();
+  assert.equal((await f.setup.read(owner)).pluginStateSupported,true);
+  assert.equal((await f.setup.read(owner)).installations[0].clients[0].pluginState,undefined,'old observations remain unclassified');
+  await f.setup.installation(owner,registration([observation('codex',{installed:false,pluginState:'prepared'})]));
+  let checked=await f.setup.verify(owner,selection);
+  assert.equal(checked.installed,false);assert.equal(checked.pluginState,'prepared');assert.equal(checked.proof.state,'waiting_capture');
+  assert.equal(checked.mcp.state,'pending');
+  await f.setup.session(owner,f.batch());f.setHits([f.hit()]);f.setFetched(f.hit());
+  checked=await f.setup.verify(owner,selection);
+  assert.equal(checked.proof.state,'verified');assert.equal(checked.installed,false);assert.equal(checked.pluginState,'prepared','server proof never promotes native activation');
+  await assert.rejects(f.setup.installation(owner,registration([observation('codex',{pluginState:'verified'})])),{status:400});
+  await f.setup.installation(owner,registration([observation()]));
+  assert.equal((await f.setup.read(owner)).installations[0].clients[0].pluginState,undefined,'a legacy update does not retain a stale prepared report');
+});
+
 test('a new captured event waits for exact authorized search AND fetch; first win verifies only that client',async()=>{
   const f=await fixture();await f.setup.session(owner,f.batch());
   let checked=await f.setup.verify(owner,selection);assert.equal(checked.proof.state,'waiting_index');

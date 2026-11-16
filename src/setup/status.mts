@@ -4,12 +4,12 @@ import {sessionScope} from '../sessions/ingest.mjs';
 import {isSessionHarness} from '../sessions/types.mjs';
 import type {Principal,ObjectStore,SessionBatch,SessionEvent} from '../sessions/types.mjs';
 import type {createWorkspaceSearch} from '../search/workspace.mjs';
-import {SETUP_CLIENTS} from './types.mjs';
+import {SETUP_CLIENTS,SETUP_PLUGIN_STATES} from './types.mjs';
 import type {SetupStatus,SetupClientStatus,SetupInstallation,SetupProof,SetupHumanTask} from './types.mjs';
 
 const identifier=z.string().regex(/^[A-Za-z0-9_.:-]{1,200}$/);
 export const setupInstallationSchema=z.strictObject({installationId:identifier,machine:z.strictObject({id:identifier,label:z.string().trim().min(1).max(100)}),clients:z.array(z.strictObject({
-  client:z.enum(SETUP_CLIENTS),installed:z.boolean(),forward:z.boolean(),history:z.enum(['skip','import']),
+  client:z.enum(SETUP_CLIENTS),installed:z.boolean(),pluginState:z.enum(SETUP_PLUGIN_STATES).optional(),forward:z.boolean(),history:z.enum(['skip','import']),
   historyProgress:z.strictObject({state:z.enum(['not_started','running','complete','failed']),completed:z.number().int().nonnegative(),total:z.number().int().nonnegative().optional(),error:z.string().max(240).optional()}),
   hookTrust:z.enum(['unknown','pending','trusted','not_required']),
 })).min(1).max(SETUP_CLIENTS.length)}).refine(value=>new Set(value.clients.map(c=>c.client)).size===value.clients.length,'Duplicate clients');
@@ -136,7 +136,7 @@ export function createSetupStatus({store,prefix='capture-v1',search,now=()=>new 
     if(proof.state==='waiting_capture'&&proof.marker)humanTasks.push({id:client.client+':native-event',kind:'native_event',client:client.client,title:'Record one new native message',instruction:`In this client’s current native conversation, include ${proof.marker} in a normal assistant message, then let its installed capture hooks run. Do not write a synthetic transcript or upload a test batch.`});
     return {...observation,...(evidence?.capture?{captureObservedAt:evidence.capture.observedAt}:{}),mcp,proof,humanTasks};
   }
-  const view=(data:StoredStatus):SetupStatus=>({...data,installations:data.installations.map(i=>({...i,clients:i.clients.map(publicClient)}))});
+  const view=(data:StoredStatus):SetupStatus=>({...data,pluginStateSupported:true,installations:data.installations.map(i=>({...i,clients:i.clients.map(publicClient)}))});
   function fresh(event:SessionEvent,since:string) {
     const time=instant(event.timestamp);return Number.isFinite(time)&&time>=instant(since)&&time<=now().getTime()+60_000;
   }

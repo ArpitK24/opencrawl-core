@@ -13,12 +13,12 @@ import {hookRunner} from '../src/hook-runner.ts';
 import {applySelectionKey,type SelectionCursor} from '../src/setup/select.ts';
 import type {SelectionScreen} from '../src/setup/select.ts';
 type ClientStatus=SetupServerStatus['installations'][number]['clients'][number];
-async function fixture(run:(api:string,dir:string,observations:unknown[],setCodex:(patch:Partial<ClientStatus>)=>void)=>Promise<void>){
+async function fixture(run:(api:string,dir:string,observations:unknown[],setCodex:(patch:Partial<ClientStatus>)=>void)=>Promise<void>,pluginStateSupported=false){
  const dir=mkdtempSync(join(tmpdir(),'opencrawl-setup-flow-')),saved={...process.env},observations:unknown[]=[];let installations:SetupServerStatus['installations']=[],codexPatch:Partial<ClientStatus>={};
  const server=createServer(async(req,res)=>{
   const chunks=[];for await(const chunk of req)chunks.push(chunk);const body=chunks.length?JSON.parse(Buffer.concat(chunks).toString()):{};
   let data:unknown;
-  if(req.url==='/api/setup')data={schemaVersion:1,scope:{tenantId:'tenant',userId:'user'},firstWin:null,installations:installations.map(row=>({...row,clients:row.clients.map(client=>client.client==='codex'?{...client,...codexPatch}:client)}))};
+  if(req.url==='/api/setup')data={schemaVersion:1,scope:{tenantId:'tenant',userId:'user'},...(pluginStateSupported?{pluginStateSupported:true}:{}),firstWin:null,installations:installations.map(row=>({...row,clients:row.clients.map(client=>client.client==='codex'?{...client,...codexPatch}:client)}))};
   else if(req.url==='/api/setup/installation'){observations.push(body);installations=[{...body,clients:body.clients.map((client:Record<string,unknown>)=>({...client,humanTasks:[]}))}];data=installations[0];}
   else if(req.url==='/api/sessions/identity')data={principal:{tenantId:'tenant',userId:'user'},capabilities:{harnesses:['claude-code','codex','cursor','antigravity']}};
   else {res.writeHead(404);res.end();return;}
@@ -81,6 +81,17 @@ test('setup observations request native hook trust only for clients with a trust
  const clients=(observations[0] as {clients:{client:string;hookTrust:string}[]}).clients;
  expect(Object.fromEntries(clients.map(client=>[client.client,client.hookTrust]))).toEqual({'claude-code':'not_required',codex:'pending',cursor:'not_required',antigravity:'not_required'});
 }));
+
+test('publishing preserves prepared and failed plugin states only when the server supports them',async()=>{
+ for(const supported of [false,true])await fixture(async(api,_dir,observations)=>{
+  const selected={'claude-code':true,codex:true,cursor:true,antigravity:true,'grok-bot':false};
+  await publishSetup({schemaVersion:1,scope:{api,tenantId:'tenant',userId:'user'},installationId:'fixture-installation',machine:{id:'fixture-machine',label:'fixture'},acceptedAt:new Date().toISOString(),selections:{plugins:selected,forward:{},history:{}},pluginResults:[{client:'claude-code',status:'pending'},{client:'codex',status:'unchanged'},{client:'cursor',status:'prepared'},{client:'antigravity',status:'error'}]});
+  const clients=(observations[0] as {clients:{client:string;installed:boolean;pluginState?:string}[]}).clients;
+  expect(Object.fromEntries(clients.map(client=>[client.client,client.installed]))).toEqual({'claude-code':false,codex:true,cursor:false,antigravity:false,'grok-bot':false});
+  if(supported)expect(Object.fromEntries(clients.map(client=>[client.client,client.pluginState]))).toEqual({'claude-code':'pending',codex:'installed',cursor:'prepared',antigravity:'error','grok-bot':'not_selected'});
+  else expect(clients.every(client=>!Object.hasOwn(client,'pluginState'))).toBe(true);
+ },supported);
+});
 
 const nativeUnknown=async():Promise<CodexHookReview>=>({state:'unknown',total:8,pending:null,disabled:null});
 const nativeDisabled=async():Promise<CodexHookReview>=>({state:'observed',total:8,pending:0,disabled:8});

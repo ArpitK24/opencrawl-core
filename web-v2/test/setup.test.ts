@@ -33,6 +33,23 @@ test('native MCP and capture evidence remain visible before CLI activation is re
   assert.equal(clientNeedsAgent(unbound),true);
   assert.equal(clientSummary(unbound).label,'MCP verification pending');
 });
+test('prepared plugin files have an activation step without becoming installed or hiding live evidence',()=>{
+  const prepared:Client={...client,client:'cursor',installed:false,pluginState:'prepared',mcp:{state:'pending'},proof:{state:'pending'}};
+  assert.equal(clientSummary(prepared).label,'Activation pending');
+  assert.equal(pluginLabel(prepared),'Files ready, activation not reported');
+  assert.equal(clientNeedsAgent(prepared),true);
+  assert.equal(clientSummary({...prepared,history:'import'}).label,'Activation pending');
+  const searchOnly={...prepared,forward:false,proof:{state:'not_selected' as const}};
+  assert.equal(mcpLabel(searchOnly),'Sign-in required');assert.equal(clientNeedsAgent(searchOnly),true);
+  assert.equal(clientNeedsAgent({...searchOnly,mcp:{state:'observed'}}),false);
+  const verified={...prepared,mcp:client.mcp,proof:client.proof};
+  assert.equal(clientSummary(verified).label,'Session searchable');assert.equal(clientNeedsAgent(verified),false);
+  assert.equal(pluginLabel(verified),'Files ready, activation not reported');assert.equal(verified.installed,false);
+  const legacy={...prepared,pluginState:undefined};
+  assert.equal(pluginLabel(legacy),'Installation not reported');assert.equal(clientSummary(legacy).label,'Installation not reported');
+  assert.equal(pluginLabel({...legacy,pluginState:'not_selected'}),'Not selected');
+  assert.equal(clientNeedsAgent({...searchOnly,pluginState:'error'}),true);
+});
 test('history import progress stays distinct from live session verification',()=>{
   assert.equal(historyLabel({...client,history:'import',proof:{state:'pending'},historyProgress:{state:'complete',completed:12,total:12}}),'Import complete, 12 of 12 processed');
   assert.equal(clientSummary({...client,proof:{state:'waiting_index'}}).label,'Waiting for search');

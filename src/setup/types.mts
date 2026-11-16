@@ -1,9 +1,13 @@
 /** Local observations describe configuration; only server evidence verifies a client. */
 export const SETUP_CLIENTS = ['claude-code','codex','cursor','grok-bot','antigravity','claude-desktop','chatgpt'] as const;
 export type SetupClient = typeof SETUP_CLIENTS[number];
+export const SETUP_PLUGIN_STATES = ['not_selected','pending','prepared','installed','error'] as const;
+export type SetupPluginState = typeof SETUP_PLUGIN_STATES[number];
 export interface SetupHistoryProgress {state:'not_started'|'running'|'complete'|'failed';completed:number;total?:number;error?:string}
 export interface SetupClientObservation {
   client:SetupClient; installed:boolean; forward:boolean; history:'skip'|'import';
+  /** Latest CLI observation; prepared files do not establish native activation. */
+  pluginState?:SetupPluginState;
   historyProgress:SetupHistoryProgress; hookTrust:'unknown'|'pending'|'trusted'|'not_required';
 }
 export interface SetupProof {
@@ -23,6 +27,8 @@ export interface SetupInstallation {
 }
 export interface SetupStatus {
   schemaVersion:1;scope:{tenantId:string;userId:string};
+  /** Older servers reject unknown observation fields; clients negotiate this field. */
+  pluginStateSupported?:true;
   firstWin:{installationId:string;client:SetupClient;verifiedAt:string}|null;
   installations:SetupInstallation[];
 }

@@ -43,7 +43,7 @@ test('Setup keeps each client and history selection independent after the first 
   const cursor=page.locator('.oc-status-row').filter({has:page.getByRole('heading',{name:'Cursor',exact:true})});
   await expect(cursor.getByText('History only',{exact:true})).toBeVisible();
   await cursor.getByText('Connection and import status').click();
-  await expect(cursor.getByText('Not installed',{exact:true})).toBeVisible();
+  await expect(cursor.getByText('Installation not reported',{exact:true})).toBeVisible();
   await expect(cursor.getByText('Sign-in required',{exact:true})).toHaveCount(0);
   const antigravity=page.locator('.oc-status-row').filter({has:page.getByRole('heading',{name:'Antigravity',exact:true})});
   await antigravity.getByText('Connection and import status').click();
@@ -60,6 +60,23 @@ test('failed status reads retain the page and retry without blocking navigation'
   await page.request.post('/__test/state',{data:{setupError:false,setup:empty}});
   await page.getByRole('button',{name:'Try again',exact:true}).click();
   await expect(page.getByText('No installations yet')).toBeVisible();
+});
+
+for(const viewport of [{name:'desktop',width:1280,height:900},{name:'mobile',width:390,height:844}])test(`prepared plugin files show the native activation action (${viewport.name})`,async({page},testInfo)=>{
+  await page.setViewportSize({width:viewport.width,height:viewport.height});
+  const installation=partial.installations[0]!;
+  const cursor:SetupStatus['installations'][number]['clients'][number]={...installation.clients[2]!,pluginState:'prepared',forward:true,history:'skip',historyProgress:{state:'not_started',completed:0},proof:{state:'pending'}};
+  await start(page,{...empty,installations:[{...installation,clients:[cursor]}]});
+  const row=page.locator('.oc-status-row');
+  await expect(row.getByText('Activation pending',{exact:true})).toBeVisible();
+  await row.getByText('Connection and import status').click();
+  await expect(row.getByText('Files ready, activation not reported',{exact:true})).toBeVisible();
+  await expect(row.getByText('Open or reload Cursor, then continue setup in that client.',{exact:false})).toBeVisible();
+  await expect(row.getByText('Not installed',{exact:true})).toHaveCount(0);
+  await expect(row.getByText('Installed',{exact:true})).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'Continue with your agent',exact:true})).toBeVisible();
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth)).toBe(false);
+  await page.screenshot({path:testInfo.outputPath('prepared-plugin.png'),fullPage:true});
 });
 
 test('native MCP verification stays visible while CLI activation reporting is pending',async({page})=>{

@@ -34,8 +34,11 @@ export function clientSummary(client:Client):{label:string;tone:'neutral'|'succe
   if(!client.installed&&client.forward&&client.proof.state==='waiting_index')return {label:'Waiting for search',tone:'neutral'};
   if(!client.installed&&client.forward&&client.proof.state==='waiting_capture')return {label:'Waiting for a new session',tone:'neutral'};
   if(!client.forward&&client.mcp.state!=='pending')return {label:'Future recording off',tone:'neutral'};
+  if(!client.installed&&client.pluginState==='prepared')return {label:'Activation pending',tone:'neutral'};
+  if(!client.installed&&client.pluginState==='error')return {label:'Installation needs attention',tone:'danger'};
+  if(!client.installed&&client.pluginState==='pending')return {label:'Installation pending',tone:'neutral'};
   if(!client.installed&&client.history==='import')return {label:'History only',tone:'neutral'};
-  if(!client.installed)return {label:'Not installed',tone:'neutral'};
+  if(!client.installed)return {label:client.pluginState==='not_selected'?'Not selected':'Installation not reported',tone:'neutral'};
   if(!client.forward)return {label:'Future recording off',tone:'neutral'};
   if(client.proof.state==='verified')return {label:'Verified',tone:'success'};
   if(client.proof.state==='waiting_index')return {label:'Waiting for search',tone:'neutral'};
@@ -44,16 +47,21 @@ export function clientSummary(client:Client):{label:string;tone:'neutral'|'succe
 }
 export function pluginLabel(client:Client):string {
   if(client.installed)return 'Installed';
-  return client.captureObservedAt||client.mcp.state!=='pending'||client.proof.state==='verified'?'Activation not reported':'Not installed';
+  if(client.pluginState==='prepared')return 'Files ready, activation not reported';
+  if(client.pluginState==='pending')return 'Installation pending';
+  if(client.pluginState==='error')return 'Installation needs attention';
+  if(client.pluginState==='not_selected')return 'Not selected';
+  return client.captureObservedAt||client.mcp.state!=='pending'||client.proof.state==='verified'?'Activation not reported':'Installation not reported';
 }
 export function mcpLabel(client:Client):string {
   if(client.mcp.state==='authenticated')return 'Connected';
   if(client.mcp.state==='observed')return client.forward?'Connection observed, client verification pending':'Connection observed, capture not selected';
-  return client.installed||client.forward||client.proof.id?'Sign-in required':'Not selected';
+  return client.installed||client.pluginState==='prepared'||client.forward||client.proof.id?'Sign-in required':'Not selected';
 }
 export function clientNeedsAgent(client:Client):boolean {
   return client.humanTasks.length>0||client.history==='import'&&client.historyProgress.state==='failed'||
-    Boolean(client.installed||client.forward||client.proof.id)&&client.mcp.state==='pending'||
+    client.pluginState==='pending'||client.pluginState==='error'||
+    Boolean(client.installed||client.pluginState==='prepared'||client.forward||client.proof.id)&&client.mcp.state==='pending'||
     client.forward&&(client.proof.state!=='verified'||client.mcp.state!=='authenticated');
 }
 export function historyLabel(client:Client):string {
@@ -84,6 +92,7 @@ function ClientRow({client}: {client:Client}) {
         <div><dt>Verification</dt><dd>{proofLabel}</dd></div>
         <div><dt>History import</dt><dd>{historyLabel(client)}</dd></div>
       </dl>
+      {client.pluginState==='prepared'&&clientNeedsAgent(client)&&<p className="muted">Open or reload {clientName(client.client)}, then continue setup in that client. Its plugin files are ready; native activation has not been reported.</p>}
       {client.history==='import'&&client.historyProgress.state==='failed'&&<Notice tone="warning">The history import stopped. Continue with your agent to resume it. {client.historyProgress.error}</Notice>}
       {client.humanTasks.length>0&&<p className="muted">Your agent will guide you through {client.humanTasks.map(task=>task.title).join(', ')}.</p>}
     </details>
