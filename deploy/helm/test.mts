@@ -9,7 +9,7 @@ import {configuration,plan,airbyteValues} from './install.mts';
 const root=dirname(fileURLToPath(import.meta.url));
 const input={context:'test',url:'https://opencrawl.example.com',image:{tag:'sha-test'}};
 test('all shipped agent tools parse without installing dependencies',()=>{
-  for(const file of ['install.mts','verify.mts','runtime/probe.mts']){const r=spawnSync(process.execPath,['--check',join(root,file)],{encoding:'utf8'});assert.equal(r.status,0,r.stderr);}
+  for(const file of ['install.mts','verify.mts','release-kit.mts','runtime/probe.mts']){const r=spawnSync(process.execPath,['--check',join(root,file)],{encoding:'utf8'});assert.equal(r.status,0,r.stderr);}
 });
 test('installation plan bundles all resources and preserves independent external choices',()=>{
   const all=configuration(input);assert.equal(plan(all).steps.length,3);

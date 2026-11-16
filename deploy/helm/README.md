@@ -11,7 +11,9 @@ Use the published self-host kit with Node 24+, Helm 3 and kubectl. No image buil
 application checkout or npm install is needed. A Kubernetes cluster, a default
 dynamic StorageClass, DNS and (for remote use) an HTTPS ingress are operator inputs.
 Use a network-policy-capable CNI. Start with `examples/bundled.json`, choose the
-explicit kubectl context, namespace, HTTPS URL and released image tag/digest.
+explicit kubectl context, namespace and HTTPS URL. The published kit's `release.json`
+supplies a tested runtime digest and matching connector revision tag. Source-checkout
+users must choose a published image explicitly.
 
 ```sh
 node install.mts --config instance.json
@@ -162,3 +164,12 @@ use your existing managed services when their durability/operations fit better.
 
 No HA, autoscaling, cluster creation, DNS ownership, certificate issuance, external
 database provisioning or automatic destructive cleanup is included in this v1.
+
+## Maintainer releases
+
+The self-host image workflow publishes both architectures from the same Git revision,
+with SBOM and provenance attestations. After required CI and staging conformance pass,
+bump the chart version and run **Release self-host kit** on main. It refuses to package
+private, missing or single-architecture images. Release assets include the chart,
+complete installer kit, image digest receipt and SHA256SUMS. Chart and runtime releases
+do not deploy or update OpenCrawl Cloud.

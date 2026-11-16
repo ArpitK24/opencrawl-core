@@ -16,10 +16,15 @@ const required=(value:unknown,label:string)=>{if(typeof value!=='string'||!value
 function merge(base:Values,extra:Values):Values {const out={...base};for(const [k,v] of Object.entries(extra)){if(['__proto__','prototype','constructor'].includes(k))fail('INVALID_CONFIG','Invalid configuration key');out[k]=v&&typeof v==='object'&&!Array.isArray(v)?merge(base[k]??{},v):v;}return out;}
 export function configuration(input:Values):Values {
   for(const key of Object.keys(input))if(!['release','namespace','context','url','image','githubConnector','storageClass','postgresql','databases','temporal','opensearch','objectStorage','airbyte','application','infrastructure'].includes(key))fail('INVALID_CONFIG',`Unknown configuration key: ${key}`);
-  const c=merge({release:'opencrawl',namespace:'opencrawl',image:{repository:'ghcr.io/getopencrawl/opencrawl-core',tag:'',digest:''},githubConnector:{repository:'ghcr.io/getopencrawl/source-github',tag:''},storageClass:'',postgresql:{enabled:true},
+  const manifestPath=join(dirname(fileURLToPath(import.meta.url)),'release.json');
+  const published=existsSync(manifestPath)?JSON.parse(readFileSync(manifestPath,'utf8')):{};
+  const c=merge({release:'opencrawl',namespace:'opencrawl',image:published.image||{repository:'ghcr.io/getopencrawl/opencrawl-core',tag:'',digest:''},githubConnector:published.githubConnector||{repository:'ghcr.io/getopencrawl/source-github',tag:''},storageClass:'',postgresql:{enabled:true},
     databases:{app:{mode:'bundled',name:'opencrawl',user:'opencrawl'},temporal:{mode:'bundled',name:'temporal',visibilityName:'temporal_visibility',user:'temporal'},airbyte:{mode:'bundled',name:'airbyte',temporalName:'airbyte_temporal',visibilityName:'airbyte_visibility',user:'airbyte'}},
     temporal:{mode:'bundled',namespace:'opencrawl',tls:{enabled:false}},opensearch:{mode:'bundled'},objectStorage:{mode:'bundled',bucket:'opencrawl',region:'us-east-1'},airbyte:{mode:'bundled',chartVersion:'2.4.0',values:{}},application:{},infrastructure:{}},input);
   name(c.release,'release');name(c.namespace,'namespace');required(c.context,'context');
+  // An explicit tag overrides the kit's default digest; do not silently keep the old image.
+  if(input.image?.tag&&!Object.hasOwn(input.image,'digest'))c.image.digest='';
+  if(input.image?.tag&&!input.githubConnector)c.githubConnector={repository:'ghcr.io/getopencrawl/source-github',tag:input.image.tag};
   const url=new URL(required(c.url,'url'));if(url.origin!==c.url||!(url.protocol==='https:'||url.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(url.hostname)))fail('INVALID_CONFIG','url must be an HTTPS origin or local HTTP origin');
   if(!c.image.tag&&!c.image.digest)fail('INVALID_CONFIG','image.tag or image.digest must identify a published runtime');
   if(c.image.digest&&!/^sha256:[a-f0-9]{64}$/.test(c.image.digest))fail('INVALID_CONFIG','image.digest must be a SHA-256 digest');
