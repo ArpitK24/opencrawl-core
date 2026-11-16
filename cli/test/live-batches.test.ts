@@ -49,6 +49,8 @@ test('a partially completed seal recovers exact output after losing source fragm
  unlinkSync(join(directory,'queue',name));recoverLiveSeals(directory);expect(queued(directory)).toEqual([]);
 }));
 
+// Windows needs headroom for 205 durable seed writes before sealing assertions.
+const burstDeadlineMs=process.platform==='win32'?15_000:5_000;
 test('live sealing respects the event bound without dropping a burst',()=>{
  const timings:{seedMs?:number,sealMs?:number,cleanupMs?:number,seeded:number,outputBatches?:number,uniqueEvents?:number,assertionsComplete:boolean}={seeded:0,assertionsComplete:false};
  const started=performance.now();
@@ -63,5 +65,5 @@ test('live sealing respects the event bound without dropping a burst',()=>{
   expect(new Set(output.flatMap(b=>b.events).map((e:any)=>e.id)).size).toBe(205);
   timings.assertionsComplete=true;
  },milliseconds=>{timings.cleanupMs=milliseconds;});}
- finally{if(process.platform==='win32')console.log('OPENCrawlLiveBatchPhase '+JSON.stringify({...timings,totalMs:performance.now()-started,platform:process.platform,defaultDeadlineMs:5000}));}
-});
+ finally{if(process.platform==='win32')console.log('OPENCrawlLiveBatchPhase '+JSON.stringify({...timings,totalMs:performance.now()-started,platform:process.platform,defaultDeadlineMs:5000,configuredDeadlineMs:burstDeadlineMs}));}
+},burstDeadlineMs);

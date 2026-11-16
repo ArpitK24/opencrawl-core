@@ -6,17 +6,18 @@ import {join} from 'node:path';
 import {publishSetup,type SetupServerStatus} from '../src/setup/api.ts';
 import {type CodexHookReview} from '../src/capture/codex-hooks.ts';
 import {setupCommand as realSetupCommand,formatSetupOutput,formatSetupCommand} from '../src/setup/command.ts';
-import {readSetupState,historyBenefit,type SetupState} from '../src/setup/state.ts';
+import {readSetupState,updateSetupState,historyBenefit,type SetupState} from '../src/setup/state.ts';
 import {readCaptureConfig,captureDir} from '../src/capture/runtime.ts';
 import {installCapture,uninstallCapture} from '../src/capture/install.ts';
 import {hookRunner} from '../src/hook-runner.ts';
 import {applySelectionKey,type SelectionCursor} from '../src/setup/select.ts';
 import type {SelectionScreen} from '../src/setup/select.ts';
-const setupCommand=(action:string,api:string,values:Parameters<typeof realSetupCommand>[2],dependencies:NonNullable<Parameters<typeof realSetupCommand>[3]>={})=>realSetupCommand(action,api,values,{installDaemon:async()=>({kind:'launchd',status:'installed',supervised:true,label:'fixture',path:'fixture'}),...dependencies});
+const setupCommand=(action:string,api:string,values:Parameters<typeof realSetupCommand>[2],dependencies:NonNullable<Parameters<typeof realSetupCommand>[3]>={})=>realSetupCommand(action,api,values,{platform:'darwin',installDaemon:async()=>({kind:'launchd',status:'installed',supervised:true,label:'fixture',path:'fixture'}),...dependencies});
 type ClientStatus=SetupServerStatus['installations'][number]['clients'][number];
-async function fixture(run:(api:string,dir:string,observations:unknown[],setCodex:(patch:Partial<ClientStatus>)=>void)=>Promise<void>,pluginStateSupported=false){
- const dir=mkdtempSync(join(tmpdir(),'opencrawl-setup-flow-')),saved={...process.env},observations:unknown[]=[];let installations:SetupServerStatus['installations']=[],codexPatch:Partial<ClientStatus>={};
+async function fixture(run:(api:string,dir:string,observations:unknown[],setCodex:(patch:Partial<ClientStatus>)=>void,calls:string[])=>Promise<void>,pluginStateSupported=false){
+ const dir=mkdtempSync(join(tmpdir(),'opencrawl-setup-flow-')),saved={...process.env},observations:unknown[]=[],calls:string[]=[];let installations:SetupServerStatus['installations']=[],codexPatch:Partial<ClientStatus>={};
  const server=createServer(async(req,res)=>{
+  calls.push(req.url??'');
   const chunks=[];for await(const chunk of req)chunks.push(chunk);const body=chunks.length?JSON.parse(Buffer.concat(chunks).toString()):{};
   let data:unknown;
   if(req.url==='/api/setup')data={schemaVersion:1,scope:{tenantId:'tenant',userId:'user'},...(pluginStateSupported?{pluginStateSupported:true}:{}),firstWin:null,installations:installations.map(row=>({...row,clients:row.clients.map(client=>client.client==='codex'?{...client,...codexPatch}:client)}))};
@@ -29,7 +30,7 @@ async function fixture(run:(api:string,dir:string,observations:unknown[],setCode
  try{
   Object.assign(process.env,{HOME:dir,USERPROFILE:dir,PATH:dir,OPENCRAWL_CONFIG_HOME:join(dir,'config'),OPENCRAWL_API_URL:api,OPENCRAWL_TOKEN:'fixture-access-token-0123456789',OPENCRAWL_SESSIONS_TOKEN:'fixture-upload-token-0123456789',CLAUDE_DESKTOP_CONFIG_DIR:join(dir,'desktop'),CLAUDE_CONFIG_DIR:join(dir,'claude'),CODEX_HOME:join(dir,'codex'),CURSOR_CONFIG_DIR:join(dir,'cursor'),ANTIGRAVITY_HOME:join(dir,'agy')});
   const file=join(dir,'codex','sessions','one.jsonl');mkdirSync(join(file,'..'),{recursive:true});writeFileSync(file,JSON.stringify({type:'session_meta',payload:{id:'one',source:'cli'}})+'\n'+JSON.stringify({type:'response_item',payload:{type:'message',role:'user',content:'approved historical content'}})+'\n');
-  await run(api,dir,observations,patch=>{codexPatch=patch;});
+  await run(api,dir,observations,patch=>{codexPatch=patch;},calls);
  }finally{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));for(const key of Object.keys(process.env))if(!(key in saved))delete process.env[key];Object.assign(process.env,saved);rmSync(dir,{recursive:true,force:true});}
 }
 test('keyboard selection keeps recording dependent on plugins and permits search-only plugins',()=>{
@@ -69,8 +70,10 @@ test('resume retries pending selected plugins without another selection screen o
  const resumed=await setupCommand('resume',api,{json:true},{choose:async()=>{throw new Error('Unexpected questionnaire');},installPlugins:async(_api,selected)=>{installs++;expect(selected).toEqual(['codex']);return {results:[{client:'codex',status:'installed'}],humanTasks:[]};},launchHistory:()=>({state:'not_started'})});
  expect(installs).toBe(1);expect(resumed).toMatchObject({status:'configured'});expect(readSetupState({api,tenantId:'tenant',userId:'user'})?.selections.history).toEqual(before?.selections.history);expect(readSetupState({api,tenantId:'tenant',userId:'user'})?.historyJob).toBeUndefined();
 }));
-test('a native reload task survives server observation until client evidence arrives',async()=>fixture(async api=>{
- const result=await setupCommand('apply',api,{yes:true,plugins:'cursor',forward:'none',history:'none'},{installPlugins:async()=>({results:[{client:'cursor',status:'installed'}],humanTasks:[{id:'cursor-reload',kind:'restart',client:'cursor',title:'Reload Cursor',instruction:'Reload Cursor to load the installed local plugin.'}]}),launchHistory:()=>({state:'not_started'})});
+test('an existing deferred client retains native reload tasks on resume',async()=>fixture(async api=>{
+ await setupCommand('apply',api,{yes:true,plugins:'codex',forward:'none',history:'none'},{installPlugins:async()=>({results:[{client:'codex',status:'installed'}],humanTasks:[]}),launchHistory:()=>({state:'not_started'})});
+ await updateSetupState({api,tenantId:'tenant',userId:'user'},state=>({...state!,selections:{plugins:{cursor:true},forward:{cursor:false},history:{cursor:false}}}));
+ const result=await setupCommand('resume',api,{json:true},{installPlugins:async()=>({results:[{client:'cursor',status:'installed'}],humanTasks:[{id:'cursor-reload',kind:'restart',client:'cursor',title:'Reload Cursor',instruction:'Reload Cursor to load the installed local plugin.'}]}),launchHistory:()=>({state:'not_started'})});
  expect(result).toMatchObject({humanTasks:[{id:'cursor-reload',kind:'restart'}]});
  const status=await setupCommand('status',api,{json:true});expect(status).toMatchObject({humanTasks:[{id:'cursor-reload'}]});
 }));
@@ -339,5 +342,62 @@ test('supervised and not-required workers allow configured setup without invente
   const result=await setupCommand('apply',api,{yes:true,plugins:active?'codex':'none',forward:active?'codex':'none',history:'none'},{inspectHooks:async()=>({state:'observed',total:8,pending:0,disabled:0} as CodexHookReview),launchHistory:()=>({state:'not_started'}),installPlugins:async()=>({results:active?[{client:'codex',status:'installed'}]:[],humanTasks:[]}),installDaemon:async()=>worker});
   expect(result).toMatchObject({status:'configured',humanTasks:[],worker:{kind:worker.kind,readiness:active?'configured':'not_required'}});
   expect(formatSetupOutput(result)).not.toContain('supervision is pending');expect((result as {agentPrompt:string}).agentPrompt).not.toContain('host-owned service');
+ }
+}));
+
+
+test('new setup offers only Mac Claude and Codex and rejects deferred selections before authentication',async()=>fixture(async(api,dir,_observations,_set,calls)=>{
+ mkdirSync(join(dir,'claude'));mkdirSync(join(dir,'cursor'));mkdirSync(join(dir,'agy'));
+ const plan=await setupCommand('plan',api,{plugins:'all',forward:'all',history:'all'}) as {clients:{id:string}[];selections:SetupState['selections']};
+ expect(plan.clients.map(row=>row.id).sort()).toEqual(['claude-code','codex']);
+ expect(plan.selections.plugins).toEqual({'claude-code':true,codex:true});
+ expect(plan.selections.forward).toEqual({'claude-code':true,codex:true});
+ expect(plan.selections.history).toEqual({'claude-code':false,codex:true});
+ delete process.env.OPENCRAWL_TOKEN;calls.length=0;let login=0;
+ for(const values of [{plugins:'cursor'},{forward:'antigravity'},{history:'antigravity'},{plugins:'devin'}])await expect(setupCommand('run',api,values,{interactive:true,login:async()=>{login++;}})).rejects.toMatchObject({code:'SETUP_CLIENT_NOT_AVAILABLE'});
+ for(const platform of ['linux','win32'] as const)await expect(setupCommand('run',api,{}, {platform,interactive:true,login:async()=>{login++;}})).rejects.toMatchObject({code:'SETUP_NOT_AVAILABLE'});
+ expect(login).toBe(0);expect(calls).toEqual([]);expect(readCaptureConfig()).toBeNull();expect(existsSync(join(dir,'config','opencrawl','setup'))).toBe(false);
+}));
+
+test('existing deferred choices and bounded completed history survive new Mac offers and off remains off',async()=>fixture(async(api,dir,_observations,_set,calls)=>{
+ await setupCommand('apply',api,{yes:true,plugins:'codex',forward:'none',history:'none'},setupCodex);
+ const scope={api,tenantId:'tenant',userId:'user'},now=new Date().toISOString();
+ const oldFile={harness:'antigravity' as const,path:join(dir,'old-approved.json'),bytes:8,ino:1,mtimeMs:1};
+ await updateSetupState(scope,state=>({...state!,selections:{plugins:{'claude-code':false,codex:true,cursor:true,antigravity:false},forward:{'claude-code':false,codex:false,cursor:false,antigravity:false},history:{'claude-code':false,codex:false,antigravity:true}},historyJob:{id:'approved-old-job',clients:['antigravity'],files:[oldFile],state:'complete',completedClients:['antigravity'],createdAt:now,updatedAt:now}}));
+ const before=readSetupState(scope)!;calls.length=0;
+ await expect(setupCommand('apply',api,{yes:true,plugins:'antigravity',forward:'none',history:'none'},setupCodex)).rejects.toMatchObject({code:'SETUP_CLIENT_NOT_AVAILABLE'});
+ await expect(setupCommand('apply',api,{yes:true,plugins:'cursor',forward:'cursor',history:'none'},setupCodex)).rejects.toMatchObject({code:'SETUP_CLIENT_NOT_AVAILABLE'});
+ expect(calls).toEqual([]);expect(readSetupState(scope)).toEqual(before);
+ let screens=0;
+ await setupCommand('run',api,{}, {...setupCodex,interactive:true,choose:async screen=>{screens++;expect(screen.items.every(row=>['claude-code','codex'].includes(row.id))).toBe(true);return screen.items;},installPlugins:async(_api,ids)=>{expect(ids).toEqual(['codex','cursor']);return {results:[{client:'codex',status:'installed' as const},{client:'cursor',status:'installed' as const}],humanTasks:[]};}});
+ expect(screens).toBe(2);expect(readSetupState(scope)?.historyJob).toEqual(before.historyJob);expect(readSetupState(scope)?.selections).toEqual({...before.selections,plugins:{...before.selections.plugins,'claude-code':false},forward:{...before.selections.forward,'claude-code':false},history:{...before.selections.history,'claude-code':false}});
+ await setupCommand('resume',api,{json:true},{...setupCodex,platform:'linux',installPlugins:async(_api,ids)=>({results:[{client:'codex',status:'installed' as const},{client:'cursor',status:'installed' as const}],humanTasks:[]})});
+ expect(readSetupState(scope)?.historyJob).toEqual(before.historyJob);
+ await updateSetupState(scope,state=>({...state!,historyJob:{...state!.historyJob!,state:'paused'}}));
+ const paused=readSetupState(scope)!.historyJob;
+ await setupCommand('apply',api,{yes:true,plugins:'all',forward:'none',history:'all'},{...setupCodex,platform:'linux',installPlugins:async()=>({results:[{client:'codex',status:'installed'},{client:'cursor',status:'installed'}],humanTasks:[]})});
+ expect(readSetupState(scope)?.historyJob).toEqual(paused);
+ const off=await setupCommand('plan',api,{plugins:'none',forward:'none',history:'none'},{platform:'linux'}) as {selections:SetupState['selections']};
+ expect(Object.values(off.selections.plugins).every(v=>!v)).toBe(true);expect(Object.values(off.selections.history).every(v=>!v)).toBe(true);
+}));
+
+test('resume cannot create a first-time history approval on any platform',async()=>fixture(async(api,dir,observations)=>{
+ for(const platform of ['darwin','linux','win32'] as const)await expect(setupCommand('resume',api,{yes:true,plugins:'none',forward:'none',history:'codex'},{platform,launchHistory:()=>{throw new Error('Unapproved history worker');},installPlugins:async()=>{throw new Error('Unapproved plugin install');}})).rejects.toMatchObject({code:'SETUP_NOT_STARTED'});
+ expect(readCaptureConfig()).toBeNull();expect(readSetupState({api,tenantId:'tenant',userId:'user'})).toBeNull();expect(observations).toEqual([]);expect(existsSync(join(dir,'config','opencrawl','capture'))).toBe(false);
+}));
+
+
+test('availability rechecks consent and binding without treating worker progress as new consent',async()=>fixture(async(api)=>{
+ await setupCommand('apply',api,{yes:true,plugins:'codex',forward:'codex',history:'none'},setupCodex);
+ const scope={api,tenantId:'tenant',userId:'user'},original=globalThis.fetch;
+ for(const changeSelection of [false,true]){
+  let changed=false;
+  globalThis.fetch=Object.assign(async(...args:Parameters<typeof fetch>)=>{const response=await original(...args);if(!changed){changed=true;await updateSetupState(scope,state=>({...state!,worker:{kind:'external',status:'required',supervised:false,harnesses:['codex'],startup:true},...(changeSelection?{selections:{...state!.selections,forward:{...state!.selections.forward,codex:false}}}:{})}));}return response;},{preconnect:original.preconnect});
+  try{
+   const pending=setupCommand('plan',api,{json:true},setupCodex);
+   if(changeSelection)await expect(pending).rejects.toMatchObject({code:'SETUP_SCOPE_CHANGED'});
+   else expect(await pending).toMatchObject({status:'confirmation_required',selections:{forward:{codex:true}}});
+   expect(changed).toBe(true);
+  }finally{globalThis.fetch=original;}
  }
 }));
