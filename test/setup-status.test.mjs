@@ -187,6 +187,90 @@ test('Claude native tool_use and tool_result blocks bind MCP without treating te
   assert.equal((await f.setup.read(owner)).installations[0].clients[1].mcp.state,'authenticated');
 });
 
+async function cursorFixture() {
+  const f=await fixture(),selected={...selection,client:'cursor'};
+  await f.setup.installation(owner,registration([observation('cursor')]));
+  const proof=(await f.setup.verify(owner,selected)).proof;f.advance(100);
+  const result=await f.setup.mcp(owner,{...selected,proofId:proof.id});f.advance(100);
+  const timestamp=f.batch().events[0].timestamp,callId='native-cursor-mcp';
+  // Actual Cursor postToolUse creates both events in one batch. Its MCP name
+  // omits the server namespace, but native IDs, arguments and result survive.
+  const call={id:'cursor-call',kind:'tool_call',nativeId:callId,sequence:100,timestamp,
+    data:{type:'tool_use',name:'MCP:verify_installation',call_id:callId,input:{...selected,proofId:proof.id}}};
+  const output={id:'cursor-result',kind:'tool_result',nativeId:callId,sequence:101,timestamp,
+    data:{type:'tool_result',name:call.data.name,call_id:callId,output:{content:[{type:'text',text:JSON.stringify(result)}],isError:false}}};
+  const ingest=(events,extra={})=>f.setup.session(owner,f.batch({harness:'cursor',events,...extra}));
+  const read=async()=>(await f.setup.read(owner)).installations[0].clients.find(c=>c.client==='cursor');
+  await ingest([{id:'cursor-message',kind:'message',timestamp,data:{role:'assistant',content:proof.marker}}]);
+  return {...f,selected,proof,call,output,ingest,read};
+}
+
+test('Cursor completed MCP hook pair binds exact native call, success envelope and proof without a server name',async()=>{
+  const f=await cursorFixture();await f.ingest([f.call,f.output]);
+  assert.equal((await f.read()).mcp.state,'authenticated');
+  assert.equal((await f.read()).proof.state,'waiting_index','MCP correlation does not substitute for search');
+  await f.ingest([f.call,f.output]);assert.equal((await f.read()).mcp.state,'authenticated','replay remains idempotent');
+  const domain=await cursorFixture();
+  domain.output.data.output.content.push({type:'text',text:JSON.stringify({error:'returned domain data',isError:true})});
+  await domain.ingest([domain.call,domain.output]);
+  assert.equal((await domain.read()).mcp.state,'authenticated','returned domain text is not native failure metadata');
+});
+
+test('Cursor rejects failed, incomplete, mismatched and non-native completion pairs without donating either half',async()=>{
+  const changes=[
+    ['ordinary tool',f=>{f.call.data.name=f.output.data.name='verify_installation';}],
+    ['shell wrapper',f=>{f.call.data.name=f.output.data.name='Shell';}],
+    ['another MCP tool',f=>{f.call.data.name=f.output.data.name='MCP:installation_status';}],
+    ['different result name',f=>{f.output.data.name='MCP:other';}],
+    ['wrong proof',f=>{f.call.data.input.proofId='0'.repeat(32);}],
+    ['wrong client',f=>{f.call.data.input.client='codex';}],
+    ['wrong installation',f=>{f.call.data.input.installationId='other';}],
+    ['wrong call id',f=>{f.output.data.call_id='other';}],
+    ['missing call id',f=>{delete f.call.data.call_id;}],
+    ['blank native id',f=>{f.call.data.call_id=f.output.data.call_id=f.call.nativeId=f.output.nativeId=' ';}],
+    ['missing native id',f=>{delete f.call.nativeId;}],
+    ['mismatched native id',f=>{f.output.nativeId='other';}],
+    ['non-adjacent sequence',f=>{f.output.sequence++;}],
+    ['missing sequence',f=>{delete f.call.sequence;}],
+    ['negative sequence',f=>{f.call.sequence=-2;f.output.sequence=-1;}],
+    ['different timestamp',f=>{f.call.timestamp='2026-11-14T12:00:00Z';}],
+    ['wrong event kind',f=>{f.call.kind='message';}],
+    ['native failure',f=>{f.output.data.is_error=true;}],
+    ['native camel-case failure',f=>{f.output.data.isError=true;}],
+    ['failed call',f=>{f.call.data.is_error=true;}],
+    ['MCP failure with echoed receipt',f=>{f.output.data.output.isError=true;}],
+    ['failed transport with echoed receipt',f=>{f.output.data.output={error:f.output.data.output.content[0].text};}],
+    ['no MCP envelope',f=>{f.output.data.output=f.output.data.output.content[0].text;}],
+    ['wrong receipt',f=>{f.output.data.output.content[0].text='not the native receipt';}],
+    ['stale pair',f=>{f.call.timestamp=f.output.timestamp='2026-11-14T11:59:00Z';}],
+    ['future pair',f=>{f.call.timestamp=f.output.timestamp='2026-11-14T12:02:00Z';}],
+  ];
+  for(const [name,change] of changes){
+    const f=await cursorFixture(),validCall=structuredClone(f.call),validOutput=structuredClone(f.output);change(f);
+    await f.ingest([f.call,f.output]);assert.equal((await f.read()).mcp.state,'observed',name);
+    await f.ingest([validCall]);await f.ingest([validOutput]);
+    assert.equal((await f.read()).mcp.state,'observed',name+' cannot donate a half to a separate incomplete event');
+  }
+  for(const extra of [{captureMode:'history'},{sessionId:'other-session'},{installationId:'other-installation'},{harness:'codex'},{harness:'claude-code'},{harness:'grok-bot'}]){
+    const f=await cursorFixture();await f.ingest([f.call,f.output],extra);assert.equal((await f.read()).mcp.state,'observed',JSON.stringify(extra));
+  }
+  const f=await cursorFixture();await f.ingest([f.call,structuredClone(f.call),f.output]);
+  assert.equal((await f.read()).mcp.state,'observed','ambiguous native call pair');
+});
+
+test('generic native results with explicit failure flags cannot authenticate an echoed receipt',async()=>{
+  for(const flags of [{is_error:true},{isError:true},{mcpEnvelopeError:true}]) {
+    const f=await fixture();await f.setup.session(owner,f.batch());
+    const result=await f.setup.mcp(owner,{...selection,proofId:f.proof.id}),timestamp=f.batch().events[0].timestamp;
+    await f.setup.session(owner,f.batch({events:[
+      {id:'native-call',kind:'tool_call',timestamp,data:{name:'mcp__opencrawl__verify_installation',call_id:'native-call',input:{...selection,proofId:f.proof.id}}},
+      {id:'failed-result',kind:'tool_result',timestamp,data:{type:'tool_result',call_id:'native-call',
+        ...(flags.mcpEnvelopeError?{output:{content:[{type:'text',text:JSON.stringify(result)}],isError:true}}:{output:JSON.stringify(result),...flags})}},
+    ]}));
+    assert.equal((await f.setup.read(owner)).installations[0].clients[0].mcp.state,'observed');
+  }
+});
+
 async function agyFixture({compact=false,server='opencrawl_opencrawl'}={}) {
   const f=await fixture(),selected={...selection,client:'antigravity'};
   await f.setup.installation(owner,registration([observation('antigravity')]));

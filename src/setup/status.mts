@@ -43,6 +43,8 @@ function toolBlocks(event:SessionEvent):Record<string,unknown>[] {
   return [...(['tool_call','tool_result'].includes(event.kind)?[data]:[]),...content.filter((block):block is Record<string,unknown>=>Boolean(block)&&typeof block==='object'&&!Array.isArray(block))];
 }
 const object=(value:unknown):value is Record<string,unknown>=>Boolean(value&&typeof value==='object'&&!Array.isArray(value));
+const failedNativeResult=(block:Record<string,unknown>)=>block.is_error===true||block.isError===true||
+  object(block.output)&&Array.isArray(block.output.content)&&block.output.isError===true;
 function agyValue(value:unknown):unknown {
   // Compact native records JSON-encode individual wrapper arguments. Proof
   // inputs are small; never recursively decode arbitrary tool output.
@@ -50,6 +52,22 @@ function agyValue(value:unknown):unknown {
   try{return JSON.parse(value);}catch{return value;}
 }
 function verificationBlocks(batch:SessionBatch,event:SessionEvent,proofId:string):Record<string,unknown>[] {
+  if(batch.harness==='cursor') {
+    const data=event.data??{},id=callId(data,true),output=data.output;
+    // Cursor's completed MCP hook omits the server namespace. Its collector
+    // retains both halves together with one native ID and adjacent sequences.
+    // Admit that completed pair only; neither an input-only transcript record
+    // nor a failed completion may donate evidence to another event.
+    if(event.kind!=='tool_result'||data.type!=='tool_result'||data.name!=='MCP:verify_installation'||failedNativeResult(data)||
+      !id||!id.trim()||event.nativeId!==id||!Number.isSafeInteger(event.sequence)||Number(event.sequence)<1||!object(output)||!Array.isArray(output.content))return [];
+    const calls=batch.events.filter(candidate=>candidate.kind==='tool_call'&&candidate.data?.type==='tool_use'&&
+      candidate.data.name===data.name&&callId(candidate.data)===id&&candidate.nativeId===id&&
+      Number.isSafeInteger(candidate.sequence)&&Number(candidate.sequence)+1===event.sequence&&candidate.timestamp===event.timestamp);
+    if(calls.length!==1||failedNativeResult(calls[0]!.data!))return [];
+    const call={id,name:'verify_installation',input:calls[0]!.data!.input};
+    if(!nativeVerificationCall(call,proofId,batch.installationId,batch.harness))return [];
+    return [call,{type:'tool_result',call_id:id,output}];
+  }
   if(batch.harness==='codex'&&event.kind==='mcp_tool_call_end') {
     const data=event.data??{},item=data.item;
     // Codex code mode records the actual MCP exchange in item_completed. Never
@@ -196,7 +214,7 @@ export function createSetupStatus({store,prefix='capture-v1',search,now=()=>new 
             e.nativeCalls=[...(e.nativeCalls??[]).filter(call=>call.callId!==id||call.sessionId!==batch.sessionId),{callId:id,sessionId:batch.sessionId}].slice(-8);
           }
           const resultId=callId(block,true);
-          if(resultId&&e.mcpCall&&(event.kind==='tool_result'||block.type==='tool_result')&&fresh(event,batch.harness==='antigravity'?since:e.mcpCall.issuedAt)&&JSON.stringify(block).includes(e.mcpCall.receipt)) {
+          if(resultId&&e.mcpCall&&!failedNativeResult(block)&&(event.kind==='tool_result'||block.type==='tool_result')&&fresh(event,batch.harness==='antigravity'?since:e.mcpCall.issuedAt)&&JSON.stringify(block).includes(e.mcpCall.receipt)) {
             e.nativeResults=[...(e.nativeResults??[]).filter(result=>result.callId!==resultId||result.sessionId!==batch.sessionId),{callId:resultId,sessionId:batch.sessionId,eventId:event.id,observedAt:now().toISOString()}].slice(-8);
           }
         }
