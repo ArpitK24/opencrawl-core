@@ -26,7 +26,7 @@ import {createPostgresSlackCapture} from './slack-capture.mjs';
 import {digest as connectorBindingHash,validateBinding} from '../connectors/scope.mjs';
 import {createConnectorCounts} from './connector-counts.mjs';
 import {createPostgresBoardState,validateLegacyBoard} from './board.mjs';
-import {createConnectorCacheRetirements,type ConnectorCacheRetirement} from './connector-cache-retirements.mjs';
+import {LEGACY_UNCOUNTED_CONNECTOR_PIPELINES,createConnectorCacheRetirements,type ConnectorCacheRetirement} from './connector-cache-retirements.mjs';
 import {createSchedulerRetirements,type SchedulerRetirement} from './scheduler-retirements.mjs';
 import {createRetiredSessionReceipts,retiredSessionProofSchema,retiredSessionLocations,failedSessionReceiptSchema,type RetiredSessionProof,type RetiredSessionReceipt} from './retired-session-receipts.mjs';
 
@@ -273,7 +273,8 @@ export function createBoundObjectMigration({database,prefix,tenantIds,store,regi
       }
       case 'event-identities':{
         tenantDigest(parts[0]);source=eventSchema.parse(json(bytes));const session=key.slice(0,-'event-identities-v1.json'.length);
-        if(write)await eventIdentities.migrateSession({store,prefix,source:session});target=await eventIdentities.exportLegacyLedger({store,prefix,source:session});
+        const observedMarker={source:session,bytes};
+        if(write)await eventIdentities.migrateSession({store,prefix,source:session,observedMarker});target=await eventIdentities.exportLegacyLedger({store,prefix,source:session,observedMarker});
         if(target&&typeof target==='object'&&'deleted' in target){source=target;rows=0;}else rows='events' in (source as z.infer<typeof eventSchema>)?Object.keys((source as {events:Record<string,string>}).events).length:1;break;
       }
       case 'session-scheduler-retirement':{
@@ -304,10 +305,13 @@ export function createBoundObjectMigration({database,prefix,tenantIds,store,regi
           const value=z.strictObject({schemaVersion:z.literal(1),sourceId:z.string(),taskQueue:z.string(),generation:z.string(),workflowId:z.string(),completed:z.literal(true)}).parse(raw);
           const marker=sessionCatchupMarker({...value,prefix});if(marker.markerKey!==key||!isDeepStrictEqual(marker.marker,value))fail('Temporal catch-up receipt identity mismatch');source=value;
         }else if(domain==='connector-indexing'){
-          const value=z.strictObject({pipeline:z.string(),key:z.string().max(8192),sha256:hash,sourceRecords:number,records:number}).parse(raw);
+          const value=z.strictObject({pipeline:z.string(),key:z.string().max(8192),sha256:hash,sourceRecords:number.optional(),records:number}).parse(raw);
+          if(value.sourceRecords===undefined&&!LEGACY_UNCOUNTED_CONNECTOR_PIPELINES.includes(value.pipeline))fail('Connector indexing receipt requires its original source count');
           if(value.pipeline!==parts[0]||digest(value.key)!==parts[1]||!/^raw\/v1\/source=/.test(value.key))fail('Connector indexing receipt identity mismatch');
           const matches=registryRecords.filter(record=>record.s3Prefix&&value.key.startsWith(record.s3Prefix+'/')&&(record.s3Bucket||store.bucket)===store.bucket);
-          if(matches.length!==1)fail('Connector indexing receipt has no unique original source binding');tenant(matches[0].tenantId);source=value;
+          if(matches.length!==1)fail('Connector indexing receipt has no unique original source binding');
+          if(value.sourceRecords===undefined&&matches[0]!.provider!=='slack')fail('Uncounted legacy receipt requires its original Slack source');
+          tenant(matches[0]!.tenantId);source=value;
         }else{
           const value=z.strictObject({pipeline:z.string(),fingerprint:hash,checksum:hash.optional(),sourceRecords:number.optional(),records:number,objects:number,ignored:number.optional()}).parse(raw);
           if(value.pipeline!==parts[0]||value.fingerprint!==parts[1])fail('Connector snapshot receipt identity mismatch');source=value;

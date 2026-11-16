@@ -1,7 +1,7 @@
 import {createHash,randomUUID} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {z} from 'zod';
-import {requireApplicationStateReady,type ApplicationDatabase} from './postgres.mjs';
+import {ensureSchemaIndex,requireApplicationStateReady,type ApplicationDatabase} from './postgres.mjs';
 import type {SearchContextMigrationReport} from '../sessions/search-context-migration.mjs';
 const fail=(message:string,status=409)=>Object.assign(new Error(message),{status});
 const tenant=z.string().regex(/^(org_[A-Za-z0-9]+|personal:user_[A-Za-z0-9]+)$/),uuid=z.string().uuid();
@@ -39,10 +39,13 @@ export function createSearchContextJobs({database,binding:input}:{database:Appli
  return {sourceId,binding,assertBinding,read,
   async ready(){prepared??=(async()=>{await database.ready();await assertBinding();await database.transaction(async client=>{await client.query("SELECT pg_advisory_xact_lock(hashtextextended('opencrawl:search-context-jobs:schema',0))");await client.query(`
    CREATE TABLE IF NOT EXISTS opencrawl_search_context_jobs(namespace text NOT NULL REFERENCES opencrawl_application_installations(namespace),source_id text NOT NULL,job_id uuid NOT NULL,tenant_id text NOT NULL,binding jsonb NOT NULL,max_passages integer NOT NULL CHECK(max_passages BETWEEN 1 AND 100000),source_concurrency integer NOT NULL CHECK(source_concurrency BETWEEN 1 AND 16),continuation_id uuid,status text NOT NULL CHECK(status IN ('pending','complete','incomplete')),report jsonb,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(namespace,source_id,job_id));
-   ALTER TABLE opencrawl_search_context_jobs ADD COLUMN IF NOT EXISTS continuation_id uuid;
-   CREATE INDEX IF NOT EXISTS opencrawl_search_context_pending ON opencrawl_search_context_jobs(namespace,source_id,job_id) WHERE status='pending';
    CREATE TABLE IF NOT EXISTS opencrawl_search_context_checkpoints(namespace text NOT NULL REFERENCES opencrawl_application_installations(namespace),source_id text NOT NULL,tenant_id text NOT NULL,report jsonb NOT NULL,updated_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(namespace,source_id,tenant_id));
-  `);});})().catch(error=>{prepared=undefined;throw error;});await prepared;},
+  `);
+   const continuation=(await client.query("SELECT atttypid='uuid'::regtype AS type,attnotnull,atthasdef FROM pg_attribute WHERE attrelid='opencrawl_search_context_jobs'::regclass AND attname='continuation_id' AND NOT attisdropped")).rows[0];
+   if(!continuation)await client.query('ALTER TABLE opencrawl_search_context_jobs ADD COLUMN continuation_id uuid');
+   else if(!continuation.type||continuation.attnotnull||continuation.atthasdef)throw new Error('Unsupported search context continuation column');
+   await ensureSchemaIndex(client,{table:'opencrawl_search_context_jobs',name:'opencrawl_search_context_pending',keys:['namespace','source_id','job_id'],predicate:{column:'status',equals:'pending'}});
+  });})().catch(error=>{prepared=undefined;throw error;});await prepared;},
   async create({jobId=randomUUID(),tenantId,maxPassages,sourceConcurrency}){uuid.parse(jobId);scope(tenantId);z.number().int().min(1).max(100000).parse(maxPassages);z.number().int().min(1).max(16).parse(sourceConcurrency);await assertBinding();
    return database.transaction(async client=>{await client.query(`INSERT INTO opencrawl_search_context_jobs(namespace,source_id,job_id,tenant_id,binding,max_passages,source_concurrency,status) VALUES($1,$2,$3,$4,$5::jsonb,$6,$7,'pending') ON CONFLICT DO NOTHING`,[ns,sourceId,jobId,tenantId,JSON.stringify(binding),maxPassages,sourceConcurrency]);const {rows}=await client.query('SELECT * FROM opencrawl_search_context_jobs WHERE namespace=$1 AND source_id=$2 AND job_id=$3',[ns,sourceId,jobId]);const record=decode(rows[0]);if(record.continuationId||record.tenantId!==tenantId||record.maxPassages!==maxPassages||record.sourceConcurrency!==sourceConcurrency||!isDeepStrictEqual(rows[0].binding,binding))throw fail('Search context request identity reused with different scope');return {sourceId,jobId};});
   },

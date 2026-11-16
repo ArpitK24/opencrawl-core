@@ -1,6 +1,6 @@
 import type {PoolClient} from 'pg';
 import {createHash} from 'node:crypto';
-import type {ApplicationDatabase} from './postgres.mjs';
+import {ensureSchemaIndex,type ApplicationDatabase} from './postgres.mjs';
 import type {Environment} from '../integrations/types.mjs';
 import type {IntegrationConsentResult, IntegrationCommand, IntegrationCommandReference, IntegrationCommandSecret, IntegrationCommands, IntegrationOperation} from '../integrations/temporal/types.mjs';
 import {sealedEnvelope} from '../integrations/credential-vault.mjs';
@@ -113,15 +113,17 @@ export function createIntegrationCommands({database, environment, encryptionKey,
             failure_reason text CHECK(failure_reason IN ('authorization_denied','invalid_command','reconnect_required')),
             created_at timestamptz NOT NULL DEFAULT now(), finished_at timestamptz,
             PRIMARY KEY(namespace,environment,tenant_id,user_id,integration_id,command_id));
-            ALTER TABLE opencrawl_integration_commands DROP CONSTRAINT IF EXISTS opencrawl_integration_commands_operation_check;
-            ALTER TABLE opencrawl_integration_commands ADD CONSTRAINT opencrawl_integration_commands_operation_check CHECK(operation IN ('provision','disconnect','sync','consent'));
-            CREATE INDEX IF NOT EXISTS opencrawl_integration_commands_pending ON opencrawl_integration_commands(namespace,environment,sequence) WHERE status='pending';
             CREATE TABLE IF NOT EXISTS opencrawl_integration_command_secrets (
               namespace text NOT NULL, environment text NOT NULL, tenant_id text NOT NULL, user_id text NOT NULL,
               integration_id text NOT NULL, command_id text NOT NULL, ciphertext bytea NOT NULL, expires_at timestamptz NOT NULL,
               PRIMARY KEY(namespace,environment,tenant_id,user_id,integration_id,command_id),
               FOREIGN KEY(namespace,environment,tenant_id,user_id,integration_id,command_id)
                 REFERENCES opencrawl_integration_commands(namespace,environment,tenant_id,user_id,integration_id,command_id) ON DELETE CASCADE)`);
+          const operation=(await client.query("SELECT contype,convalidated,pg_get_constraintdef(oid,false) AS definition FROM pg_constraint WHERE conrelid='opencrawl_integration_commands'::regclass AND conname='opencrawl_integration_commands_operation_check'")).rows[0];
+          const current="CHECK ((operation = ANY (ARRAY['provision'::text, 'disconnect'::text, 'sync'::text, 'consent'::text])))",previous="CHECK ((operation = ANY (ARRAY['provision'::text, 'disconnect'::text, 'sync'::text])))";
+          if(!operation||operation.contype!=='c'||!operation.convalidated||![current,previous].includes(operation.definition))throw new Error('Unsupported integration operation constraint');
+          if(operation.definition===previous)await client.query("ALTER TABLE opencrawl_integration_commands DROP CONSTRAINT opencrawl_integration_commands_operation_check, ADD CONSTRAINT opencrawl_integration_commands_operation_check CHECK(operation IN ('provision','disconnect','sync','consent'))");
+          await ensureSchemaIndex(client,{table:'opencrawl_integration_commands',name:'opencrawl_integration_commands_pending',keys:['namespace','environment','sequence'],predicate:{column:'status',equals:'pending'}});
         });
       })().catch(error => {preparing = undefined; throw error;});
       await preparing;

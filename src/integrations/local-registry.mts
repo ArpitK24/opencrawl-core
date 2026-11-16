@@ -2,7 +2,7 @@ import {z} from 'zod';
 import {randomUUID} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import type {PoolClient} from 'pg';
-import type {ApplicationDatabase} from '../state/postgres.mjs';
+import {ensureSchemaIndex,type ApplicationDatabase} from '../state/postgres.mjs';
 import type {Environment, IntegrationRecord, UpdateOptions} from './types.mjs';
 import type {IntegrationRegistry} from './ports.mjs';
 import type {IntegrationCommand, IntegrationCommandOperation, IntegrationCommandReference, IntegrationCommandSecret} from './temporal/types.mjs';
@@ -34,16 +34,19 @@ export async function ensureRegistrySchema(database:ApplicationDatabase){
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended('opencrawl:integrations:schema',0))");
     await client.query(`CREATE TABLE IF NOT EXISTS opencrawl_integration_bindings (
       namespace text PRIMARY KEY, organization_id text, environment text NOT NULL, binding_id text);
-      ALTER TABLE opencrawl_integration_bindings ALTER COLUMN organization_id DROP NOT NULL;
-      ALTER TABLE opencrawl_integration_bindings ADD COLUMN IF NOT EXISTS binding_id text;
       CREATE TABLE IF NOT EXISTS opencrawl_integrations (
       namespace text NOT NULL, environment text NOT NULL, tenant_id text NOT NULL, user_id text NOT NULL,
       integration_id text NOT NULL, provider text NOT NULL, status text NOT NULL, revision bigint NOT NULL DEFAULT 1,
       record jsonb NOT NULL, PRIMARY KEY(namespace,environment,tenant_id,integration_id),
       CHECK(record->>'tenantId'=tenant_id),CHECK(record->>'userId'=user_id),
       CHECK(record->>'integrationId'=integration_id),CHECK(record->>'environment'=environment),
-      CHECK(record->>'provider'=provider),CHECK(record->>'status'=status));
-      CREATE INDEX IF NOT EXISTS opencrawl_integrations_owner ON opencrawl_integrations(namespace,environment,tenant_id,user_id)`);
+      CHECK(record->>'provider'=provider),CHECK(record->>'status'=status))`);
+    const columns=(await client.query("SELECT attname,atttypid='text'::regtype AS type,attnotnull,atthasdef FROM pg_attribute WHERE attrelid='opencrawl_integration_bindings'::regclass AND attname IN ('organization_id','binding_id') AND NOT attisdropped")).rows;
+    const organization=columns.find(row=>row.attname==='organization_id'),binding=columns.find(row=>row.attname==='binding_id');
+    if(!organization?.type||organization.atthasdef||binding&&(!binding.type||binding.attnotnull||binding.atthasdef))throw new Error('Unsupported integration binding schema');
+    if(organization.attnotnull)await client.query('ALTER TABLE opencrawl_integration_bindings ALTER COLUMN organization_id DROP NOT NULL');
+    if(!binding)await client.query('ALTER TABLE opencrawl_integration_bindings ADD COLUMN binding_id text');
+    await ensureSchemaIndex(client,{table:'opencrawl_integrations',name:'opencrawl_integrations_owner',keys:['namespace','environment','tenant_id','user_id']});
   });
 }
 

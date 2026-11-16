@@ -9,11 +9,14 @@ import type {ConnectorBinding} from '../types.mjs';
 import type {ConnectionReference} from './types.mjs';
 import {startConnectorIndexing} from './client.mjs';
 
+export interface AdditionalConnectorCatchupRequirement {receipts:number;buckets:string[];receiptIdentity:string}
 export interface ConnectorCatchupOptions<Cursor> {
  database:ApplicationDatabase;client:Client;sourceId:string;taskQueue:string;generation:string;
  discover(cursor:Cursor|null):Promise<{references:ConnectionReference[];cursor:Cursor|null;rejected?:number}>;
  resolve(reference:ConnectionReference&{generation:string}):Promise<{binding:ConnectorBinding;store:{bucket?:string};search:{identity:string}}>;
  verifyProducer?():Promise<void>;
+ /** Additional verified migration evidence; never replaces core retirements. */
+ additionalRequirement?():Promise<AdditionalConnectorCatchupRequirement>;
 }
 interface Descriptor {reference:{tenantId:string;userId:string;connectionId:string};bucket:string;workspace:string;provider:string;access:string;prefix:string;index:string}
 const unsafe=(message:string):never=>{throw Object.assign(new Error(message),{code:'CONNECTOR_CATCHUP_INCOMPLETE'});};
@@ -25,7 +28,20 @@ export async function activateConnectorCatchup<Cursor>(options:ConnectorCatchupO
  const {database,client,sourceId,taskQueue,generation}=options;
  if(!sourceId||sourceId.length>200||!taskQueue||taskQueue.length>200||!/^v[1-9][0-9]*$/.test(generation)||!client.options.namespace)throw new Error('Explicit connector catch-up binding required');
  await requireApplicationStateReady(database);
- const retirement=createConnectorCacheRetirements(database),required=await retirement.required();
+ const retirement=createConnectorCacheRetirements(database);
+ async function readRequired(){
+  const original=await retirement.required();
+  if(!options.additionalRequirement)return original;
+  const value=await options.additionalRequirement();
+  if(!value||Object.keys(value).sort().join(',')!=='buckets,receiptIdentity,receipts'||!Number.isSafeInteger(value.receipts)||value.receipts<0||
+   !Array.isArray(value.buckets)||value.buckets.length>10000||value.buckets.some(bucket=>typeof bucket!=='string'||!bucket.length||bucket.length>1024||/[\u0000-\u001f\u007f]/.test(bucket))||
+   new Set(value.buckets).size!==value.buckets.length||Boolean(value.receipts)!==Boolean(value.buckets.length)||typeof value.receiptIdentity!=='string'||!/^[a-f0-9]{64}$/.test(value.receiptIdentity))unsafe('Invalid additional connector catch-up requirement');
+  const receipts=original.receipts+value.receipts;
+  if(!Number.isSafeInteger(receipts))unsafe('Connector catch-up requirement exceeds its supported count');
+  const additional={receipts:value.receipts,buckets:[...value.buckets].sort(),receiptIdentity:value.receiptIdentity};
+  return {receipts,buckets:[...new Set([...original.buckets,...additional.buckets])].sort(),additional};
+ }
+ const required=await readRequired();
  if(!required.receipts)return {required:false,completed:true,connections:0};
  await options.verifyProducer?.();
  const installation=async()=>{
@@ -91,7 +107,7 @@ export async function activateConnectorCatchup<Cursor>(options:ConnectorCatchupO
    await sql.query('UPDATE opencrawl_connector_catchup_runs SET run_id=$4,completed_at=now() WHERE namespace=$1 AND activation_id=$2 AND reference_hash=$3',[database.namespace,activationId,referenceHash,description.runId]);
   }
   const final=await inventory();
-  if(final.manifest!==current.manifest||!isDeepStrictEqual(await retirement.required(),required)||!isDeepStrictEqual(await installation(),original))unsafe('Current connector scope changed during catch-up; resume with its new scope');
+  if(final.manifest!==current.manifest||!isDeepStrictEqual(await readRequired(),required)||!isDeepStrictEqual(await installation(),original))unsafe('Current connector scope changed during catch-up; resume with its new scope');
   await options.verifyProducer?.();
   const coverage=await sql.query('SELECT count(*)::int AS total,count(*) FILTER(WHERE completed_at IS NOT NULL AND run_id IS NOT NULL)::int AS complete FROM opencrawl_connector_catchup_runs WHERE namespace=$1 AND activation_id=$2',[database.namespace,activationId]);
   if(coverage.rows[0].total!==current.records.length||coverage.rows[0].complete!==current.records.length)unsafe('Connector catch-up evidence does not cover the current manifest');

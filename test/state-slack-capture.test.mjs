@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {Pool} from 'pg';
 import {createApplicationDatabase} from '../dist/src/state/postgres.mjs';
-import {applicationDatabaseFixture,postgresUrl} from './fixtures/application-database.mjs';
+import {applicationDatabaseFixture,postgresUrl,dropTestSchemas} from './fixtures/application-database.mjs';
 import {createPostgresSlackCapture} from '../dist/src/state/slack-capture.mjs';
 import {createSlackMessageCapture} from '../dist/src/connectors/slack-source-messages.mjs';
 import {digest} from '../dist/src/connectors/scope.mjs';
@@ -94,7 +94,7 @@ async function legacySchema(t,{orphan=false}={}){
  const schema='slack_upgrade_'+randomUUID().replaceAll('-',''),admin=new Pool({connectionString:postgresUrl,max:1});
  await admin.query('CREATE SCHEMA '+schema);
  const database=createApplicationDatabase({connectionString:postgresUrl,namespace:schema,options:'-c search_path='+schema,max:2});
- t.after(async()=>{try{await database.close();await admin.query('DROP SCHEMA '+schema+' CASCADE');await admin.query('DROP SCHEMA '+database.identitySchema+' CASCADE');}finally{await admin.end();}});
+ t.after(async()=>{try{await database.close();await dropTestSchemas(admin,[schema,database.identitySchema]);}finally{await admin.end();}});
  await database.ready();
  await database.pool.query(`CREATE TABLE opencrawl_slack_scopes(namespace text NOT NULL,raw_prefix text NOT NULL,scope_hash text NOT NULL,PRIMARY KEY(namespace,raw_prefix));
  CREATE TABLE opencrawl_slack_catalogs(namespace text NOT NULL,raw_prefix text NOT NULL,kind text NOT NULL,PRIMARY KEY(namespace,raw_prefix,kind));
