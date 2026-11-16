@@ -40,6 +40,8 @@ Usage: opencrawl <command> [--json] [--api <https-origin>]
   whoami      Verify your saved session or environment token with the service
   status      Show installation, sign-in and index availability
   search      Search session history and indexed workspace connectors
+  mcp         Serve the configured OpenCrawl MCP over stdio
+  workload    Connect a cloud organization with one-time admin approval
   fetch       Read the indexed passage behind a search result
   collect     Install and manage Claude Code, Codex, Cursor, Antigravity and Grok Bot session capture
   board       Register, subscribe, publish and receive board deliveries
@@ -242,6 +244,8 @@ export async function loginIdentity(api:string,options:{organizationId?:string;n
 const hasLocalFlag=(args:string[])=>args.some(arg=>arg==='--local'||arg.startsWith('--local='));
 
 export async function main(args = process.argv.slice(2)) {
+  if(args[0]==='workload'){applyDaemonEnvironment(args);return (await import('./workload-enrollment.ts')).workloadCommand(args.slice(1));}
+  if(args[0]==='mcp'){applyDaemonEnvironment(args);return (await import('./mcp.ts')).mcpCommand(args.slice(1));}
   if(args[0]==='search-context'){applyDaemonEnvironment(args);return searchContextCommand(args.slice(1));}
   if (args[0] === 'session' && args[1] === 'start' && !hasLocalFlag(args)) {
     applyDaemonEnvironment(args);
@@ -373,7 +377,7 @@ export async function main(args = process.argv.slice(2)) {
       if (verified) {
         const {user} = verified;
         emit({api, version, authenticated: true, credential: workspaceIdentityEnabled() ? 'workspace-identity' : 'environment-token', ...verified, ...(command === 'status' ? {index: {available: null}} : {})},
-          command === 'status' ? `opencrawl ${version}\nSigned in${user.email ? ` as ${user.email}` : ''} with ${workspaceIdentityEnabled() ? "Replicas workspace identity" : "OPENCRAWL_TOKEN"}.\nUse opencrawl search to check indexed workspace knowledge.` : user.email ?? user.id);
+          command === 'status' ? `opencrawl ${version}\nSigned in${user.email ? ` as ${user.email}` : ''} with ${workspaceIdentityEnabled() ? "workspace identity" : "OPENCRAWL_TOKEN"}.\nUse opencrawl search to check indexed workspace knowledge.` : user.email ?? user.id);
         return 0;
       }
     }

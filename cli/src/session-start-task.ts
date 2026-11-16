@@ -8,7 +8,7 @@ import {boardRequest,saveBoardRegistration} from './board.ts';
 import {captureDir,readCaptureConfig,type CaptureConfig} from './capture/runtime.ts';
 import {readSetupState} from './setup/state.ts';
 
-type StartupHarness='codex'|'claude-code'|'cursor'|'antigravity';
+type StartupHarness='codex'|'claude-code'|'cursor'|'antigravity'|'devin';
 type Binding={api:string;installationId:string;owner:{tenantId:string;userId:string};harness:StartupHarness;sessionId:string};
 type StartupPayload={hook_event_name:'SessionStart';source:string}|{hook_event_name:'sessionStart'}|{hookEventName:'SessionStart'};
 export type SessionStartTask=Binding&{kind:'session-start';id:string;at:number;payload:StartupPayload};
@@ -36,7 +36,7 @@ function assertCurrent(binding:Binding,expected?:CaptureConfig):void {
 }
 function bindingFor(api:string,harness:string,sessionId:string):Binding {
   const config=readCaptureConfig();
-  if(!config||apiOrigin(api)!==api||!['codex','claude-code','cursor','antigravity'].includes(harness)||!nativeId.test(sessionId)||
+  if(!config||apiOrigin(api)!==api||!['codex','claude-code','cursor','antigravity','devin'].includes(harness)||!nativeId.test(sessionId)||
       !config.installationId||config.installationId==='pending'||!config.owner?.tenantId||!config.owner.userId)throw invalid();
   const binding:Binding={api,installationId:config.installationId,owner:{tenantId:config.owner.tenantId,userId:config.owner.userId},harness:harness as StartupHarness,sessionId};
   assertCurrent(binding);return binding;
@@ -64,13 +64,13 @@ export const startupBindingKey=(api:string,harness:string,sessionId:string)=>key
 export const startupObservation=(api:string,harness:string,sessionId:string)=>readState(bindingFor(api,harness,sessionId)).confirmed;
 
 /** Normal board commands may wait for the already queued startup; hooks never
- * wait here. Inspect only the four exact current-profile keys, never a directory. */
+ * wait here. Inspect only the five exact current-profile keys, never a directory. */
 export async function waitForStartupRegistration(api:string,sessionId:string,{timeoutMs,signal,check=()=>{}}:{timeoutMs:number;signal?:AbortSignal;check?:()=>void}):Promise<boolean> {
   const config=readCaptureConfig();
   if(!config?.backgroundStartup||config.api!==api)return true;
   if(!nativeId.test(sessionId)||!Number.isSafeInteger(timeoutMs)||timeoutMs<0)throw invalid();
   const found:Binding[]=[];
-  for(const harness of ['codex','claude-code','cursor','antigravity'] as const){
+  for(const harness of ['codex','claude-code','cursor','antigravity','devin'] as const){
     const binding:Binding={api,installationId:config.installationId,owner:{tenantId:config.owner.tenantId,userId:config.owner.userId},harness,sessionId};
     const state=readState(binding);if(state.pending||state.confirmed)found.push(binding);
   }
@@ -125,6 +125,7 @@ function validateTask(value:unknown):asserts value is SessionStartTask {
   const payload=value.payload;
   if(value.harness==='antigravity'&&Object.keys(payload).join(',')==='hookEventName'&&payload.hookEventName==='SessionStart')return;
   if(value.harness==='cursor'&&Object.keys(payload).join(',')==='hook_event_name'&&payload.hook_event_name==='sessionStart')return;
+  if(value.harness==='devin'&&Object.keys(payload).sort().join(',')==='hook_event_name,source'&&payload.hook_event_name==='SessionStart'&&['startup','resume'].includes(String(payload.source)))return;
   if(['codex','claude-code'].includes(String(value.harness))&&Object.keys(payload).sort().join(',')==='hook_event_name,source'&&payload.hook_event_name==='SessionStart'&&['startup','resume','clear','compact','fork'].includes(String(payload.source)))return;
   throw invalid();
 }

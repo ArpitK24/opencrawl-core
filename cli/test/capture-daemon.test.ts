@@ -1,11 +1,11 @@
-import {test,expect,setDefaultTimeout} from 'bun:test';
+import {test,expect,setDefaultTimeout,mock} from 'bun:test';
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,appendFileSync,existsSync,readdirSync,rmSync,realpathSync,symlinkSync} from 'node:fs';
 import {join,resolve} from 'node:path';
-import {tmpdir} from 'node:os';
+import {tmpdir,homedir} from 'node:os';
 import {createServer} from 'node:http';
 import {installCapture,uninstallCapture} from '../src/capture/install.ts';
 import {recordDaemonHook,runCaptureDaemon,daemonDir} from '../src/capture/daemon.ts';
-import {captureDir,readCaptureConfig,captureTranscript,captureStatus,flushCaptureWork,syncCaptures,captureCursorNotice} from '../src/capture/runtime.ts';
+import {captureDir,readCaptureConfig,spoolDaemonEvent,captureTranscript,captureStatus,flushCaptureWork,syncCaptures,captureCursorNotice} from '../src/capture/runtime.ts';
 import {purgeLocalCapture} from '../src/capture/controls.ts';
 import {hash} from '../src/capture/parse.ts';
 import {randomUUID} from 'node:crypto';
@@ -22,7 +22,7 @@ setDefaultTimeout(15_000);
 function isolatedTest(name:string,run:()=>Promise<void>,timeout=15_000){
   test(name,async()=>{
     if(process.env.OPENCRAWL_DAEMON_CASE===name){await run();return;}
-    const fallback=mkdtempSync(join(tmpdir(),'opencrawl-daemon-case-'));
+    const fallback=realpathSync(mkdtempSync(join(tmpdir(),'opencrawl-daemon-case-')));
     const child=Bun.spawn([process.execPath,'test',import.meta.path,'-t',name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')],{env:{...process.env,HOME:fallback,USERPROFILE:fallback,OPENCRAWL_AUTH:'',OPENCRAWL_TOKEN:'',OPENCRAWL_SESSIONS_TOKEN:'',OPENCRAWL_DAEMON_CASE:name,OPENCRAWL_CONFIG_HOME:join(fallback,'config'),CLAUDE_CONFIG_DIR:join(fallback,'claude'),CODEX_HOME:join(fallback,'codex'),CURSOR_CONFIG_DIR:join(fallback,'cursor'),ANTIGRAVITY_HOME:join(fallback,'agy')},stdout:'pipe',stderr:'pipe'});
     try{const [code,stdout,stderr]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]);if(code!==0)throw Error(stdout+stderr);}
     finally{child.kill();await child.exited;rmSync(fallback,{recursive:true,force:true});}
@@ -74,7 +74,7 @@ async function fixture(run:(f:any)=>Promise<void>){
 }
 import {dirname} from 'node:path';
 
-function nativeConfig(f:any,harness:'cursor'|'antigravity'|'codex'|'grok-bot'){
+function nativeConfig(f:any,harness:'cursor'|'antigravity'|'codex'|'grok-bot'|'devin'){
   const config=readCaptureConfig()!;
   config.harnesses=[harness];config.roots[harness]=join(f.dir,harness);
   mkdirSync(config.roots[harness]!,{recursive:true});
@@ -131,14 +131,79 @@ isolatedTest('Codex resolves only indexed native session and child identities wi
 
 isolatedTest('native synchronous clients return after local handoff while config and upload are blocked',async()=>fixture(async f=>{
   nativeConfig(f,'cursor');f.hold=true;
+  const marker='continues while upload blocked';
+  const localRecords=(directory:string)=>readdirSync(directory).filter(name=>/\.json(?:\.held)?$/.test(name)).map(name=>({name,body:readFileSync(join(directory,name),'utf8')}));
   recordNativeDaemonHook('cursor',{conversation_id:'native-fast',hook_event_name:'beforeSubmitPrompt',prompt:'initial'});
   await f.start();await until(()=>f.raws.length>0);
   await withSessionLock('capture:configuration',async()=>{
     const start=performance.now(),child=Bun.spawn([process.execPath,resolve(import.meta.dir,'../src/cli.ts'),'collect','hook','--harness','cursor'],{env:process.env,stdin:new Blob([JSON.stringify({conversation_id:'native-fast',hook_event_name:'beforeSubmitPrompt',prompt:'continues while upload blocked'})]),stdout:'pipe',stderr:'pipe'});
     const [exit,stdout,stderr]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]);
     expect(exit).toBe(0);expect(stderr).toBe('');expect(JSON.parse(stdout)).toEqual({continue:true});expect(performance.now()-start).toBeLessThan(1000);
+    // A successful native response must already have a durable local handoff,
+    // whether the recording lane has converted the notice yet or not.
+    expect([...localRecords(join(daemonDir(),'inbox')),...localRecords(join(captureDir(),'queue'))].some(record=>record.body.includes(marker))).toBe(true);
   });
-  f.hold=false;await until(()=>JSON.stringify(f.batches).includes('continues while upload blocked'));
+  f.hold=false;
+  try{await until(()=>JSON.stringify(f.batches).includes(marker));}
+  catch(error){
+    // Keep the failing lane visible in CI before fixture teardown removes it.
+    // These profiles contain only the synthetic records created by this test.
+    throw new Error('Native handoff did not drain: '+JSON.stringify({status:captureStatus(),inbox:localRecords(join(daemonDir(),'inbox')),queue:localRecords(join(captureDir(),'queue')),batches:f.batches,requests:f.requests}),{cause:error});
+  }
+}));
+
+isolatedTest('idle daemon recovers missed inbox notifications without scanning transcripts',async()=>fixture(async f=>{
+  nativeConfig(f,'cursor');
+  const original={...await import('node:fs')};let muted=0;
+  mock.module('node:fs',()=>({...original,watch:(...args:Parameters<typeof original.watch>)=>{
+    if(String(args[0])===join(daemonDir(),'inbox')){args[args.length-1]=()=>{};muted++;}
+    return Reflect.apply(original.watch,original,args);
+  }}));
+  await f.start();await sleep(40);expect(muted).toBe(1);
+  expect(readdirSync(join(daemonDir(),'sessions'))).toHaveLength(0);
+  recordNativeDaemonHook('cursor',{conversation_id:'missed-wakeup',hook_event_name:'beforeSubmitPrompt',prompt:'recover this exact pending event'});
+  await until(()=>JSON.stringify(f.batches).includes('recover this exact pending event'),1000);
+  await f.stop();
+  expect(readdirSync(join(daemonDir(),'inbox'))).toHaveLength(0);
+  expect(JSON.parse(readFileSync(join(daemonDir(),'status.json'),'utf8'))).toMatchObject({captures:0,sessionChecks:0,uploads:1});
+  expect(existsSync(join(captureDir(),'sources'))?readdirSync(join(captureDir(),'sources')):[]).toHaveLength(0);
+  // The same recovery clock must still serve approved startup when recording
+  // is paused; it must not wake the uploader or scan transcripts in that state.
+  const paused={...readCaptureConfig()!,disabled:true,backgroundStartup:true};atomicJson(join(captureDir(),'config.json'),paused);
+  let handled=0;const requests=f.requests;
+  await f.start({processStartupTask:async()=>{handled++;}});await sleep(40);
+  const {path:task}=startupTask(paused);
+  await until(()=>handled===1&&!existsSync(task),1000);await f.stop();
+  expect(f.requests).toBe(requests);
+  expect(JSON.parse(readFileSync(join(daemonDir(),'status.json'),'utf8'))).toMatchObject({captures:0,sessionChecks:0,uploads:0,startups:1});
+}));
+
+isolatedTest('pause observed during a transcript pass retains bounded startup recovery',async()=>fixture(async f=>{
+  const config={...readCaptureConfig()!,backgroundStartup:true};atomicJson(join(captureDir(),'config.json'),config);
+  const second=join(dirname(f.path),'second.jsonl');
+  writeFileSync(second,JSON.stringify({type:'user',uuid:'second-event',sessionId:'second',message:{role:'user',content:'must remain unread after pause'}})+'\n');
+  f.event();recordDaemonHook({session_id:'second',transcript_path:second,hook_event_name:'SessionStart',cwd:f.dir},process.pid);
+  const originalFs={...await import('node:fs')},originalRuntime={...await import('../src/capture/runtime.ts')};
+  // Suppress root notifications so a configuration/queue event cannot conceal
+  // an infinite wait after a pause is observed between two enrolled sessions.
+  const mutedRoots=new Set([captureDir(),join(daemonDir(),'inbox'),join(captureDir(),'queue')]);
+  mock.module('node:fs',()=>({...originalFs,watch:(...args:Parameters<typeof originalFs.watch>)=>{
+    if(mutedRoots.has(String(args[0])))args[args.length-1]=()=>{};
+    return Reflect.apply(originalFs.watch,originalFs,args);
+  }}));
+  let paused=false,handled=0;
+  mock.module('../src/capture/runtime.ts',()=>({...originalRuntime,captureTranscript:async(...args:Parameters<typeof originalRuntime.captureTranscript>)=>{
+    const result=await originalRuntime.captureTranscript(...args);
+    if(!paused){paused=true;atomicJson(join(captureDir(),'config.json'),{...config,disabled:true});}
+    return result;
+  }}));
+  await f.start({processStartupTask:async()=>{handled++;}});await until(()=>paused);await sleep(40);
+  const requests=f.requests,queued=startupTask(readCaptureConfig()!);
+  await until(()=>handled===1&&!existsSync(queued.path),1000);await f.stop();
+  expect(f.requests).toBe(requests);
+  expect(JSON.parse(readFileSync(join(daemonDir(),'status.json'),'utf8'))).toMatchObject({captures:1,sessionChecks:1,startups:1});
+  expect(f.batches.some((batch: {sessionId:string})=>batch.sessionId==='second')).toBe(false);
+  expect(readFileSync(second,'utf8')).toContain('must remain unread after pause');
 }));
 
 isolatedTest('one damaged Cursor session cannot monopolize a backlog and repaired events retain order',async()=>fixture(async f=>{
@@ -806,4 +871,77 @@ isolatedTest('Cursor permits a configured root symlink without permitting redire
   appendFileSync(file,JSON.stringify({role:'assistant',message:{content:[{type:'text',text:'canonical root spelling'}]}})+'\n');
   await captureCursorNotice(next,{id:'canonical-root',at:new Date().toISOString(),harness:'cursor',event:{conversation_id:id,transcript_path:realpathSync(file),hook_event_name:'sessionStart'}});
   const queued=readdirSync(join(captureDir(),'queue')).map(name=>JSON.parse(readFileSync(join(captureDir(),'queue',name),'utf8')));expect(JSON.stringify(queued)).toContain('approved root alias');expect(JSON.stringify(queued)).toContain('canonical root spelling');expect(queued.every(batch=>batch.sessionId===id)).toBe(true);
+}));
+
+isolatedTest('Devin daemon captures native delivery and repeated executions without a transcript or process lifetime',async()=>fixture(async f=>{
+  nativeConfig(f,'devin');
+  const event=(fields:any)=>recordNativeDaemonHook('devin',{session_id:'devin-cloud-session',cwd:f.dir,transcript_path:'/unrelated/must-not-open.jsonl',...fields},-1);
+  event({hook_event_name:'UserPromptSubmit',prompt:'Cloud native prompt'});
+  const execution={hook_event_name:'PostToolUse',tool_name:'exec',tool_input:{command:'printf repeated'},tool_response:{success:true,output:'Output from command in shell fixture:\nrepeated\nExit code: 7'}};
+  event(execution);event(execution);
+  event({hook_event_name:'PostToolUse',tool_name:'message_user',tool_input:{message:'Cloud final answer',block_on_user:true},tool_response:{success:true}});
+  event({hook_event_name:'Stop',last_assistant_message:''});
+  const notices=readdirSync(join(daemonDir(),'inbox')).map(name=>JSON.parse(readFileSync(join(daemonDir(),'inbox',name),'utf8')));
+  expect(notices.every(notice=>notice.pid===undefined&&notice.owner.userId==='fixture'&&notice.installationId!== 'pending')).toBe(true);
+  expect(notices.every(notice=>Number.isSafeInteger(notice.record.sequence)&&notice.record.sequence%3===0)).toBe(true);
+  await f.start();await until(()=>JSON.stringify(f.batches).includes('Cloud final answer')&&readdirSync(join(daemonDir(),'inbox')).length===0);
+  const events=f.batches.flatMap((batch:any)=>batch.events),results=events.filter((e:any)=>e.kind==='tool_result'&&e.data.name==='exec');
+  expect(results).toHaveLength(2);expect(results[0].data.call_id).not.toBe(results[1].data.call_id);
+  expect(results.every((event:any)=>event.data.is_error&&event.data.exit_code===7)).toBe(true);
+  expect(events.filter((e:any)=>e.kind==='message').map((e:any)=>e.data.role).sort()).toEqual(['assistant','user']);
+  expect(readdirSync(join(daemonDir(),'sessions'))).toHaveLength(0);
+  expect(f.batches.every((batch:any)=>batch.harness==='devin'&&batch.sessionId==='devin-cloud-session'&&batch.origin==='cloud'&&batch.captureMode==='live')).toBe(true);
+}));
+
+// Devin Cloud's native overflow pool is Linux-only and rejects symlinked roots.
+(process.platform==='win32'?test.skip:isolatedTest)('Devin overflow is recovered by the worker and sealed retry bytes survive restart',async()=>fixture(async f=>{
+  nativeConfig(f,'devin');
+  const path=join(homedir(),'.devin-files','devin-remote-overflows-'+process.getuid?.(),'shell-test','content.txt');
+  mkdirSync(dirname(path),{recursive:true});writeFileSync(path,'before handoff');
+  recordNativeDaemonHook('devin',{session_id:'devin-overflow',hook_event_name:'PostToolUse',tool_name:'exec',tool_response:{success:true,output:'truncated',overflow_path:path}});
+  const file=join(daemonDir(),'inbox',readdirSync(join(daemonDir(),'inbox'))[0]!);
+  expect(readFileSync(file,'utf8')).not.toContain('before handoff');
+  writeFileSync(path,'worker recovered full output');f.fail=true;
+  await f.start();await until(()=>f.raws.length>0);await f.stop();
+  const first=f.raws[0];expect(first).toContain('worker recovered full output');expect(first).not.toContain('truncated');
+  writeFileSync(path,'changed after durable spool');f.fail=false;await f.start();
+  await until(()=>readdirSync(join(captureDir(),'queue')).length===0&&f.batches.length>0);
+  expect(f.raws.filter((raw:string)=>raw===first).length).toBeGreaterThanOrEqual(2);
+  expect(JSON.stringify(f.batches)).not.toContain('changed after durable spool');
+}));
+
+isolatedTest('Devin refuses unbound hooks and holds an inbox from another installation',async()=>fixture(async f=>{
+  const config=nativeConfig(f,'devin'),file=join(captureDir(),'config.json');
+  writeFileSync(file,JSON.stringify({...config,authPending:true,installationId:'pending'}));
+  const event={session_id:'devin-bound',hook_event_name:'UserPromptSubmit',prompt:'must stay with original owner'};
+  recordNativeDaemonHook('devin',event);expect(existsSync(join(daemonDir(),'inbox'))?readdirSync(join(daemonDir(),'inbox')):[]).toHaveLength(0);
+  writeFileSync(file,JSON.stringify(config));recordNativeDaemonHook('devin',event);
+  const notice=join(daemonDir(),'inbox',readdirSync(join(daemonDir(),'inbox'))[0]!);
+  writeFileSync(file,JSON.stringify({...config,installationId:'replacement'}));
+  await f.start();await until(()=>existsSync(notice+'.held'));expect(f.batches).toHaveLength(0);
+}));
+
+isolatedTest('Devin rechecks enrollment and consent after asynchronous overflow recovery',async()=>fixture(async f=>{
+  const config=nativeConfig(f,'devin'),file=join(captureDir(),'config.json');
+  const notice={id:'config-race',at:new Date().toISOString(),sequence:3,harness:'devin' as const,event:{session_id:'devin-race',hook_event_name:'PostToolUse',tool_name:'exec',tool_response:{success:true,output:'must not queue',overflow_path:'/outside/content.txt'}}};
+  for(const replacement of [{...config,owner:{tenantId:'another',userId:'another'}},{...config,harnesses:[]},null]){
+    writeFileSync(file,JSON.stringify(config));const pending=spoolDaemonEvent(config,notice);
+    if(replacement)writeFileSync(file,JSON.stringify(replacement));else rmSync(file);
+    await expect(pending).rejects.toHaveProperty('code',replacement?.harnesses?.length===0?'CAPTURE_CONSENT_CHANGED':'CAPTURE_CONFIG_CHANGED');
+    expect(readdirSync(join(captureDir(),'queue'))).toHaveLength(0);
+  }
+  writeFileSync(file,JSON.stringify(config));
+}));
+
+isolatedTest('Devin native hook returns after bounded local handoff while the configuration lock is held',async()=>fixture(async f=>{
+  nativeConfig(f,'devin');
+  await withSessionLock('capture:configuration',async()=>{
+    const child=Bun.spawn([process.execPath,resolve(import.meta.dir,'../src/cli.ts'),'collect','hook','--harness','devin'],{env:process.env,stdin:'pipe',stdout:'pipe',stderr:'pipe'});
+    child.stdin.write(JSON.stringify({session_id:'devin-fast',hook_event_name:'UserPromptSubmit',prompt:'bounded Cloud hook'})+'\n');
+    try{
+      const code=await Promise.race([child.exited,sleep(1500).then(()=>{throw Error('Hook waited with stdin left open');})]);
+      expect(code).toBe(0);expect(await new Response(child.stdout).text()).toBe('');expect(await new Response(child.stderr).text()).toBe('');
+      expect(readdirSync(join(daemonDir(),'inbox'))).toHaveLength(1);
+    }finally{child.stdin.end();child.kill();await child.exited;}
+  });
 }));

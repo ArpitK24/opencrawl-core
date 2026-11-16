@@ -21,8 +21,10 @@ Other integrations' hooks are preserved.
 
 One worker watches the registered transcript and that session's subagent
 directory. Filesystem changes trigger incremental reads. A 30-second recovery
-check visits only enrolled sessions to recover missed notifications and detect
-parent process exit when Claude cancels an asynchronous end hook. Finished
+check visits only its pending inbox and enrolled sessions to recover missed
+notifications and detect parent process exit when Claude cancels an asynchronous
+end hook. The inbox check remains scheduled with no active transcript watches,
+so event-only sessions cannot strand a durable handoff after a lost notification. Finished
 sessions leave the active registry after their final complete records are
 spooled. An incomplete final record remains recoverable. The historical
 `capture/sources` catalogue is never read by this worker.

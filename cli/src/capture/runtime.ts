@@ -16,6 +16,7 @@ import {workspaceIdentityEnabled, workspaceToken} from '../workspace-identity.ts
 import {parseRecord, detectOrigin, finalizeEventIdentity, hash, readsTranscript, HARNESSES, type Harness, type TranscriptHarness} from './parse.ts';
 import {cursorSession,cursorTranscript,cursorMessage,cursorThoughtDuplicate,cursorThoughtState} from './cursor.ts';
 import {grokBotEvents, grokBotSession, grokBotTitleEvent, grokBotUnsupported, GROK_BOT_BOUNDARIES, GROK_BOT_MAX_HOOK_BYTES} from './grok-bot.ts';
+import {devinEvents,devinOverflow,devinSession,devinUnsupported,DEVIN_MAX_HOOK_BYTES} from './devin.ts';
 import {isClaudeDesktopTranscript,desktopNativeMessageIds} from './desktop-history.ts';
 import {captureExcluded, type CaptureExclusions} from './policy.ts';
 import {localCodexHookReview,codexHookReviewMessage,type CodexHookReview} from './codex-hooks.ts';
@@ -32,7 +33,7 @@ export const captureDir = () => join(configDir(),'capture');
 const read = (p:string, fallback:any=null) => {try{return JSON.parse(readFileSync(p,'utf8'));}catch(e:any){if(e.code==='ENOENT')return fallback;throw e;}};
 /** Bump when installed hook entries change so the next hook rewrites existing installs. */
 export const HOOK_MODE='native-v4';
-export type CaptureConfig = {disabled?:boolean,authPending?:boolean,captureWorker?:'daemon-v1',backgroundStartup?:boolean,claudeCapture?:'daemon-v1',exclusions?:CaptureExclusions,schemaVersion:1,hookOwnership?:'global'|'plugin',hookMode?:typeof HOOK_MODE|'managed-v3'|'managed-v2'|'managed',harnesses?:Harness[],historyHarnesses?:TranscriptHarness[],api:string,installationId:string,owner:{tenantId:string,userId:string,name?:string,email?:string},installedAt:string,roots:{'claude-code':string,codex:string,'grok-bot'?:string,cursor?:string,antigravity?:string},claudeDesktopSessionsRoot?:string,command:string[]};
+export type CaptureConfig = {disabled?:boolean,authPending?:boolean,captureWorker?:'daemon-v1',backgroundStartup?:boolean,claudeCapture?:'daemon-v1',exclusions?:CaptureExclusions,schemaVersion:1,hookOwnership?:'global'|'plugin',hookMode?:typeof HOOK_MODE|'managed-v3'|'managed-v2'|'managed',harnesses?:Harness[],historyHarnesses?:TranscriptHarness[],api:string,installationId:string,owner:{tenantId:string,userId:string,name?:string,email?:string},installedAt:string,roots:{'claude-code':string,codex:string,'grok-bot'?:string,cursor?:string,antigravity?:string,devin?:string},claudeDesktopSessionsRoot?:string,command:string[]};
 export const readCaptureConfig = ():CaptureConfig|null => read(join(captureDir(),'config.json'));
 /** claudeCapture is accepted only for the first opt-in daemon pilot. */
 export const captureDaemonEnabled=(config:CaptureConfig|null=readCaptureConfig())=>config?.captureWorker==='daemon-v1'||config?.claudeCapture==='daemon-v1';
@@ -46,7 +47,10 @@ export function harnessRoot(config:CaptureConfig,harness:Harness) {
 }
 // Enrollment and every queued payload remain bound to their original destination.
 async function captureIdentity(config:CaptureConfig,token?:string,signal?:AbortSignal) {
-  const {principal,capabilities}=await request(config.api,'/api/sessions/identity',{signal},token);
+  // Keep a refreshed workload token paired with the owner verified by identity.
+  let verifiedToken=token;
+  const renew=token&&workspaceIdentityEnabled()?async(rejected:string)=>verifiedToken=await workspaceToken(config.api,rejected,signal):undefined;
+  const {principal,capabilities}=await request(config.api,'/api/sessions/identity',{signal},token,renew);
   signal?.throwIfAborted();
   if(!principal?.userId || !principal?.tenantId)throw new CliError('CAPTURE_IDENTITY_MISSING','Deployment does not supply capture identity');
   // Authentication may finish after uninstall or another worker initializes a
@@ -63,7 +67,7 @@ async function captureIdentity(config:CaptureConfig,token?:string,signal?:AbortS
     }
     atomicJson(join(captureDir(),'config.json'),{...current,owner:principal,installationId:config.installationId,...(current.authPending?{authPending:false}:{})});
   },20_000,signal);
-  return {principal,gzip:Array.isArray(capabilities?.batchEncodings)&&capabilities.batchEncodings.includes('gzip'),cursor:capabilities?.harnesses?.includes('cursor')===true,antigravity:capabilities?.harnesses?.includes('antigravity')===true};
+  return {principal,token:verifiedToken,gzip:Array.isArray(capabilities?.batchEncodings)&&capabilities.batchEncodings.includes('gzip'),cursor:capabilities?.harnesses?.includes('cursor')===true,antigravity:capabilities?.harnesses?.includes('antigravity')===true};
 }
 export async function refreshCaptureIdentity(config:CaptureConfig,token?:string,signal?:AbortSignal) {
   return (await captureIdentity(config,token,signal)).principal;
@@ -97,7 +101,7 @@ export async function request(api:string,path:string,init:RequestInit={},tokenOv
     }
   };
   let res=await send();
-  if(res.status===401 && (renew || !staticToken)){token=renew?await renew(token):workspaceIdentityEnabled()?await workspaceToken(api,token):await accessToken(api,token,fetch,signal);res=await send();}
+  if(res.status===401 && (renew || !staticToken)){await res.body?.cancel();token=renew?await renew(token):workspaceIdentityEnabled()?await workspaceToken(api,token,signal):await accessToken(api,token,fetch,signal);res=await send();}
   if(res.status===413){await res.body?.cancel();throw Object.assign(new CliError('CAPTURE_UPLOAD_FAILED','Capture request failed (413): payload or session capacity exceeded'),{httpStatus:413});}
   const body=await res.json().catch(()=>{throw res.status>=500||res.status===429
     ?new CliError('CAPTURE_RETRY_EXHAUSTED',`Capture endpoint ${new URL(api).hostname} is temporarily unavailable (HTTP ${res.status}). Queued data is retained; retry the approved import.`)
@@ -632,20 +636,23 @@ export async function captureHook(harness:Harness,event:any) {
   if(config.harnesses&&!config.harnesses.includes(harness))return;
   ensureDirectories();
   const id=randomUUID(),at=new Date().toISOString();
-  if(harness==='grok-bot'||harness==='cursor') {
+  if(harness==='grok-bot'||harness==='cursor'||harness==='devin') {
     if(!event||typeof event!=='object'||Array.isArray(event))throw new CliError('CAPTURE_EVENT_INVALID','Hook payload is not an object');
     // Prepared with --defer-auth and nobody has signed in: a computer whose
     // owner never opts in must not accumulate what their Bots do.
     if(config.authPending)return;
     if(!config.harnesses?.includes(harness))return;
-    const session=harness==='cursor'?cursorSession(event):grokBotSession(event,at);
+    const session=harness==='devin'?devinSession(event):harness==='cursor'?cursorSession(event):grokBotSession(event,at);
     if(captureExcluded(config,{sessionId:session.sessionId,cwd:session.cwd??undefined}))return;
     // Hook payloads carry no time or order. Microseconds since the epoch keep
     // events from separate hook processes in the order they were recorded.
     let sequence=Math.round((performance.timeOrigin+performance.now())*1000);
-    if(harness==='cursor'){const clock=join(captureDir(),'cursor-sequence.json');sequence=Math.max(sequence,Number(read(clock,0))+2);atomicJson(clock,sequence);}
+    if(harness==='cursor'||harness==='devin'){const clock=join(captureDir(),harness+'-sequence.json');sequence=Math.max(sequence,Number(read(clock,0))+(harness==='devin'?3:2));if(!Number.isSafeInteger(sequence+2))throw new CliError('CAPTURE_EVENT_INVALID','Native hook sequence exceeds the supported range');atomicJson(clock,sequence);}
     const bytes=Buffer.byteLength(JSON.stringify(event));
-    atomicJson(join(captureDir(),'notices',id+'.json'),{id,at,sequence,harness,event:bytes>GROK_BOT_MAX_HOOK_BYTES?grokBotUnsupported(event,'too_large',bytes):event});
+    const maxBytes=harness==='devin'?DEVIN_MAX_HOOK_BYTES:GROK_BOT_MAX_HOOK_BYTES,unsupported=harness==='devin'?devinUnsupported:grokBotUnsupported;
+    const payload=bytes>maxBytes?unsupported(event,'too_large',bytes):event;
+    if(Buffer.byteLength(JSON.stringify(payload))>maxBytes)throw new CliError('CAPTURE_HOOK_TOO_LARGE','Native hook metadata exceeds the local handoff limit');
+    atomicJson(join(captureDir(),'notices',id+'.json'),{id,at,sequence,harness,event:payload});
     return;
   }
   if(harness==='antigravity') {
@@ -661,7 +668,7 @@ export async function captureHook(harness:Harness,event:any) {
   if(captureExcluded(config,{sessionId,cwd:event.cwd}))return;
   atomicJson(join(captureDir(),'notices',id+'.json'),{id,at,harness,event});
   // Synchronous hooks (Grok Bot, Cursor, Antigravity) give up on a held lock rather than queue behind it.
-  },harness==='grok-bot'||harness==='cursor'||harness==='antigravity'?2000:Infinity);
+  },harness==='grok-bot'||harness==='cursor'||harness==='antigravity'||harness==='devin'?2000:Infinity);
 }
 
 export type CaptureHookNotice={id:string,at:string,sequence?:number,harness:Harness,event:any};
@@ -739,6 +746,35 @@ export async function spoolDaemonEvent(config:CaptureConfig,notice:CaptureHookNo
   ensureDirectories();
   if(notice.harness==='cursor')return captureCursorNotice(config,notice);
   const attachments:any[]=[];
+  if(notice.harness==='devin') {
+    const session=devinSession(notice.event);
+    const meta={harness:notice.harness,sessionId:session.sessionId,cwd:session.cwd??undefined,origin:'cloud',
+      originEvidence:'Devin Cloud native session hook',parentSessionId:null,captureMode:'live'};
+    const assertCurrent=()=>{
+      const current=readCaptureConfig();
+      if(!current||current.authPending||current.api!==config.api||current.installationId!==config.installationId||current.owner.tenantId!==config.owner.tenantId||current.owner.userId!==config.owner.userId)
+        throw new CliError('CAPTURE_CONFIG_CHANGED','Capture enrollment changed; the original Devin notice is retained.');
+      if(current.disabled||!current.harnesses?.includes('devin')||captureExcluded(current,meta))
+        throw new CliError('CAPTURE_CONSENT_CHANGED','Forward Devin recording is no longer enabled; the original notice is retained.');
+    };
+    assertCurrent();
+    const overflow=await devinOverflow(notice.event);
+    // Overflow recovery yields to config changes. Recheck before reading any
+    // attachment or writing a batch; never bind the old notice to a new owner.
+    assertCurrent();
+    let events;
+    try {
+      events=devinEvents(notice,overflow).map(event=>attachmentTransform(event,attachments,session.cwd??homedir()));
+      events.forEach(finalizeEventIdentity);
+      if(attachments.length>500||Buffer.byteLength(JSON.stringify(events))>12*1024*1024)
+        throw new CliError('CAPTURE_EVENT_INVALID','Devin hook payload exceeds what one batch can carry');
+    } catch(error:any) {
+      if(!['CAPTURE_EVENT_TOO_DEEP','CAPTURE_EVENT_INVALID'].includes(error?.code))throw error;
+      attachments.length=0;
+      events=devinEvents({...notice,event:devinUnsupported(notice.event,'unsupported',Buffer.byteLength(JSON.stringify(notice.event)))});
+    }
+    enqueue(config,meta,events,attachments);return;
+  }
   if(notice.harness==='grok-bot') {
     const session=grokBotSession(notice.event,notice.at);
     const meta={harness:notice.harness,sessionId:session.sessionId,conversationId:session.conversationId,cwd:session.cwd,origin:'cloud',
@@ -823,7 +859,12 @@ export async function drainCaptureNotices(config=readCaptureConfig()!,{until=Inf
       }catch(error){firstError??=error;blockedCursorSessions.add(native);}
       continue;
     }
-    if(notice.harness==='grok-bot') {
+    if(notice.harness==='devin'){
+      try{await spoolDaemonEvent(config,notice);unlinkSync(path);syncDirectory(dirname(path));processed++;}
+      catch(error){firstError??=error;}
+      continue;
+    }
+      if(notice.harness==='grok-bot') {
       round.push({path,notice});roundBytes+=statSync(path).size;
       if(round.length>=200||roundBytes>=16*1024*1024)await spoolRound();
       continue;
@@ -1097,6 +1138,7 @@ export async function flushCaptures({wait=true,concurrency,batchDelayMs=0,onUplo
     const staticToken=staticCaptureToken(config.api);
     let token=staticToken||(workspaceIdentityEnabled()?await workspaceToken(config.api):await accessToken(config.api));
     const identity=await captureIdentity(config,token),principal=identity.principal;
+    token=identity.token??token;
     let useGzip=identity.gzip,cursorSupported=identity.cursor,antigravitySupported=identity.antigravity;
     // A long flush outlives a short-lived sign-in token. Renew before each request
     // and after a rejection, re-verifying identity whenever the token changes.
@@ -1106,7 +1148,7 @@ export async function flushCaptures({wait=true,concurrency,batchDelayMs=0,onUplo
       useGzip=refreshed.gzip;cursorSupported=refreshed.cursor;antigravitySupported=refreshed.antigravity;
       if(current.userId!==principal.userId)throw new CliError('CAPTURE_OWNER_MISMATCH','Signed-in user changed during upload. Sign back in as the queued author; queued data is retained.');
       if(current.tenantId!==principal.tenantId)throw new CliError('CAPTURE_DESTINATION_CHANGED','Signed-in team changed during upload. Sign back into the original destination; queued data is retained.');
-      return token=next;
+      return token=refreshed.token??next;
     };
     const current=async()=>staticToken||await adopt(workspaceIdentityEnabled()?await workspaceToken(config.api):await accessToken(config.api));
     const renew=staticToken?undefined:async(rejected:string)=>adopt(workspaceIdentityEnabled()?await workspaceToken(config.api,rejected):await accessToken(config.api,rejected));

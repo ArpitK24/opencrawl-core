@@ -5,6 +5,7 @@ import type {AccountState} from './account-state.mjs';
 import type {ConnectorSecrets} from './connector-secrets.mjs';
 import type {SlackCaptureState} from './slack-capture.mjs';
 import type {ReplicasState} from './replicas.mjs';
+import type {DevinState} from './devin.mjs';
 import type {ValueReportState} from './value-reports.mjs';
 import type {SessionDeletionRequests} from './deletion-requests.mjs';
 import type {ResourceControls} from './resource-controls.mjs';
@@ -24,6 +25,7 @@ export interface ApplicationState {
   readonly connectorSecrets:ConnectorSecrets;
   readonly slackCapture:SlackCaptureState;
   readonly replicas:ReplicasState;
+  readonly devin:DevinState;
   readonly valueReports:ValueReportState;
   readonly controls:ResourceControls;
   readonly indexingReceipts:IndexingReceipts;

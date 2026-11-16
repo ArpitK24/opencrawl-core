@@ -8,6 +8,7 @@ import {captureExcluded} from './policy.ts';
 import {cursorSession} from './cursor.ts';
 import {grokBotSession,grokBotUnsupported,GROK_BOT_MAX_HOOK_BYTES} from './grok-bot.ts';
 import {type Harness} from './parse.ts';
+import {devinSession,devinUnsupported,DEVIN_MAX_HOOK_BYTES} from './devin.ts';
 import {codexNativeSession} from './codex-session.ts';
 
 type Binding={api:string,installationId:string,owner:{tenantId:string,userId:string}};
@@ -31,6 +32,7 @@ export function daemonPathAllowed(config:CaptureConfig,harness:Harness,sessionId
 export function daemonSession(harness:Harness,event:any,at:string) {
   if(harness==='cursor')return cursorSession(event);
   if(harness==='grok-bot')return grokBotSession(event,at);
+  if(harness==='devin')return devinSession(event);
   const fields=harness==='antigravity'?antigravityHookFields(event):{sessionId:event?.session_id,cwd:typeof event?.cwd==='string'?event.cwd:undefined};
   if(typeof fields.sessionId!=='string'||!/^[\w.:-]{1,200}$/.test(fields.sessionId))throw Error('Hook missing a native session ID');
   return {sessionId:fields.sessionId,cwd:fields.cwd};
@@ -47,14 +49,17 @@ export function recordNativeDaemonHook(harness:Harness,event:any,pid=process.ppi
   if(captureExcluded(config,{sessionId:session.sessionId,cwd:session.cwd??undefined}))return false;
   if(harness==='claude-code'&&(typeof event.transcript_path!=='string'||!daemonPathAllowed(config,harness,session.sessionId,event.transcript_path)))throw Error('Claude transcript outside configured session');
   const bytes=Buffer.byteLength(JSON.stringify(event));
-  if(bytes>GROK_BOT_MAX_HOOK_BYTES){
-    if(harness==='cursor'||harness==='grok-bot'){
-      event=grokBotUnsupported(event,'too_large',bytes);
-      if(Buffer.byteLength(JSON.stringify(event))>GROK_BOT_MAX_HOOK_BYTES)throw new CliError('CAPTURE_HOOK_TOO_LARGE','Native hook metadata exceeds the local handoff limit');
+  const maxBytes=harness==='devin'?DEVIN_MAX_HOOK_BYTES:GROK_BOT_MAX_HOOK_BYTES;
+  if(bytes>maxBytes){
+    if(harness==='cursor'||harness==='grok-bot'||harness==='devin'){
+      event=(harness==='devin'?devinUnsupported:grokBotUnsupported)(event,'too_large',bytes);
+      if(Buffer.byteLength(JSON.stringify(event))>maxBytes)throw new CliError('CAPTURE_HOOK_TOO_LARGE','Native hook metadata exceeds the local handoff limit');
     }
     else throw new CliError('CAPTURE_HOOK_TOO_LARGE','Capture hook exceeds 8 MiB; source transcript is preserved');
   }
-  const sequence=Math.round((performance.timeOrigin+performance.now())*1000);
+  // Devin expands delivery into call, result and message; reserve adjacent IDs.
+  const sequence=Math.round((performance.timeOrigin+performance.now())*1000)*(harness==='devin'?3:1);
+  if(!Number.isSafeInteger(sequence+2))throw new CliError('CAPTURE_EVENT_INVALID','Native hook sequence exceeds the supported range');
   const record:CaptureHookNotice={id,at:time,sequence,harness,event};
   const notice:DaemonNotice={kind:'capture',id,at,api:config.api,installationId:config.installationId,owner:{tenantId:config.owner.tenantId,userId:config.owner.userId},record,...(harness==='claude-code'?{pid}:{})};
   // Do not copy tool payloads into the persistent session registration.
@@ -68,7 +73,7 @@ export function recordNativeDaemonHook(harness:Harness,event:any,pid=process.ppi
 
 export function daemonRegistration(config:CaptureConfig,notice:DaemonNotice):DaemonRegistration|null {
   const {harness,event,at}=notice.record,session=daemonSession(harness,event,at);
-  if(harness==='grok-bot')return null;
+  if(harness==='grok-bot'||harness==='devin')return null;
   const raw=harness==='antigravity'?antigravityHookFields(event).transcriptPath:event.transcript_path??(harness==='codex'?codexNativeSession(harnessRoot(config,harness),session.sessionId)?.path:undefined);
   // Text transcript metadata is not a native Cursor JSONL; content hooks are
   // still authoritative. Never search for a different transcript by scanning.

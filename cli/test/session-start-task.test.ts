@@ -238,3 +238,33 @@ for(const held of [true,false])test(`pending registration fails truthfully when 
  if(held)expect(readFileSync(path+'.held','utf8')).toBe(before);
  expect(JSON.parse(readFileSync(f.stateFile(),'utf8')).pending.id).toBe(task.id);
 }));
+
+
+test('selected Devin startup is local with recording off and revocation blocks worker confirmation',()=>fixture(async f=>{
+ const config={...f.config,disabled:true,harnesses:[]};f.writeConfig(config);
+ const request:typeof import('../src/board.ts').boardRequest=async()=>{throw Error('foreground bootstrap');};
+ const network=spyOn(globalThis,'fetch').mockImplementation((async()=>{throw Error('foreground network');}) as unknown as typeof fetch);
+ const auth=spyOn(session,'accessToken').mockImplementation(async()=>{throw Error('foreground auth');});
+ const configured=spyOn(identity,'configuredToken').mockImplementation(async()=>{throw Error('foreground identity');});
+ const ensure=spyOn(service,'ensureCaptureDaemon').mockImplementation(async()=>{throw Error('foreground service launch');});
+ const selected={...f.setup,selections:{...f.setup.selections,plugins:{...f.setup.selections.plugins,devin:true}}};
+ try{
+  // A recognized harness is not permission to enqueue it.
+  expect((await sessionStart(api,'devin',event,request)).hookSpecificOutput.additionalContext).not.toContain('background registration pending');expect(f.tasks()).toHaveLength(0);
+  f.writeSetup(selected);
+  for(const changed of [{source:'compact'},{source:'fork'},{hook_event_name:'Stop'}])expect((await sessionStart(api,'devin',{...event,...changed},request)).hookSpecificOutput.additionalContext).not.toContain('background registration pending');
+  f.writeConfig({...config,installationId:'foreign-installation'});
+  expect((await sessionStart(api,'devin',event,request)).hookSpecificOutput.additionalContext).not.toContain('background registration pending');expect(f.tasks()).toHaveLength(0);f.writeConfig(config);
+  for(const source of ['startup','resume']){
+   const output=(await sessionStart(api,'devin',{...event,source,requester:{email:'untrusted'},tool_output:'never persist'},request)).hookSpecificOutput.additionalContext;
+   expect(output).toContain('background registration pending');expect(output).toContain(retrievalInstruction);expect(output).toContain('does not prove first-turn capture');
+  }
+  expect(f.tasks()).toHaveLength(1);expect(JSON.stringify(f.tasks())).not.toContain('untrusted');expect(JSON.stringify(f.tasks())).not.toContain('never persist');
+  for(const spy of [network,auth,configured,ensure])expect(spy).not.toHaveBeenCalled();
+ }finally{network.mockRestore();auth.mockRestore();configured.mockRestore();ensure.mockRestore();}
+ const task=f.tasks()[0]!,paths:string[]=[];
+ f.writeSetup(f.setup);
+ await expect(processSessionStartTask(config,task,receiver(f,path=>paths.push(path)))).rejects.toMatchObject({code:'STARTUP_BINDING_CHANGED'});expect(paths).toEqual([]);
+ f.writeSetup(selected);await processSessionStartTask(config,task,receiver(f,path=>paths.push(path)));
+ expect(paths).toEqual(['/api/cli/me','/api/board/bootstrap']);expect(startupObservation(api,'devin',sessionId)?.registration.session).toBe(sessionId);
+}));

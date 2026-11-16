@@ -6,6 +6,7 @@ import {installCapture,uninstallCapture,upgradeCaptureHooks} from './install.ts'
 import {captureHook,captureAttentionNotice,ownedCaptureWorker,captureStatus,readCaptureConfig,syncCaptures,flushCaptureWork,refreshCapturedTitles,recordError,hookFlush,bindHookIdentity,captureDaemonEnabled} from './runtime.ts';
 import {processSessionStartTask} from '../session-start-task.ts';
 import {runCaptureDaemon} from './daemon.ts';
+import {ensureCaptureDaemon} from './daemon-service.ts';
 import {recordNativeDaemonHook} from './daemon-handoff.ts';
 import {exitAfterCredentialRotation} from '../session.ts';
 import {grokBotResponse} from './grok-bot.ts';
@@ -148,12 +149,20 @@ export async function collectCommand(action:string,api:string,values:any) {
           if(harness==='antigravity'&&!event.hookEventName&&values.event)event.hookEventName=values.event;
           if(!((harness==='claude-code'||harness==='codex')&&event?.cursor_version)){
             recordPluginActivation(plugin,event);
-            if(!plugin||pluginRecordingEnabled(plugin))recordNativeDaemonHook(harness as Harness,event);
+            if(!plugin||pluginRecordingEnabled(plugin)){
+              const recorded=recordNativeDaemonHook(harness as Harness,event);
+              // Only a verified, still-selected Devin plugin may request its
+              // existing transient host worker after resume. Other hooks stay local.
+              if(recorded&&harness==='devin'&&plugin){
+                const validateBinding=()=>{const current=pluginHookContext(api,harness);if(!current||JSON.stringify(current)!==JSON.stringify(plugin)||!pluginRecordingEnabled(current))throw new CliError('PLUGIN_CONTEXT_INVALID','The selected Devin plugin changed before worker recovery.');};
+                await ensureCaptureDaemon(readCaptureConfig(),{validateBinding});
+              }
+            }
           }
         }catch(error){try{recordError(error);}catch{}}
         if(harness==='cursor'||harness==='grok-bot')process.stdout.write(JSON.stringify(grokBotResponse(event))+'\n');
         if(harness==='antigravity')process.stdout.write(JSON.stringify(antigravityResponse(event,values.event))+'\n');
-        if(['cursor','grok-bot','antigravity'].includes(harness!)){
+        if(['cursor','grok-bot','antigravity','devin'].includes(harness!)){
           await new Promise<void>(resolve=>process.stdout.write('',()=>resolve()));
           exitAfterCredentialRotation(0);
         }

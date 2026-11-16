@@ -226,7 +226,7 @@ export async function installCapture(api:string,{background=false,deferAuth=fals
   const affected=[join(captureDir(),'config.json'),join(captureDir(),'receiver-token.json'),...(hookOwnership==='global'?[hookRunner('capture',command).file,
     join(config.roots['claude-code'],'settings.json'),join(config.roots.codex,'hooks.json'),toml,
     ...(['cursor','grok-bot','antigravity'] as const).filter(h=>enrolled.includes(h)).map(h=>hookFile(config,h)),
-    ...(previous?removed.map(h=>hookFile(previous,h)):[])]:[])];
+    ...(previous?removed.filter(h=>h!=='devin').map(h=>hookFile(previous,h)):[])]:[])];
   const originals=new Map(affected.map(path=>[path,existsSync(path)?readFileSync(path):null]));
   try {
   // The worker does not take the configuration lock. Its old consent remains
@@ -236,7 +236,7 @@ export async function installCapture(api:string,{background=false,deferAuth=fals
   if(selectionMode==='replace')establishForwardBoundaries(config,enrolled.filter(h=>readsTranscript(h)&&needsBoundary(h)) as TranscriptHarness[]);
   if(receiverToken)atomicJson(join(captureDir(),'receiver-token.json'),{api,token:receiverToken});
   if(hookOwnership==='global'){
-  if(previous)for(const h of removed){const file=hookFile(previous,h);if(!existsSync(file))continue;if(h==='claude-code'||h==='codex')modifyHooks(file,[],null);else if(h==='antigravity')modifyAntigravityHooks(file,null);else modifyCursorFormatHooks(file,null,h);}
+  if(previous)for(const h of removed.filter((h):h is Exclude<Harness,'devin'>=>h!=='devin')){const file=hookFile(previous,h);if(!existsSync(file))continue;if(h==='claude-code'||h==='codex')modifyHooks(file,[],null);else if(h==='antigravity')modifyAntigravityHooks(file,null);else modifyCursorFormatHooks(file,null,h);}
   configureHooks(config,enrolled);
   if(harnesses.includes('codex'))enableCodex(config.roots.codex);
   }

@@ -7,22 +7,35 @@ import {atomicJson,syncDirectory,configDir,withSessionLock} from '../session.ts'
 import {captureDir,readCaptureConfig,captureDaemonEnabled,captureDaemonHarnesses,recordError,type CaptureConfig} from './runtime.ts';
 import {hash} from './parse.ts';
 import {compiled,nativeBin,selectedBinary} from '../distribution.ts';
+import {workspaceIdentityEnabled,configuredProvider} from '../workspace-identity.ts';
+import {hostServiceCommand,installHostService,stopHostService,verifyHostService} from './systemd-host.ts';
+import {assertTokenDestination} from '../environment-token.ts';
+import {apiOrigin,CliError} from '../oauth.ts';
+import {validWorkerPath} from './daemon-environment.ts';
+type HostInvoke=NonNullable<Parameters<typeof installHostService>[1]>;
 
 const directory=()=>join(captureDir(),'daemon');
 const label=()=>`com.getopencrawl.capture.${hash(configDir()).slice(0,12)}`;
 const xml=(s:string)=>s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&apos;');
-function serviceEnvironment(){
+function serviceEnvironment(config:CaptureConfig){
   const environment:Record<string,string>={OPENCRAWL_CONFIG_HOME:dirname(configDir()),OPENCRAWL_NO_UPDATE:'1'};
   for(const name of ['XDG_CACHE_HOME','XDG_DATA_HOME'])if(process.env[name])environment[name]=process.env[name]!;
+  if(workspaceIdentityEnabled()){
+    assertTokenDestination(config.api);
+    if(!process.env.PATH||!validWorkerPath(process.env.PATH))throw new CliError('INVALID_USAGE','A workload worker needs an absolute helper search path.',64);
+    environment.OPENCRAWL_AUTH=process.env.OPENCRAWL_AUTH!;environment.PATH=process.env.PATH;
+  }
   return environment;
 }
 const continuous=(config:CaptureConfig)=>Boolean(!config.disabled&&captureDaemonHarnesses(config).length||config.backgroundStartup);
-const workerCommand=(config:CaptureConfig)=>[...config.command,'collect','daemon','--worker-environment',JSON.stringify(serviceEnvironment())];
+export const captureDaemonCommand=(config:CaptureConfig)=>[...config.command,'collect','daemon','--api',apiOrigin(config.api),'--worker-environment',JSON.stringify(serviceEnvironment(config))];
+const hostBinding=()=>({label:label(),profileHash:hash(configDir()),uid:process.getuid!()});
+const hostService=(config:CaptureConfig)=>({...hostBinding(),command:captureDaemonCommand(config),continuous:continuous(config)});
 /** systemd has its own quoting, environment and percent-specifier rules; it
  * does not run ExecStart through a shell. Disable dollar expansion explicitly. */
 const unitQuote=(value:string)=>'"'+value.replaceAll('\\','\\\\').replaceAll('"','\\"').replaceAll('\n','\\n').replaceAll('\r','\\r').replaceAll('%','%%')+'"';
 export function systemdUnit(config:CaptureConfig){
-  return `[Unit]\nDescription=OpenCrawl session capture\nStartLimitIntervalSec=0\n\n[Service]\nType=exec\nExecStart=:${[...config.command,'collect','daemon'].map(unitQuote).join(' ')}\n${Object.entries(serviceEnvironment()).map(([key,value])=>'Environment='+unitQuote(key+'='+value)).join('\n')}\nRestart=${continuous(config)?'always':'on-failure'}\nRestartSec=10\nTimeoutStopSec=30\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
+  return `[Unit]\nDescription=OpenCrawl session capture\nStartLimitIntervalSec=0\n\n[Service]\nType=exec\nExecStart=:${captureDaemonCommand(config).map(unitQuote).join(' ')}\n${Object.entries(serviceEnvironment(config)).map(([key,value])=>'Environment='+unitQuote(key+'='+value)).join('\n')}\nRestart=${continuous(config)?'always':'on-failure'}\nRestartSec=10\nTimeoutStopSec=30\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
 }
 function writeServiceFile(path:string,content:string){
   mkdirSync(dirname(path),{recursive:true});
@@ -39,14 +52,14 @@ export function windowsTaskScript(config:CaptureConfig){
   // PowerShell wrapper or the installer's .cmd shim.
   if(config.command.length===1&&executable===nativeBin()&&compiled())executable=selectedBinary().file;
   if(/\.(cmd|bat)$/i.test(executable))throw Error('Capture supervision requires the native executable, not a custom batch launcher');
-  const args=[...config.command.slice(1),'collect','daemon','--worker-environment',JSON.stringify(serviceEnvironment())].map(windowsArgument).join(' ');
+  const args=captureDaemonCommand(config).slice(1).map(windowsArgument).join(' ');
   const task=powershellQuote(label()),description=powershellQuote('OpenCrawl capture profile '+hash(configDir()));
   return `$ErrorActionPreference='Stop'\n$task=${task}\n$description=${description}\n$previous=Get-ScheduledTask -TaskPath '\\' -ErrorAction Stop | Where-Object {$_.TaskName -eq $task}\nif($previous -and $previous.Description -ne $description){throw 'Capture task name is already owned by another program'}\nif($previous){Stop-ScheduledTask -TaskName $task}\n$user=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value\n$action=New-ScheduledTaskAction -Execute ${powershellQuote(executable)} -Argument ${powershellQuote(args)}\n$principal=New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited\n$trigger=New-ScheduledTaskTrigger -AtLogOn -User $user\n$settings=New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -Priority 7\nRegister-ScheduledTask -TaskName $task -Description $description -Action $action -Principal $principal -Trigger $trigger -Settings $settings -Force | Out-Null\nStart-ScheduledTask -TaskName $task\n`;
 }
 const powershell=(script:string,run:typeof spawnSync=spawnSync)=>run('powershell.exe',['-NoProfile','-NonInteractive','-Command',script],{stdio:'pipe',timeout:15_000,windowsHide:true});
 export function launchAgent(config:CaptureConfig) {
-  const args=[...config.command,'collect','daemon'];
-  const environment=serviceEnvironment();
+  const args=captureDaemonCommand(config);
+  const environment=serviceEnvironment(config);
   const keepAlive=continuous(config)?'<true/>':'<dict><key>SuccessfulExit</key><false/></dict>';
   return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${label()}</string><key>ProgramArguments</key><array>${args.map(arg=>'<string>'+xml(arg)+'</string>').join('')}</array><key>EnvironmentVariables</key><dict>${Object.entries(environment).map(([key,value])=>'<key>'+xml(key)+'</key><string>'+xml(value)+'</string>').join('')}</dict><key>RunAtLoad</key><true/><key>KeepAlive</key>${keepAlive}<key>ThrottleInterval</key><integer>10</integer><key>ProcessType</key><string>Background</string></dict></plist>\n`;
 }
@@ -54,9 +67,12 @@ export function launchAgent(config:CaptureConfig) {
 /** Portable fallback for environments whose supervisor starts the worker or
  * keeps detached children alive. A kernel lock, not a PID file, owns singleton
  * exclusion. Hooks never wait for startup, authentication, or upload. */
-export async function ensureCaptureDaemon(config=readCaptureConfig(),{platform=process.platform,launch=spawn}:{platform?:NodeJS.Platform;launch?:typeof spawn}={}) {
+export async function ensureCaptureDaemon(config=readCaptureConfig(),{platform=process.platform,launch=spawn,validateBinding}:{platform?:NodeJS.Platform;launch?:typeof spawn;validateBinding?:()=>void}={}) {
   if(!config||config.disabled&&!config.backgroundStartup||!captureDaemonEnabled(config)||!config.command.length)return;
+  validateBinding?.();
   try{await withSessionLock('capture:daemon',async()=>{},0);}catch(error:any){if(error.code==='SESSION_BUSY')return;throw error;}
+  validateBinding?.();
+  if(!isDeepStrictEqual(readCaptureConfig(),config))return;
   const serviceFile=join(directory(),'service.json');
   if(existsSync(serviceFile)){
     const service=JSON.parse(readFileSync(serviceFile,'utf8'));
@@ -71,6 +87,14 @@ export async function ensureCaptureDaemon(config=readCaptureConfig(),{platform=p
       const child=launch('systemctl',['--user','start','--no-block',label()+'.service'],{detached:true,stdio:'ignore'});
       await new Promise<void>((resolve,reject)=>{child.once('spawn',()=>resolve());child.once('error',reject);child.unref();});return;
     }
+    if(service.kind==='systemd-host'){
+      // Native Devin resume may request recreation, never stop/replace a unit.
+      // The named transient unit and ordinary UID remain supervisor-owned.
+      if(platform!=='linux'||service.status!=='installed'||service.label!==label()||service.uid!==process.getuid!()||configuredProvider()!=='devin')return;
+      const [command,args]=hostServiceCommand(hostService(config));
+      const child=launch(command,args,{detached:true,stdio:'ignore',env:{PATH:'/usr/bin:/bin',LANG:'C'}});
+      child.on('error',()=>{});child.unref();return;
+    }
     if(platform==='win32'&&service.kind==='task-scheduler'&&service.label===label()){
       const child=launch('schtasks.exe',['/Run','/TN',label()],{detached:true,stdio:'ignore',windowsHide:true});
       await new Promise<void>((resolve,reject)=>{child.once('spawn',()=>resolve());child.once('error',reject);child.unref();});return;
@@ -82,17 +106,34 @@ export async function ensureCaptureDaemon(config=readCaptureConfig(),{platform=p
 
 /** User-scoped OS supervision; hosts without a user manager receive an explicit
  * profile-bound foreground command for their own supervisor. */
-export async function installCaptureDaemon(config:CaptureConfig,{home=homedir(),service=true,platform=process.platform,run=spawnSync,ensure=ensureCaptureDaemon}:{home?:string;service?:boolean;platform?:NodeJS.Platform;run?:typeof spawnSync;ensure?:typeof ensureCaptureDaemon}={}) {
+export async function installCaptureDaemon(config:CaptureConfig,{home=homedir(),service=true,platform=process.platform,run=spawnSync,ensure=ensureCaptureDaemon,hostRun}:{home?:string;service?:boolean;platform?:NodeJS.Platform;run?:typeof spawnSync;ensure?:typeof ensureCaptureDaemon;hostRun?:HostInvoke}={}) {
   if(!isDeepStrictEqual(readCaptureConfig(),config))throw Error('Capture configuration changed before service installation');
   const queue=join(captureDir(),'queue'),pending=existsSync(queue)&&readdirSync(queue).some(name=>name.endsWith('.json'));
   if(!captureDaemonEnabled(config)||!config.backgroundStartup&&(config.disabled||!captureDaemonHarnesses(config).length&&!pending)){
-    uninstallCaptureDaemon(home,{platform,run});return {kind:'not-required',supervised:false,queuedDataPreserved:true};
+    uninstallCaptureDaemon(home,{platform,run,hostRun});return {kind:'not-required',supervised:false,queuedDataPreserved:true};
   }
   if(service){
     const path=platform==='linux'?join(process.env.XDG_CONFIG_HOME||join(home,'.config'),'systemd','user',label()+'.service'):platform==='darwin'?join(home,'Library','LaunchAgents',label()+'.plist'):null;
     const binding=platform==='linux'?'Environment='+unitQuote('OPENCRAWL_CONFIG_HOME='+dirname(configDir())):'<key>OPENCRAWL_CONFIG_HOME</key><string>'+xml(dirname(configDir()))+'</string>';
     if(path&&existsSync(path)&&!readFileSync(path,'utf8').includes(binding))throw Error('Capture service file belongs to another profile or program; it was preserved');
   }
+  // Validate public workload launch settings and existing ownership before any
+  // generation/receipt changes. The host adapter is only for Devin on Linux.
+  captureDaemonCommand(config);
+  const receipt=join(directory(),'service.json'),previous=existsSync(receipt)?JSON.parse(readFileSync(receipt,'utf8')):null;
+  const userSystemctl=(args:string[])=>run('systemctl',['--user',...args],{stdio:'pipe',timeout:5000});
+  let useHost=false,userManagerAvailable=false;
+  if(service&&platform==='linux'){
+    userManagerAvailable=userSystemctl(['show-environment']).status===0;
+    useHost=previous?.kind==='systemd-host'||!userManagerAvailable&&configuredProvider()==='devin';
+    if(useHost){
+      if(configuredProvider()!=='devin')throw Error('Preserve Devin Cloud workload mode when repairing its capture host service');
+      if(previous?.kind==='systemd')throw Error('The existing capture user service must be stopped before changing its supervisor');
+      if(previous?.kind==='systemd-host'&&(previous.label!==label()||previous.uid!==process.getuid!()))throw Error('Capture host service receipt ownership changed; local state is preserved');
+      verifyHostService(hostService(config),hostRun);
+    }
+  }
+  if(!isDeepStrictEqual(readCaptureConfig(),config))throw Error('Capture configuration changed before service installation');
   mkdirSync(directory(),{recursive:true,mode:0o700});
   atomicJson(join(directory(),'generation.json'),{generation:crypto.randomUUID()});
   if(platform==='darwin'&&service){
@@ -111,10 +152,15 @@ export async function installCaptureDaemon(config:CaptureConfig,{home=homedir(),
   if(platform==='linux'&&service){
     const path=join(process.env.XDG_CONFIG_HOME||join(home,'.config'),'systemd','user',label()+'.service');
     writeServiceFile(path,systemdUnit(config));
-    const invoke=(args:string[])=>run('systemctl',['--user',...args],{stdio:'pipe',timeout:5000});
-    const available=invoke(['show-environment']);
-    if(available.status!==0){
-      const state={kind:'external',status:'required',supervised:false,path,command:workerCommand(config),reason:'No systemd user manager; the host supervisor must run this foreground command'};
+    const invoke=userSystemctl;
+    if(useHost||!userManagerAvailable){
+      if(useHost){
+        const state={kind:'systemd-host',status:'starting',supervised:false,label:label(),uid:process.getuid!(),transient:true,recreateOnHook:true};
+        atomicJson(join(directory(),'service.json'),state);
+        try{const installed=installHostService(hostService(config),hostRun);atomicJson(join(directory(),'service.json'),installed);return installed;}
+        catch(error){atomicJson(join(directory(),'service.json'),{...state,status:'failed'});recordError(error);throw error;}
+      }
+      const state={kind:'external',status:'required',supervised:false,path,command:captureDaemonCommand(config),reason:'No systemd user manager; the host supervisor must run this foreground command'};
       atomicJson(join(directory(),'service.json'),state);return state;
     }
     invoke(['stop',label()+'.service']);
@@ -134,10 +180,10 @@ export async function installCaptureDaemon(config:CaptureConfig,{home=homedir(),
     return state;
   }
   await ensure(config,{platform});
-  const state={kind:'process',status:'requested',supervised:false,command:workerCommand(config)};atomicJson(join(directory(),'service.json'),state);return state;
+  const state={kind:'process',status:'requested',supervised:false,command:captureDaemonCommand(config)};atomicJson(join(directory(),'service.json'),state);return state;
 }
 
-export function uninstallCaptureDaemon(home=homedir(),{platform=process.platform,run=spawnSync}:{platform?:NodeJS.Platform;run?:typeof spawnSync}={}) {
+export function uninstallCaptureDaemon(home=homedir(),{platform=process.platform,run=spawnSync,hostRun}:{platform?:NodeJS.Platform;run?:typeof spawnSync;hostRun?:HostInvoke}={}) {
   const receipt=join(directory(),'service.json');
   const failed=(message:string)=>{
     const error=Error(message);let previous={};try{previous=JSON.parse(readFileSync(receipt,'utf8'));}catch{}
@@ -157,6 +203,11 @@ export function uninstallCaptureDaemon(home=homedir(),{platform=process.platform
     const path=join(process.env.XDG_CONFIG_HOME||join(home,'.config'),'systemd','user',label()+'.service');
     const previous=existsSync(receipt)?JSON.parse(readFileSync(receipt,'utf8')):null;
     if(existsSync(path)&&!readFileSync(path,'utf8').includes('Environment='+unitQuote('OPENCRAWL_CONFIG_HOME='+dirname(configDir()))))failed('Capture service ownership changed; its file and receipt are preserved');
+    if(previous?.kind==='systemd-host'){
+      if(previous.label!==label()||previous.uid!==process.getuid!())failed('Capture host service receipt ownership changed; local state is preserved');
+      try{stopHostService(hostBinding(),hostRun);}catch(error){failed(error instanceof Error?error.message:'Capture host service stop failed; local state is preserved');}
+      if(existsSync(path))unlinkSync(path);unlinkSync(receipt);return;
+    }
     if(!existsSync(path)&&previous?.kind!=='systemd')return;
     // A missing user manager installed only a suggested unit, never a service.
     if(previous?.kind==='external'&&previous.status==='required'){unlinkSync(path);unlinkSync(receipt);return;}

@@ -1,11 +1,11 @@
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {CliError} from '../oauth.ts';
-export type Harness = 'claude-code'|'codex'|'cursor'|'grok-bot'|'antigravity';
+export type Harness = 'claude-code'|'codex'|'cursor'|'grok-bot'|'antigravity'|'devin';
 /** Harnesses that persist a native transcript this collector reads. Cursor and Grok Bot
  * sessions are assembled from hook payloads instead; see cursor.ts and grok-bot.ts. */
-export type TranscriptHarness = Exclude<Harness,'grok-bot'|'cursor'>;
-export const HARNESSES:Harness[] = ['claude-code','codex','cursor','grok-bot','antigravity'];
+export type TranscriptHarness = Exclude<Harness,'grok-bot'|'cursor'|'devin'>;
+export const HARNESSES:Harness[] = ['claude-code','codex','cursor','grok-bot','antigravity','devin'];
 export const readsTranscript = (harness:Harness): harness is TranscriptHarness => harness==='claude-code'||harness==='codex'||harness==='antigravity';
 /** Normalize CLI flag aliases ('agy' -> 'antigravity') before validation. */
 export const normalizeHarness = <T extends string|undefined>(value:T): T|('antigravity' extends T ? 'antigravity' : string) => (value==='agy'?'antigravity':value) as any;

@@ -72,7 +72,7 @@ test('external supervisor result carries exact isolated worker environment and n
   const result=await installCaptureDaemon(f.config,{home:f.root,platform:'linux',run:runner((command,args)=>{expect(command).toBe('systemctl');calls.push(args);return outcome(1);})});
   expect(result).toMatchObject({kind:'external',status:'required',supervised:false});
   if(!('command' in result))throw Error('Missing bound command');
-  expect(result.command.slice(0,-1)).toEqual([...f.config.command,'collect','daemon','--worker-environment']);
+  expect(result.command.slice(0,-1)).toEqual([...f.config.command,'collect','daemon','--api',f.config.api,'--worker-environment']);
   const env=JSON.parse(result.command.at(-1)!);expect(env).toEqual({OPENCRAWL_CONFIG_HOME:dirname(configDir()),OPENCRAWL_NO_UPDATE:'1',XDG_CACHE_HOME:join(f.root,'cache'),XDG_DATA_HOME:join(f.root,'data')});
   expect(calls).toEqual([['--user','show-environment']]);
   await ensureCaptureDaemon(f.config,{platform:'linux',launch:(()=>{throw Error('must not spawn fallback');}) as typeof spawn});

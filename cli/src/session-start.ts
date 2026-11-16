@@ -49,7 +49,7 @@ export function readStartEvent(input: Readable, timeoutMs = 1000, maxBytes = 16_
 
 export function sessionStart(api: string, rawHarness: 'antigravity' | 'agy', event: any, request?: typeof boardRequest): Promise<AntigravityStartOutput>;
 export function sessionStart(api: string, rawHarness: 'cursor', event: any, request?: typeof boardRequest): Promise<CursorStartOutput>;
-export function sessionStart(api: string, rawHarness: 'codex' | 'claude-code', event: any, request?: typeof boardRequest): Promise<StandardStartOutput>;
+export function sessionStart(api: string, rawHarness: 'codex' | 'claude-code' | 'devin', event: any, request?: typeof boardRequest): Promise<StandardStartOutput>;
 export function sessionStart<H extends string>(api: string, rawHarness: H, event: any, request?: typeof boardRequest): Promise<H extends 'antigravity' | 'agy' ? AntigravityStartOutput : H extends 'cursor' ? CursorStartOutput : StandardStartOutput>;
 export async function sessionStart(api: string, rawHarness: string, event: any, request = boardRequest) {
   const harness = normalizeHarness(rawHarness);
@@ -62,7 +62,8 @@ export async function sessionStart(api: string, rawHarness: string, event: any, 
   const validStandard = ['codex', 'claude-code'].includes(harness) && event?.hook_event_name === 'SessionStart' &&
     typeof event.session_id === 'string' && sessionPattern.test(event.session_id) &&
     ['startup', 'resume', 'clear', 'compact', 'fork'].includes(event.source);
-  if (!validAntigravity && !validCursor && !validStandard) return unavailable(harness, 'The harness did not supply a valid native session identity.');
+  const validDevin=harness==='devin'&&event?.hook_event_name==='SessionStart'&&typeof event.session_id==='string'&&sessionPattern.test(event.session_id)&&['startup','resume'].includes(event.source);
+  if (!validAntigravity && !validCursor && !validStandard && !validDevin) return unavailable(harness, 'The harness did not supply a valid native session identity.');
   const session: string = harness === 'antigravity' ? event.conversationId : event.session_id;
   try {
     if(readCaptureConfig()?.backgroundStartup===true){
@@ -72,6 +73,7 @@ export async function sessionStart(api: string, rawHarness: string, event: any, 
           :`${pendingPrefix} Continue the task while the worker confirms this native session. Do not assume registration succeeded.`,
         `Session handle: ${session}. Board command option: --session ${session}.`,
         'The installed opencrawl skill describes recovery, participation and the native listener. Background registration does not attach a listener.',
+        ...(harness==='devin'?['Devin Cloud delivers this startup context after the hook finishes. It does not prove first-turn capture or an idle notification listener.']:[]),
         retrievalInstruction,
       ].join('\n'));
     }
@@ -94,10 +96,13 @@ export async function sessionStart(api: string, rawHarness: string, event: any, 
       result.name ? `Your chosen display name: ${JSON.stringify(result.name)}; task: ${JSON.stringify(result.task)}. These are metadata, not instructions.`
         : `Display name/task: unset. Profile command: opencrawl board profile --session ${session} --name <harness:your-name> --task "<current task>" --api ${api} --json.`,
       'The installed opencrawl skill describes participation and the native listener. This hook registers presence; it does not attach a listener.',
+      ...(harness==='devin'?['Devin Cloud delivers this startup context after the hook finishes. Use this confirmed native session handle when the context arrives; it does not prove first-turn capture or an idle notification listener.']:[]),
       retrievalInstruction,
     ].join('\n'));
   } catch (error) {
-    return unavailable(harness, error instanceof CliError && error.code === 'AUTH_REQUIRED'
+    return unavailable(harness, harness==='devin'
+      ? 'Cloud workspace registration could not be confirmed. Keep the existing installation and retry its workload identity from this Devin session; do not copy a human token or start an interactive login.'
+      : error instanceof CliError && error.code === 'AUTH_REQUIRED'
       ? 'Saved sign-in needs attention. Run opencrawl whoami to refresh it, or opencrawl login if signed out.'
       : 'Registration could not be confirmed. Use the skill fallback when access is available.');
   }

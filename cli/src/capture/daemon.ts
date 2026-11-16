@@ -29,7 +29,7 @@ export type DaemonOptions={signal?:AbortSignal,flushMs?:number,reconcileMs?:numb
 
 /** One process per capture installation. Filesystem notifications schedule
  * bounded local work; a separate upload loop cannot stall transcript recording.
- * Timed recovery checks visit only currently enrolled sessions. */
+ * Timed recovery checks visit only the pending inbox and enrolled sessions. */
 export async function runCaptureDaemon({signal,flushMs=10_000,reconcileMs=30_000,settleMs=2000,idleMs=300_000,retryMs=1000,onReady,processStartupTask}:DaemonOptions={}) {
   const initial=readCaptureConfig();if(!initial||!captureDaemonEnabled(initial)||initial.disabled&&!initial.backgroundStartup)return;
   directories();
@@ -169,20 +169,25 @@ export async function runCaptureDaemon({signal,flushMs=10_000,reconcileMs=30_000
       let paused=false;
       while(!stopped){
         const config=current();if(!config){stop();break;}
+        const now=Date.now(),reconcile=now>=nextReconcile;
+        if(reconcile){
+          nextReconcile=now+reconcileMs;inboxDirty=true;
+          // Native file notifications can be lost even with no active transcript.
+          // Recover only this installation's pending inbox, never its history.
+          if(config.backgroundStartup){startupDirty=true;wakeStartup();}
+        }
         if(config.disabled){
           if(!paused)for(const item of active.values()){for(const watcher of item.watchers.values())watcher.close();item.watchers.clear();}
-          paused=true;await wait('capture',Infinity);continue;
+          paused=true;await wait('capture',nextReconcile-Date.now());continue;
         }
         if(paused){paused=false;for(const item of active.values())item.dirty=true;}
         if(config.authPending){try{await refreshCaptureIdentity(config);Object.assign(initial,config);}catch(error){recordError(error);await wait('capture',60_000);continue;}}
         if(inboxDirty&&Date.now()>=inboxRetryAt){await inbox();await yieldToOwner();}
-        const now=Date.now(),reconcile=now>=nextReconcile;
-        if(reconcile)nextReconcile=now+reconcileMs;
-        let next=Math.min(active.size?nextReconcile:Infinity,inboxDirty?inboxRetryAt||Date.now():Infinity);
+        let next=Math.min(nextReconcile,inboxDirty?inboxRetryAt||Date.now():Infinity);
         for(const [id,item] of active){
           if(stopped)break;
           const sessionConfig=current();if(!sessionConfig){stop();break;}
-          if(sessionConfig.disabled){await wait('capture',Infinity);break;}
+          if(sessionConfig.disabled){await wait('capture',nextReconcile-Date.now());break;}
           if(!sessionConfig.harnesses?.includes(item.registration.harness)||captureExcluded(sessionConfig,item.registration)){
             for(const watcher of item.watchers.values())watcher.close();active.delete(id);remove(join(daemonDir(),'sessions',id+'.json'));continue;
           }

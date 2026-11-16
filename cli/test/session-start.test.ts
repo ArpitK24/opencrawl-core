@@ -187,6 +187,9 @@ test('real startup CLI and board server preserve the agent-chosen profile across
     for(const source of ['resume','compact'])expect((await start(source)).hookSpecificOutput.additionalContext).toContain('codex:agent-choice');
     expect((await start('fork','native-fork')).hookSpecificOutput.additionalContext).toContain('Display name/task: unset');
     expect((await start('startup','claude-native','claude-code')).hookSpecificOutput.additionalContext).toContain('registered with');
+    expect((await start('startup','devin-native','devin')).hookSpecificOutput.additionalContext).toContain('Session handle: devin-native');
+    await run(['board','profile','--session','devin-native','--name','devin:agent-choice','--task','Test Cloud lifecycle','--json']);
+    expect((await start('resume','devin-native','devin')).hookSpecificOutput.additionalContext).toContain('devin:agent-choice');
     const agyStart=await run(['session','start','--harness','agy'],{hookEventName:'SessionStart',conversationId:'agy-conv-123',workspacePaths:[home]});
     expect(agyStart.injectSteps[0].systemMessage.systemMessage).toContain('registered with');
     expect(agyStart.injectSteps[0].systemMessage.systemMessage).toContain('Session handle: agy-conv-123');
@@ -204,3 +207,29 @@ test('real startup CLI and board server preserve the agent-chosen profile across
     expect(JSON.stringify(invalid)).not.toContain('secret');
   } finally {server.kill();await server.exited;}
 }),20_000);
+
+test('Devin startup and resume keep native identity and only announce confirmed registration',()=>fixture(async()=>{
+  const api='https://devin-selfhost.example',native='devin-18f8ab3b919a4d5bb280886808da08a4';let calls=0;
+  const request:typeof boardRequest=async(_api,operation,input)=>{
+    calls++;expect(operation).toBe('bootstrap');expect(input.session).toBe(native);expect(input.harness).toBe('devin');
+    return {...registration,session:native};
+  };
+  for(const source of ['startup','resume']){
+    const output=await sessionStart(api,'devin',{...event,session_id:native,source,prompt_id:'already-running-turn',requester:{email:'not-an-authority@example.test'},transcript_path:'/must-not-open'},request);
+    expect(output.hookSpecificOutput.hookEventName).toBe('SessionStart');
+    expect(output.hookSpecificOutput.additionalContext).toContain('Session handle: '+native);
+    expect(output.hookSpecificOutput.additionalContext).toContain('does not prove first-turn capture');
+    expect(output.hookSpecificOutput.additionalContext).not.toContain('not-an-authority');
+  }
+  for(const changed of [{source:'compact'},{source:'fork'},{hook_event_name:'Stop'},{session_id:'invalid/session'}]){
+    const output=await sessionStart(api,'devin',{...event,session_id:native,...changed},request);
+    expect(output.hookSpecificOutput.additionalContext).not.toContain('OpenCrawl: registered');
+  }
+  expect(calls).toBe(2);
+  const saved=readFileSync(boardStateFile(api,native),'utf8');
+  const mismatch=await sessionStart(api,'devin',{...event,session_id:native},async()=>registration);
+  expect(mismatch.hookSpecificOutput.additionalContext).not.toContain('OpenCrawl: registered');
+  expect(mismatch.hookSpecificOutput.additionalContext).toContain('do not copy a human token');
+  expect(readFileSync(boardStateFile(api,native),'utf8')).toBe(saved);
+  expect(JSON.parse(saved).workspace).toBe(registration.workspace);
+}));
