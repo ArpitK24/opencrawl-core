@@ -214,14 +214,17 @@ isolatedTest('one damaged Cursor session cannot monopolize a backlog and repaire
   await f.start();await until(()=>JSON.stringify(f.batches).includes('healthy session continues'));
   expect(f.batches.some((batch:any)=>batch.sessionId==='broken')).toBe(false);
   await sleep(350);
-  writeFileSync(path,'');await until(()=>f.batches.flatMap((batch:any)=>batch.events).filter((event:any)=>event.kind==='message'&&event.data.content[0].text.startsWith('repair event ')).length===70);
+  // The healthy sibling still has the 5-second fairness bound above. Recovery
+  // flushes 70 durable records; Windows disk IO is not a 5-second performance SLO.
+  const recoveryMs=process.platform==='win32'?15_000:5000;
+  writeFileSync(path,'');await until(()=>f.batches.flatMap((batch:any)=>batch.events).filter((event:any)=>event.kind==='message'&&event.data.content[0].text.startsWith('repair event ')).length===70,recoveryMs);
   const events=f.batches.flatMap((batch:any)=>batch.events).filter((event:any)=>event.kind==='message'&&event.data.content[0].text.startsWith('repair event ')).sort((a:any,b:any)=>a.sequence-b.sequence);
   expect(events.map((event:any)=>event.data.content[0].text)).toEqual(Array.from({length:70},(_,i)=>'repair event '+i));
   await f.stop();
   // Each blocked body is classified once, then read once when its predecessor
   // recovers. Waiting must not repeatedly read the entire queued backlog.
   expect(JSON.parse(readFileSync(join(daemonDir(),'status.json'),'utf8')).noticeReads).toBeLessThan(150);
-}));
+}),process.platform==='win32'?30_000:15_000);
 
 isolatedTest('idle native session watches retire and the next hook resumes the same byte cursor',async()=>fixture(async f=>{
   const config=nativeConfig(f,'cursor'),path=join(config.roots.cursor!,'projects','project','agent-transcripts','idle','idle.jsonl');

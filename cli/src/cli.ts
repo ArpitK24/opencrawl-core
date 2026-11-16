@@ -259,6 +259,7 @@ export async function main(args = process.argv.slice(2)) {
   // the command ends, so quick commands never wait and no orphan worker exists.
   const memoryJob:{current?:ReturnType<typeof scheduleMemoryRefresh>}={};
   let updateJob:ReturnType<typeof scheduleCliUpdate>|undefined;
+  let installingBinary=false;
   let informational=hasLocalFlag(args);
   let json = args.includes('--json');
   const emit = (data: unknown, human: string) => process.stdout.write(json ? JSON.stringify({schemaVersion: 1, data}) + '\n' : human + '\n');
@@ -269,6 +270,7 @@ export async function main(args = process.argv.slice(2)) {
     catch { throw new CliError('INVALID_USAGE', 'Invalid arguments. Run opencrawl --help.', 64); }
     json = parsed.values.json === true;
     const command = parsed.positionals[0] ?? 'help';
+    installingBinary=command==='install';
     if(parsed.values.local&&!(command==='setup'&&parsed.positionals[1]==='status'))throw new CliError('INVALID_USAGE','Use --local only with setup status.',64);
     const localHook=command==='collect'&&parsed.positionals[1]==='hook'&&!parsed.values.managed;
     // Metadata-only recovery and a history preview must not start an unrelated
@@ -302,7 +304,8 @@ export async function main(args = process.argv.slice(2)) {
     }
     const captureHandoff=command==='collect'&&['hook','daemon'].includes(parsed.positionals[1]??'');
     if(command!=='install'&&!captureHandoff)await automaticNativeMigration();
-    if(command==='install'){if(!compiled())throw new CliError('INSTALL_UNAVAILABLE','Run install from a released executable.');const data=await installBinary();if(!hasPluginContext()&&readCaptureConfig()?.hookOwnership!=='plugin')await agentSkills('refresh',apiOrigin((parsed.values.api as string|undefined)??process.env.OPENCRAWL_API_URL??readCaptureConfig()?.api??DEFAULT_API_ORIGIN),{});emit(data,`Installed opencrawl ${data.version} at ${data.path}. Add its directory to PATH if needed.`);return 0;}
+    // Installing the executable does not enroll or refresh native integrations.
+    if(command==='install'){if(!compiled())throw new CliError('INSTALL_UNAVAILABLE','Run install from a released executable.');const data=await installBinary();emit(data,`Installed opencrawl ${data.version} at ${data.path}. Add its directory to PATH if needed.`);return 0;}
     if(command==='update'){const data=await updateCli();emit(data,data.updated?`Installed opencrawl ${data.version}. Your next invocation will use it.`:`opencrawl ${data.version} is current.`);return 0;}
     const pluginHookInvocation=captureHandoff||hasPluginContext();
     if(!pluginHookInvocation)updateJob=scheduleCliUpdate();
@@ -405,7 +408,7 @@ export async function main(args = process.argv.slice(2)) {
     memoryJob.current?.stop();
     await updateJob?.stop();
     // Upgrade only our hook settings locally; never launch an unowned process.
-    if(!informational && args[0]!=='collect' && args[0]!=='logout' && args[0]!=='skills' && args[0]!=='setup' && args[0]!=='verify-installation')try{if(!hasPluginContext()&&readCaptureConfig()?.hookOwnership!=='plugin')await upgradeCaptureHooks();}catch{}
+    if(!informational && !installingBinary && args[0]!=='collect' && args[0]!=='logout' && args[0]!=='skills' && args[0]!=='setup' && args[0]!=='verify-installation')try{if(!hasPluginContext()&&readCaptureConfig()?.hookOwnership!=='plugin')await upgradeCaptureHooks();}catch{}
   }
 }
 

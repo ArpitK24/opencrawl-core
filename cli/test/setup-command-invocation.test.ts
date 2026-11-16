@@ -27,11 +27,12 @@ test('displayed command runs its launcher with exact arguments despite another o
   const args=['setup','status','--api',"https://example.test/path?x=$HOME&v='quoted'",'--plugins','codex,cursor','--empty',''];
   const shell=windows?join(process.env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe'):'/bin/sh';
   const formatted=formatSetupCommand(args,[launcher]);
-  const run=spawnSync(shell,windows?['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',formatted]:['-c',formatted],{encoding:'utf8',env:{...process.env,PATH:otherDir},timeout:5000});
+  // Verify command fidelity, allowing a bounded cold Windows PowerShell start.
+  const run=spawnSync(shell,windows?['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',formatted]:['-c',formatted],{encoding:'utf8',env:{...process.env,PATH:otherDir},timeout:windows?15_000:5000});
   expect(run.error).toBeUndefined();expect(run.status).toBe(0);
   expect(windows?JSON.parse(run.stdout):run.stdout.split('\0').slice(0,-1)).toEqual(args);
  }finally{rmSync(dir,{recursive:true,force:true});}
-});
+},process.platform==='win32'?20_000:5000);
 
 
 test('packaged runtime guides reuse the managed entry or matching package executable and leave source runs intact',async()=>{
