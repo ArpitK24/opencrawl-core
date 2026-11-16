@@ -1,8 +1,8 @@
 import {CliError} from '../oauth.ts';
 import {createHash} from 'node:crypto';
 import {grokBotEvents, GROK_BOT_HOOK_EVENTS} from './grok-bot.ts';
-import {realpathSync, openSync, closeSync, readSync, fstatSync} from 'node:fs';
-import {join, relative, sep, basename} from 'node:path';
+import {realpathSync, openSync, closeSync, readSync, fstatSync, lstatSync} from 'node:fs';
+import {join, relative, resolve, isAbsolute, sep, basename} from 'node:path';
 
 // Cursor and Grok Bot implement the same published hook payload format. Keep
 // its content conversion shared, but their session namespaces are independent.
@@ -35,7 +35,10 @@ export function cursorThoughtDuplicate(state: CursorThoughtHooks | undefined, ev
  * named by a hook, inside Cursor's own project transcript directory. Never read
  * a referenced project file or follow a link outside that directory. */
 function openCursorTranscript(root:string,sessionId:string,file:string) {
-  const base=realpathSync(root),path=realpathSync(file),parts=relative(base,path).split(sep);
+  const supplied=resolve(file),base=realpathSync(root),path=realpathSync(file),parts=relative(base,path).split(sep);
+  const inside=(value:string)=>!isAbsolute(value)&&value.split(sep)[0]!=='..';
+  const spelling=relative(resolve(root),supplied),lexical=inside(spelling)?spelling:relative(base,supplied);
+  if(!inside(lexical)||lstatSync(supplied).isSymbolicLink()||path!==resolve(base,lexical))throw new CliError('CAPTURE_PATH_REJECTED','Cursor transcript redirects outside its supplied native path');
   if(parts.length!==5||parts[0]!=='projects'||parts[2]!=='agent-transcripts'||parts[3]!==sessionId||basename(path)!==sessionId+'.jsonl')
     throw new CliError('CAPTURE_PATH_REJECTED','Cursor transcript outside its native conversation directory');
   const fd=openSync(path,'r');

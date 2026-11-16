@@ -1,0 +1,161 @@
+import {test,expect} from 'bun:test';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync,existsSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join,dirname} from 'node:path';
+import {ChildProcess,type spawnSync,type spawn,type SpawnSyncReturns} from 'node:child_process';
+import {launchAgent,systemdUnit,windowsTaskScript,installCaptureDaemon,uninstallCaptureDaemon,ensureCaptureDaemon} from '../src/capture/daemon-service.ts';
+import {applyDaemonEnvironment} from '../src/capture/daemon-environment.ts';
+import {captureDir,type CaptureConfig} from '../src/capture/runtime.ts';
+import {atomicJson,configDir} from '../src/session.ts';
+import {hash} from '../src/capture/parse.ts';
+
+const outcome=(status=0,stdout='',stderr=''):SpawnSyncReturns<Buffer>=>({pid:0,output:[null,Buffer.from(stdout),Buffer.from(stderr)],stdout:Buffer.from(stdout),stderr:Buffer.from(stderr),status,signal:null});
+const runner=(fn:(command:string,args:string[])=>SpawnSyncReturns<Buffer>)=>((command:string,args?:readonly string[])=>fn(command,[...(args??[])])) as typeof spawnSync;
+const forbidden=runner(()=>{throw Error('Unexpected supervisor invocation');});
+async function fixture(run:(f:{root:string,config:CaptureConfig,label:string,receipt:string,unit:(platform:'linux'|'darwin')=>string})=>Promise<void>|void){
+  const root=mkdtempSync(join(tmpdir(),'opencrawl-service-unit-')),before={...process.env};
+  try{
+    Object.assign(process.env,{OPENCRAWL_CONFIG_HOME:join(root,'config'),XDG_CONFIG_HOME:join(root,'xdg-config'),XDG_CACHE_HOME:join(root,'cache'),XDG_DATA_HOME:join(root,'data'),OPENCRAWL_NO_UPDATE:'1'});
+    const config:CaptureConfig={schemaVersion:1,captureWorker:'daemon-v1',api:'http://127.0.0.1:1',installationId:'service-fixture',owner:{tenantId:'fixture',userId:'fixture'},installedAt:'2026-11-16T00:00:00Z',harnesses:['claude-code'],roots:{'claude-code':join(root,'claude'),codex:join(root,'codex')},command:[join(root,'selected CLI','opencrawl')]};
+    mkdirSync(join(captureDir(),'daemon'),{recursive:true});atomicJson(join(captureDir(),'config.json'),config);
+    const label='com.getopencrawl.capture.'+hash(configDir()).slice(0,12),receipt=join(captureDir(),'daemon','service.json');
+    await run({root,config,label,receipt,unit:platform=>platform==='linux'?join(root,'xdg-config','systemd','user',label+'.service'):join(root,'Library','LaunchAgents',label+'.plist')});
+  }finally{
+    for(const name of Object.keys(process.env))if(!(name in before))delete process.env[name];Object.assign(process.env,before);
+    // All supervisor calls above are injected. These files never represented a real service.
+    rmSync(root,{recursive:true,force:true});
+  }
+}
+function ownedUnit(file:string,config:CaptureConfig,platform:'linux'|'darwin'){
+  mkdirSync(dirname(file),{recursive:true});const bytes=platform==='linux'?systemdUnit(config):launchAgent(config);writeFileSync(file,bytes);return bytes;
+}
+
+test('supervisor commands preserve literal paths and never serialize credentials',()=>fixture(({config})=>{
+  process.env.OPENCRAWL_TOKEN='fixture-secret-must-not-appear';
+  const unit=systemdUnit({...config,command:['/owned path/oc%$"binary']}),plist=launchAgent(config),task=windowsTaskScript({...config,command:['C:\\Owned path\\opencrawl.exe']});
+  expect(unit).toContain('ExecStart=:"/owned path/oc%%$\\"binary"');expect(unit).toContain('Restart=always');expect(unit).toContain('UMask=0077');
+  expect(systemdUnit({...config,harnesses:[]})).toContain('Restart=on-failure');
+  expect(systemdUnit({...config,disabled:true,harnesses:[],backgroundStartup:true})).toContain('Restart=always');
+  expect(plist).toContain('<key>KeepAlive</key><true/>');
+  expect(task).toContain("-Execute 'C:\\Owned path\\opencrawl.exe'");expect(task).toContain('-LogonType Interactive -RunLevel Limited');
+  expect(task).toContain('-RestartInterval (New-TimeSpan -Minutes 1)');expect(task).toContain('-MultipleInstances IgnoreNew');
+  expect(task).toContain('--worker-environment');expect(task).toContain('Description -ne $description');
+  for(const text of [unit,plist,task]){expect(text).not.toContain('fixture-secret-must-not-appear');expect(text).toContain('XDG_CACHE_HOME');expect(text).toContain('XDG_DATA_HOME');}
+  expect(()=>windowsTaskScript({...config,command:['C:\\custom.cmd']})).toThrow('native executable');
+}));
+
+test('worker environment rejects wrong commands, secrets and relative paths without mutation',()=>fixture(()=>{
+  const before={...process.env};
+  for(const args of [
+    ['search','--worker-environment','{}'],['session','start','--worker-environment','{}'],
+    ['collect','daemon','--worker-environment','{"OPENCRAWL_TOKEN":"secret"}'],
+    ['collect','daemon','--worker-environment','null'],['collect','daemon','--worker-environment','[]'],
+    ['collect','daemon','--worker-environment','{"XDG_DATA_HOME":"relative"}'],
+    ['collect','daemon','--worker-environment','{"XDG_CACHE_HOME":"/path\\u0000tail"}'],
+  ])expect(()=>applyDaemonEnvironment(args)).toThrow();
+  expect(process.env.OPENCRAWL_CONFIG_HOME).toBe(before.OPENCRAWL_CONFIG_HOME);
+  expect(process.env.XDG_DATA_HOME).toBe(before.XDG_DATA_HOME);
+}));
+
+test('stale configuration and foreign unit ownership refuse before any service mutation',()=>fixture(async f=>{
+  await expect(installCaptureDaemon({...f.config,installationId:'stale'},{home:f.root,platform:'linux',run:forbidden})).rejects.toThrow('configuration changed');
+  for(const platform of ['linux','darwin'] as const){
+    const path=f.unit(platform);mkdirSync(dirname(path),{recursive:true});writeFileSync(path,'foreign service');
+    await expect(installCaptureDaemon(f.config,{home:f.root,platform,run:forbidden})).rejects.toThrow('belongs to another');
+    expect(readFileSync(path,'utf8')).toBe('foreign service');
+  }
+  expect(existsSync(join(captureDir(),'daemon','generation.json'))).toBe(false);expect(existsSync(f.receipt)).toBe(false);
+}));
+
+test('external supervisor result carries exact isolated worker environment and never claims supervision',()=>fixture(async f=>{
+  const calls:string[][]=[];
+  const result=await installCaptureDaemon(f.config,{home:f.root,platform:'linux',run:runner((command,args)=>{expect(command).toBe('systemctl');calls.push(args);return outcome(1);})});
+  expect(result).toMatchObject({kind:'external',status:'required',supervised:false});
+  if(!('command' in result))throw Error('Missing bound command');
+  expect(result.command.slice(0,-1)).toEqual([...f.config.command,'collect','daemon','--worker-environment']);
+  const env=JSON.parse(result.command.at(-1)!);expect(env).toEqual({OPENCRAWL_CONFIG_HOME:dirname(configDir()),OPENCRAWL_NO_UPDATE:'1',XDG_CACHE_HOME:join(f.root,'cache'),XDG_DATA_HOME:join(f.root,'data')});
+  expect(calls).toEqual([['--user','show-environment']]);
+  await ensureCaptureDaemon(f.config,{platform:'linux',launch:(()=>{throw Error('must not spawn fallback');}) as typeof spawn});
+  uninstallCaptureDaemon(f.root,{platform:'linux',run:forbidden});
+  expect(existsSync(f.unit('linux'))).toBe(false);expect(existsSync(f.receipt)).toBe(false);
+}));
+
+test('startup-only supervisor preserves disabled capture, selections and queued bytes',()=>fixture(async f=>{
+  const config={...f.config,disabled:true,harnesses:[],backgroundStartup:true};atomicJson(join(captureDir(),'config.json'),config);
+  mkdirSync(join(captureDir(),'queue'));writeFileSync(join(captureDir(),'queue','retained.json'),'retained');
+  const before=readFileSync(join(captureDir(),'config.json'),'utf8'),calls:string[][]=[];
+  const result=await installCaptureDaemon(config,{home:f.root,platform:'linux',run:runner((command,args)=>{expect(command).toBe('systemctl');calls.push(args);return outcome();})});
+  expect(result).toMatchObject({kind:'systemd',status:'installed',supervised:true});
+  expect(calls.map(args=>args[1])).toEqual(['show-environment','stop','daemon-reload','enable']);
+  expect(readFileSync(f.unit('linux'),'utf8')).toContain('Restart=always');
+  expect(readFileSync(join(captureDir(),'config.json'),'utf8')).toBe(before);
+  expect(readFileSync(join(captureDir(),'queue','retained.json'),'utf8')).toBe('retained');
+}));
+
+for(const stage of ['stop','active','query','reload'] as const)test(`Linux ${stage} uncertainty retains owned unit, queue and recovery receipt`,()=>fixture(f=>{
+  const path=f.unit('linux'),bytes=ownedUnit(path,f.config,'linux');
+  atomicJson(f.receipt,{kind:'systemd',status:'installed',label:f.label,path});
+  mkdirSync(join(captureDir(),'queue'));writeFileSync(join(captureDir(),'queue','retained.json'),'retained');
+  const run=runner((_command,args)=>{
+    if(args[1]==='disable')return outcome(stage==='stop'?1:0);
+    if(args[1]==='show')return outcome(stage==='query'?1:0,stage==='active'?'active':'inactive');
+    if(args[1]==='daemon-reload')return outcome(stage==='reload'?1:0);
+    throw Error('Unexpected command');
+  });
+  expect(()=>uninstallCaptureDaemon(f.root,{platform:'linux',run})).toThrow('preserved');
+  expect(readFileSync(path,'utf8')).toBe(bytes);expect(JSON.parse(readFileSync(f.receipt,'utf8'))).toMatchObject({kind:'systemd',status:'stop-failed',supervised:false});
+  expect(readFileSync(join(captureDir(),'queue','retained.json'),'utf8')).toBe('retained');
+}));
+
+test('verified Linux stop removes only owned service files and preserves queue/config',()=>fixture(f=>{
+  const path=f.unit('linux');ownedUnit(path,f.config,'linux');atomicJson(f.receipt,{kind:'systemd',status:'installed',label:f.label,path});
+  const before=readFileSync(join(captureDir(),'config.json'),'utf8');
+  mkdirSync(join(captureDir(),'queue'));writeFileSync(join(captureDir(),'queue','retained.json'),'retained');
+  const calls:string[][]=[];
+  uninstallCaptureDaemon(f.root,{platform:'linux',run:runner((_command,args)=>{calls.push(args);return outcome(0,args[1]==='show'?'inactive':'');})});
+  expect(calls.map(args=>args[1])).toEqual(['disable','show','daemon-reload']);expect(existsSync(path)).toBe(false);expect(existsSync(f.receipt)).toBe(false);
+  expect(readFileSync(join(captureDir(),'config.json'),'utf8')).toBe(before);expect(readFileSync(join(captureDir(),'queue','retained.json'),'utf8')).toBe('retained');
+}));
+
+test('Windows uncertain removal retains receipt and command has explicit ownership refusal',()=>fixture(f=>{
+  atomicJson(f.receipt,{kind:'task-scheduler',status:'installed',label:f.label});
+  let script='';
+  expect(()=>uninstallCaptureDaemon(f.root,{platform:'win32',run:runner((command,args)=>{expect(command).toBe('powershell.exe');script=args.at(-1)!;return outcome(1);})})).toThrow('preserved');
+  expect(script).toContain('Capture task ownership changed');expect(script).toContain('-ErrorAction Stop');
+  expect(JSON.parse(readFileSync(f.receipt,'utf8')).status).toBe('stop-failed');
+  uninstallCaptureDaemon(f.root,{platform:'win32',run:runner(()=>outcome())});expect(existsSync(f.receipt)).toBe(false);
+}));
+
+test('Mac stop uncertainty preserves state; verified service absence permits cleanup',()=>fixture(f=>{
+  const path=f.unit('darwin'),bytes=ownedUnit(path,f.config,'darwin');atomicJson(f.receipt,{kind:'launchd',status:'installed',label:f.label,path});
+  expect(()=>uninstallCaptureDaemon(f.root,{platform:'darwin',run:runner(()=>outcome(1))})).toThrow('preserved');
+  expect(readFileSync(path,'utf8')).toBe(bytes);expect(JSON.parse(readFileSync(f.receipt,'utf8')).status).toBe('stop-failed');
+  uninstallCaptureDaemon(f.root,{platform:'darwin',run:runner((_command,args)=>args[0]==='print'?outcome(113,'','Could not find service'):outcome(1))});
+  expect(existsSync(path)).toBe(false);expect(existsSync(f.receipt)).toBe(false);
+}));
+
+test('paused no-startup installation remains stopped and detached spawn errors propagate',()=>fixture(async f=>{
+  const paused={...f.config,disabled:true,backgroundStartup:false};atomicJson(join(captureDir(),'config.json'),paused);
+  expect(await installCaptureDaemon(paused,{home:f.root,platform:'linux',run:forbidden})).toMatchObject({kind:'not-required',supervised:false});
+  atomicJson(join(captureDir(),'config.json'),f.config);
+  const launch=(()=>{const child=new ChildProcess();queueMicrotask(()=>child.emit('error',Error('fixture spawn failed')));return child;}) as typeof spawn;
+  await expect(ensureCaptureDaemon(f.config,{platform:'linux',launch})).rejects.toThrow('fixture spawn failed');
+}));
+
+test('source CLI worker environment selects paused profile before reading a different active profile',()=>fixture(async f=>{
+  const selected=join(f.root,'selected profile'),capture=join(selected,'opencrawl','capture');mkdirSync(capture,{recursive:true});
+  const paused={...f.config,disabled:true,backgroundStartup:false,installationId:'selected-paused'};
+  atomicJson(join(capture,'config.json'),paused);
+  const beforeDefault=readFileSync(join(captureDir(),'config.json'),'utf8'),beforeSelected=readFileSync(join(capture,'config.json'),'utf8');
+  const child=Bun.spawn([process.execPath,join(import.meta.dir,'../src/cli.ts'),'collect','daemon','--worker-environment',JSON.stringify({OPENCRAWL_CONFIG_HOME:selected,XDG_CACHE_HOME:join(f.root,'child-cache'),XDG_DATA_HOME:join(f.root,'child-data')})],
+    {env:{...process.env,OPENCRAWL_API_URL:'http://127.0.0.1:1',OPENCRAWL_TOKEN:'',OPENCRAWL_SESSIONS_TOKEN:'',OPENCRAWL_AUTH:''},stdout:'pipe',stderr:'pipe'});
+  const timeout=setTimeout(()=>child.kill(),2000);
+  try{
+    const [code,stdout,stderr]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]);
+    expect(code).toBe(0);expect(stdout).toBe('');expect(stderr).toBe('');
+    expect(readFileSync(join(captureDir(),'config.json'),'utf8')).toBe(beforeDefault);
+    expect(readFileSync(join(capture,'config.json'),'utf8')).toBe(beforeSelected);
+    expect(existsSync(join(captureDir(),'daemon','status.json'))).toBe(false);
+    expect(existsSync(join(capture,'daemon','status.json'))).toBe(false);
+  }finally{clearTimeout(timeout);child.kill();await child.exited;}
+}));

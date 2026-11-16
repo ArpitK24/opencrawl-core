@@ -455,7 +455,8 @@ export async function captureTranscript(config:CaptureConfig,harness:TranscriptH
       if(scoped&&fd!==undefined){
         if(fstatSync(fd).ino!==source.ino||assertSessionTranscriptPath(config,harness,scoped.sessionId,harness==='antigravity'?resolveAntigravityTranscript(file):file,sessionPath??file).path!==path)throw new CliError('CAPTURE_SESSION_PATH_REJECTED','Native transcript changed before reading');
         if(harness==='codex'){
-          const header=Buffer.alloc(Math.min(st.size,1024*1024));readSync(fd,header,0,header.length,0);const end=header.indexOf(10);
+          const limit=Math.min(st.size,1024*1024);let header=Buffer.alloc(Math.min(limit,4096));readSync(fd,header,0,header.length,0);let end=header.indexOf(10);
+          while(end<0&&header.length<limit){const before=header.length,larger=Buffer.alloc(Math.min(limit,before*2));header.copy(larger);readSync(fd,larger,before,larger.length-before,before);header=larger;end=header.indexOf(10);}
           if(end<0)throw new CliError('CAPTURE_SESSION_UNKNOWN','The native session header is incomplete');
           const native=JSON.parse(header.subarray(0,end).toString('utf8'));
           if(native.type!=='session_meta'||native.payload?.id!==scoped.sessionId)throw new CliError('CAPTURE_SESSION_MISMATCH','Native header differs from the registered session');
@@ -959,9 +960,26 @@ export async function captureWorker({idleMs=30_000,pollMs=1000,flushMs=LIVE_FLUS
   // Reacquire in this same owned process; never spawn a replacement.
   }
 }
+/** Metadata only: capture ingress is distinct from startup tasks and held work. */
+export function daemonIngressStatus(){
+  const names=(part:string)=>{const directory=join(captureDir(),'daemon',part);try{return readdirSync(directory);}catch(error:any){if(error.code==='ENOENT')return [];throw error;}};
+  const inbox=names('inbox'),sessions=names('sessions');
+  return {capture:inbox.filter(name=>name.endsWith('.json')&&!name.startsWith('startup-')).length,
+    startup:inbox.filter(name=>name.endsWith('.json')&&name.startsWith('startup-')).length,
+    heldCapture:inbox.filter(name=>name.endsWith('.held')&&!name.startsWith('startup-')).length,
+    heldStartup:inbox.filter(name=>name.endsWith('.held')&&name.startsWith('startup-')).length,
+    sessions:sessions.filter(name=>name.endsWith('.json')).length,heldSessions:sessions.filter(name=>name.endsWith('.held')).length};
+}
+async function flushDaemonQueue({retryRejected=false,paused=false}:{retryRejected?:boolean;paused?:boolean}={}){
+  const result=paused||!existsSync(join(captureDir(),'queue'))||!queuedNames(true).length?{uploaded:0}:await flushCaptures({retryRejected});
+  const daemonIngress=daemonIngressStatus(),pendingLegacyHooks=existsSync(join(captureDir(),'notices'))?noticeNames().length:0;
+  return {...result,mode:'daemon-queue-only',daemonIngress,pendingHooks:pendingLegacyHooks+daemonIngress.capture,pendingLegacyHooks,
+    ...(daemonIngress.capture||daemonIngress.startup?{nextStep:'Background ingress remains with the supervised worker. This command flushed only existing batches; it did not parse sessions or complete pending startup tasks.'}:{})};
+}
 /** Explicit flush waits for capture and upload ownership, then fences current sources. */
 export async function flushCaptureWork({retryRejected=false}: {retryRejected?:boolean}={}) {
   const config=readCaptureConfig();if(!config)throw new CliError('CAPTURE_NOT_INSTALLED','Run opencrawl collect install');
+  if(captureDaemonEnabled(config))return flushDaemonQueue({retryRejected});
   if(!config.disabled){if(config.authPending)await refreshCaptureIdentity(config);await drainCaptureNotices(config);await reconcileSources(config,new Map());}
   return flushCaptures({retryRejected});
 }
@@ -1017,6 +1035,7 @@ export const hookFlush=(event:any,{now=Date.now,reconcileTranscripts=true}={})=>
 
 export async function syncCaptures() {
   const config=readCaptureConfig();if(!config)throw new CliError('CAPTURE_NOT_INSTALLED','Run opencrawl collect install');
+  if(captureDaemonEnabled(config))return flushDaemonQueue({paused:config.disabled});
   if(config.disabled)return {uploaded:0};
   if(config.authPending)await refreshCaptureIdentity(config);
   const errors:any[]=[];
@@ -1205,7 +1224,7 @@ export function captureAttentionNotice(now=Date.now()):string|null {
   return message;
 }
 export function captureStatus(nativeReview?:CodexHookReview) {
-  const config=readCaptureConfig();
+  const config=readCaptureConfig(),daemonIngress=daemonIngressStatus(),pendingLegacyHooks=existsSync(join(captureDir(),'notices'))?noticeNames().length:0;
   const codexReview=nativeReview??(config?localCodexHookReview(config.roots.codex):{state:'not_applicable' as const,total:0,pending:0,disabled:0});
   const review=codexHookReviewMessage(codexReview);
   return {installed:Boolean(config&&!config.disabled),api:config?.api,owner:config?.authPending?null:config?.owner,authenticationPending:Boolean(config?.authPending),installationId:config?.installationId,
@@ -1213,7 +1232,7 @@ export function captureStatus(nativeReview?:CodexHookReview) {
     exclusions:config?.exclusions??{projects:[],sessions:[]},
     queued:existsSync(join(captureDir(),'queue'))?readdirSync(join(captureDir(),'queue')).filter(n=>n.endsWith('.json')).length:0,
     rejected:rejectedNames().length,
-    pendingHooks:existsSync(join(captureDir(),'notices'))?noticeNames().length:0,
+    pendingHooks:pendingLegacyHooks+daemonIngress.capture,pendingLegacyHooks,daemonIngress,
     backfill:read(join(captureDir(),'backfill-progress.json')),
     lastUpload:read(join(captureDir(),'last-upload.json')),lastError:read(join(captureDir(),'last-error.json')),
     codexHooksAwaitingReview:codexReview.pending,codexHookReview:codexReview,attention:captureAttention()??review};

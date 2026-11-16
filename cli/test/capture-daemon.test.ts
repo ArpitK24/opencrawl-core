@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {createServer} from 'node:http';
 import {installCapture,uninstallCapture} from '../src/capture/install.ts';
 import {recordDaemonHook,runCaptureDaemon,daemonDir} from '../src/capture/daemon.ts';
-import {captureDir,readCaptureConfig,captureTranscript} from '../src/capture/runtime.ts';
+import {captureDir,readCaptureConfig,captureTranscript,captureStatus,flushCaptureWork,syncCaptures,captureCursorNotice} from '../src/capture/runtime.ts';
 import {purgeLocalCapture} from '../src/capture/controls.ts';
 import {hash} from '../src/capture/parse.ts';
 import {randomUUID} from 'node:crypto';
@@ -64,6 +64,9 @@ async function fixture(run:(f:any)=>Promise<void>){
     // Service fixtures write only here; remove fake plists before ordinary teardown
     // so even a failed assertion cannot invoke the real launchctl boundary.
     const fakeAgents=join(dir,'Library','LaunchAgents');if(existsSync(fakeAgents))rmSync(fakeAgents,{recursive:true,force:true});
+    // Injected service fixtures never installed an OS service. A retained fake
+    // receipt must not make ordinary teardown invoke the real supervisor.
+    const fakeService=join(dir,'config','opencrawl','capture','daemon','service.json');if(existsSync(fakeService))rmSync(fakeService);
     if(process.env.OPENCRAWL_CONFIG_HOME===join(dir,'config'))await uninstallCapture(dir);
     server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));
     for(const key of Object.keys(process.env))if(!(key in env))delete process.env[key];Object.assign(process.env,env);rmSync(dir,{recursive:true,force:true});
@@ -141,13 +144,18 @@ isolatedTest('native synchronous clients return after local handoff while config
 isolatedTest('one damaged Cursor session cannot monopolize a backlog and repaired events retain order',async()=>fixture(async f=>{
   const config=nativeConfig(f,'cursor'),path=join(config.roots.cursor!,'projects','project','agent-transcripts','broken','broken.jsonl');
   mkdirSync(dirname(path),{recursive:true});writeFileSync(path,'broken JSON\n');
-  for(let i=0;i<70;i++)recordNativeDaemonHook('cursor',{conversation_id:'broken',transcript_path:path,hook_event_name:'afterAgentResponse',text:'repair event '+i});
+  for(let i=0;i<70;i++)recordNativeDaemonHook('cursor',{conversation_id:'broken',transcript_path:path,hook_event_name:'afterAgentResponse',text:'repair event '+i,extraNativePayload:'x'.repeat(8192)});
   recordNativeDaemonHook('cursor',{conversation_id:'healthy',hook_event_name:'afterAgentResponse',text:'healthy session continues'});
   await f.start();await until(()=>JSON.stringify(f.batches).includes('healthy session continues'));
   expect(f.batches.some((batch:any)=>batch.sessionId==='broken')).toBe(false);
+  await sleep(350);
   writeFileSync(path,'');await until(()=>f.batches.flatMap((batch:any)=>batch.events).filter((event:any)=>event.kind==='message'&&event.data.content[0].text.startsWith('repair event ')).length===70);
   const events=f.batches.flatMap((batch:any)=>batch.events).filter((event:any)=>event.kind==='message'&&event.data.content[0].text.startsWith('repair event ')).sort((a:any,b:any)=>a.sequence-b.sequence);
   expect(events.map((event:any)=>event.data.content[0].text)).toEqual(Array.from({length:70},(_,i)=>'repair event '+i));
+  await f.stop();
+  // Each blocked body is classified once, then read once when its predecessor
+  // recovers. Waiting must not repeatedly read the entire queued backlog.
+  expect(JSON.parse(readFileSync(join(daemonDir(),'status.json'),'utf8')).noticeReads).toBeLessThan(150);
 }));
 
 isolatedTest('idle native session watches retire and the next hook resumes the same byte cursor',async()=>fixture(async f=>{
@@ -327,7 +335,7 @@ isolatedTest('supervisor result is factual and bootstrap failure propagates with
   expect(JSON.parse(readFileSync(join(daemonDir(),'service.json'),'utf8'))).toMatchObject({status:'failed',supervised:false});
   expect(calls.map(args=>args[0])).toEqual(['bootout','bootstrap']);
   // The fake's file is intentionally retained as the same failed installation would be.
-  const service=await installCaptureDaemon(config,{home:f.dir,platform:'linux',ensure:async()=>{}});
+  const service=await installCaptureDaemon(config,{home:f.dir,platform:'linux',service:false,ensure:async()=>{}});
   expect(service).toMatchObject({kind:'process',supervised:false});
   const plist=launchAgent({...config,command:['/selected CLI/opencrawl']});
   expect(plist).toContain('/selected CLI/opencrawl');expect(plist).toContain('collect');expect(plist).toContain('daemon');
@@ -632,7 +640,7 @@ isolatedTest('Cursor consent stays unpublished until every existing session boun
     f.event();await until(()=>readdirSync(join(captureDir(),'queue')).some(name=>JSON.parse(readFileSync(join(captureDir(),'queue',name),'utf8')).harness==='claude-code'));
     expect(f.batches.some((batch:any)=>batch.harness==='cursor')).toBe(false);
   });
-  await installing;appendFileSync(file('z-later'),line('APPROVED AFTER PUBLICATION'));
+  await installing;await f.stop();await f.start();appendFileSync(file('z-later'),line('APPROVED AFTER PUBLICATION'));
   recordNativeDaemonHook('cursor',{conversation_id:'z-later',transcript_path:file('z-later'),hook_event_name:'sessionStart'});
   await until(()=>JSON.stringify(f.batches).includes('APPROVED AFTER PUBLICATION'));await f.stop();
   expect(JSON.stringify(f.batches)).not.toContain('PRIVATE PREFIX');expect(readCaptureConfig()?.historyHarnesses).toEqual([]);
@@ -666,4 +674,103 @@ isolatedTest('a destination switch refuses work that arrived while consent bound
   await expect(installing).rejects.toMatchObject({code:'CAPTURE_PENDING_DESTINATION'});await f.stop();
   expect(readFileSync(join(captureDir(),'config.json'),'utf8')).toBe(configBefore);
   const queue=readdirSync(join(captureDir(),'queue')).map(name=>JSON.parse(readFileSync(join(captureDir(),'queue',name),'utf8')));expect(queue.length).toBeGreaterThan(0);expect(queue.every(batch=>batch.owner.tenantId==='previous'&&batch.owner.userId==='previous'&&batch.installationId===old.installationId)).toBe(true);
+}));
+
+isolatedTest('native-root rebinding stops the old worker and holds old registrations before new enrollment',async()=>fixture(async f=>{
+  f.event();await f.start();await until(()=>f.batches.length>0);
+  const original=readCaptureConfig()!,root=join(f.dir,'new-claude'),path=join(root,'projects','fixture','new-session.jsonl');mkdirSync(dirname(path),{recursive:true});
+  const next={...original,roots:{...original.roots,'claude-code':root}};
+  atomicJson(join(captureDir(),'config.json'),next);
+  await until(()=>JSON.parse(readFileSync(join(daemonDir(),'status.json'),'utf8')).state==='stopped');await f.stop();
+  appendFileSync(f.path,f.record('must-remain-in-old-root'));
+  await f.start();await until(()=>readdirSync(join(daemonDir(),'sessions')).some(name=>name.endsWith('.held')));
+  writeFileSync(path,JSON.stringify({type:'user',uuid:'new-root-event',sessionId:'new-session',message:{role:'user',content:'new registered root'}})+'\n');
+  recordDaemonHook({session_id:'new-session',transcript_path:path,hook_event_name:'SessionStart',cwd:f.dir});
+  await until(()=>f.batches.some((batch:any)=>batch.events.some((event:any)=>event.nativeId==='new-root-event')));await f.stop();
+  expect(f.batches.flatMap((batch:any)=>batch.events).some((event:any)=>event.nativeId==='must-remain-in-old-root')).toBe(false);
+  expect(readCaptureConfig()).toEqual(next);
+}));
+
+isolatedTest('daemon status separates capture ingress startup held work and registered sessions',async()=>fixture(async f=>{
+  f.event();const inbox=join(daemonDir(),'inbox'),sessions=join(daemonDir(),'sessions');mkdirSync(sessions,{recursive:true});
+  for(const name of ['startup-queued.json','startup-bad.json.held','bad-capture.json.held'])writeFileSync(join(inbox,name),'unread metadata fixture');
+  for(const name of ['active.json','old.json.held'])writeFileSync(join(sessions,name),'unread metadata fixture');
+  mkdirSync(join(captureDir(),'notices'),{recursive:true});writeFileSync(join(captureDir(),'notices','legacy.json'),'unread metadata fixture');
+  const before=f.requests,status=captureStatus({state:'not_applicable',total:0,pending:0,disabled:0});
+  expect(status).toMatchObject({pendingHooks:2,pendingLegacyHooks:1,daemonIngress:{capture:1,startup:1,heldCapture:1,heldStartup:1,sessions:1,heldSessions:1}});expect(f.requests).toBe(before);
+}));
+
+isolatedTest('daemon operator flush and sync upload only queued batches and leave ingress and historical catalogs untouched',async()=>fixture(async f=>{
+  const config=readCaptureConfig()!;await captureTranscript(config,'claude-code',f.path,{session_id:'session'});
+  f.event();const inbox=join(daemonDir(),'inbox');writeFileSync(join(inbox,'startup-pending.json'),'retained startup');
+  const notices=Object.fromEntries(readdirSync(inbox).map(name=>[name,readFileSync(join(inbox,name),'utf8')]));
+  mkdirSync(join(captureDir(),'sources'),{recursive:true});const catalog=join(captureDir(),'sources','poison.json');writeFileSync(catalog,'invalid legacy catalog must not be read');
+  mkdirSync(join(captureDir(),'notices'),{recursive:true});const legacy=join(captureDir(),'notices','poison.json');writeFileSync(legacy,'invalid legacy notice must not be read');
+  const unrelated=join(dirname(f.path),'unregistered.jsonl');writeFileSync(unrelated,'invalid historical native transcript must not be parsed\n');
+  // Main operator paths stay in the real queue uploader; the unopened poisoned
+  // registries make legacy drain/reconciliation fail if accidentally invoked.
+  const result=await flushCaptureWork();expect(result).toMatchObject({uploaded:1,mode:'daemon-queue-only',pendingHooks:2,daemonIngress:{capture:1,startup:1}});
+  expect(f.batches.flatMap((batch:any)=>batch.events).map((event:any)=>event.nativeId)).toEqual(['one']);
+  const synced=await syncCaptures();expect(synced).toMatchObject({uploaded:0,mode:'daemon-queue-only',pendingHooks:2,daemonIngress:{capture:1,startup:1}});
+  expect(readFileSync(catalog,'utf8')).toBe('invalid legacy catalog must not be read');expect(readFileSync(legacy,'utf8')).toBe('invalid legacy notice must not be read');
+  expect(Object.fromEntries(readdirSync(inbox).map(name=>[name,readFileSync(join(inbox,name),'utf8')]))).toEqual(notices);
+}));
+
+isolatedTest('Cursor rejects same-ID cross-project file and directory redirects even when the target project is excluded',async()=>fixture(async f=>{
+  const config=nativeConfig(f,'cursor'),root=config.roots.cursor!,session='same-session';
+  const file=(project:string)=>join(root,'projects',project,'agent-transcripts',session,session+'.jsonl'),target=file('private-project'),source=file('public-project');mkdirSync(dirname(target),{recursive:true});mkdirSync(dirname(source),{recursive:true});
+  writeFileSync(target,JSON.stringify({role:'user',message:{content:[{type:'text',text:'EXCLUDED PROJECT CONTENT'}]}})+'\n');
+  const next={...config,exclusions:{projects:['/private-project'],sessions:[]}};atomicJson(join(captureDir(),'config.json'),next);
+  symlinkSync(target,source);
+  const notice={id:'redirect',at:new Date().toISOString(),harness:'cursor' as const,event:{conversation_id:session,workspace_roots:['/public-project'],transcript_path:source,hook_event_name:'sessionStart'}};
+  await expect(captureCursorNotice(next,notice)).rejects.toMatchObject({code:'CAPTURE_PATH_REJECTED'});rmSync(source);rmSync(dirname(source),{recursive:true});symlinkSync(dirname(target),dirname(source));
+  await expect(captureCursorNotice(next,notice)).rejects.toMatchObject({code:'CAPTURE_PATH_REJECTED'});
+  expect(readdirSync(join(captureDir(),'queue'))).toEqual([]);expect(f.raws).toEqual([]);
+}));
+
+isolatedTest('Codex incremental identity validation reads a small header and grows only for a long first record',async()=>fixture(async f=>{
+  const config=nativeConfig(f,'codex'),path=join(config.roots.codex!,'sessions','rollout-bounded-header.jsonl');mkdirSync(dirname(path),{recursive:true});
+  const child=async(padding:number)=>{
+    writeFileSync(path,JSON.stringify({type:'session_meta',payload:{id:'bounded-header',source:'cli',padding:'x'.repeat(padding)}})+'\n'+' '.repeat(2*1024*1024));
+    const {statSync}=await import('node:fs'),stat=statSync(path);
+    atomicJson(join(captureDir(),'state',hash('codex'+realpathSync(path))+'.json'),{offset:stat.size,ino:stat.ino,parserVersion:2,meta:{harness:'codex',sessionId:'bounded-header',origin:'cli',parentSessionId:null,sourcePath:path}});
+    const runtime=JSON.stringify(resolve(import.meta.dir,'../src/capture/runtime.ts'));
+    const code=`import {mock} from 'bun:test';import * as fs from 'node:fs';const originalOpen=fs.openSync,originalRead=fs.readSync;let target=-1;const work=[];mock.module('node:fs',()=>({...fs,openSync:(path,...args)=>{const fd=originalOpen(path,...args);if(String(path)===${JSON.stringify(realpathSync(path))})target=fd;return fd;},readSync:(fd,buffer,offset,length,position)=>{if(fd===target)work.push({length,position});return originalRead(fd,buffer,offset,length,position);}}));globalThis.fetch=()=>{throw Error('No network');};const {captureTranscript,readCaptureConfig}=await import(${runtime});await captureTranscript(readCaptureConfig(),'codex',${JSON.stringify(path)},{session_id:'bounded-header'},false,undefined,undefined,{sessionScoped:true});process.stdout.write(JSON.stringify(work));`;
+    const proc=Bun.spawn([process.execPath,'-e',code],{env:process.env,stdout:'pipe',stderr:'pipe'});const [exit,stdout,stderr]=await Promise.all([proc.exited,new Response(proc.stdout).text(),new Response(proc.stderr).text()]);expect(exit).toBe(0);expect(stderr).toBe('');return JSON.parse(stdout) as {length:number;position:number}[];
+  };
+  expect(await child(0)).toEqual([{length:4096,position:0}]);
+  const long=await child(12000);expect(long[0]).toEqual({length:4096,position:0});expect(long.reduce((sum,row)=>sum+row.length,0)).toBe(16384);expect(long).toHaveLength(3);
+}));
+
+
+isolatedTest('worker environment is rejected by the actual CLI before delegation or session startup when misplaced or malformed',async()=>fixture(async f=>{
+  const module=(name:string)=>JSON.stringify(resolve(import.meta.dir,'../src/'+name)),preload=join(f.dir,'worker-preflight.ts'),flag=join(f.dir,'forbidden-preflight');
+  writeFileSync(preload,`import {mock} from 'bun:test';import {writeFileSync} from 'node:fs';const fail=()=>{writeFileSync(${JSON.stringify(flag)},'unexpected');throw Error('forbidden');};
+import * as distribution from ${module('distribution.ts')};mock.module(${module('distribution.ts')},()=>({...distribution,delegateToNewest:fail}));
+import * as startup from ${module('session-start.ts')};mock.module(${module('session-start.ts')},()=>({...startup,sessionStartCommand:fail}));globalThis.fetch=fail;`);
+  const before=readFileSync(join(captureDir(),'config.json'),'utf8'),requests=f.requests;
+  for(const args of [['session','start','--worker-environment','{}'],['setup','status','--local','--worker-environment','{}'],['collect','daemon','--worker-environment','null'],['collect','daemon','--worker-environment','{"OPENCRAWL_TOKEN":"synthetic-never-adopt"}']]){
+    const child=Bun.spawn([process.execPath,'--preload',preload,resolve(import.meta.dir,'../src/cli.ts'),...args],{env:process.env,stdout:'pipe',stderr:'pipe'});
+    const [exit,stdout,stderr]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]);expect(exit).toBe(64);expect(stdout).toBe('');expect(stderr).toContain('environment');expect(stderr).not.toContain('synthetic-never-adopt');
+  }
+  expect(existsSync(flag)).toBe(false);expect(readFileSync(join(captureDir(),'config.json'),'utf8')).toBe(before);expect(f.requests).toBe(requests);
+}));
+
+isolatedTest('daemon operator retries rejected batches only on explicit request and paused sync retains queued bytes',async()=>fixture(async f=>{
+  const config=readCaptureConfig()!;await captureTranscript(config,'claude-code',f.path,{session_id:'session'});
+  const names=readdirSync(join(captureDir(),'queue')).filter(name=>name.endsWith('.json'));expect(names).toHaveLength(1);const name=names[0]!,file=join(captureDir(),'queue',name),bytes=readFileSync(file);
+  atomicJson(join(captureDir(),'rejected',name),{status:413,digest:hash(bytes),at:new Date().toISOString()});
+  await expect(flushCaptureWork()).rejects.toMatchObject({code:'CAPTURE_BATCH_REJECTED'});expect(f.raws).toEqual([]);expect(readFileSync(file)).toEqual(bytes);
+  atomicJson(join(captureDir(),'config.json'),{...config,disabled:true});expect(await syncCaptures()).toMatchObject({uploaded:0,mode:'daemon-queue-only'});expect(f.raws).toEqual([]);expect(readFileSync(file)).toEqual(bytes);
+  expect(await flushCaptureWork({retryRejected:true})).toMatchObject({uploaded:1,mode:'daemon-queue-only'});expect(f.batches.flatMap((batch:any)=>batch.events).map((event:any)=>event.nativeId)).toEqual(['one']);
+}));
+
+isolatedTest('Cursor permits a configured root symlink without permitting redirected project paths',async()=>fixture(async f=>{
+  const config=nativeConfig(f,'cursor'),root=config.roots.cursor!,alias=join(f.dir,'cursor-root-link'),id='root-alias',file=join(root,'projects','project','agent-transcripts',id,id+'.jsonl');mkdirSync(dirname(file),{recursive:true});
+  writeFileSync(file,JSON.stringify({role:'user',message:{content:[{type:'text',text:'approved root alias'}]}})+'\n');symlinkSync(root,alias);
+  const next={...config,roots:{...config.roots,cursor:alias}};atomicJson(join(captureDir(),'config.json'),next);
+  await captureCursorNotice(next,{id:'root-link',at:new Date().toISOString(),harness:'cursor',event:{conversation_id:id,transcript_path:join(alias,'projects','project','agent-transcripts',id,id+'.jsonl'),hook_event_name:'sessionStart'}});
+  appendFileSync(file,JSON.stringify({role:'assistant',message:{content:[{type:'text',text:'canonical root spelling'}]}})+'\n');
+  await captureCursorNotice(next,{id:'canonical-root',at:new Date().toISOString(),harness:'cursor',event:{conversation_id:id,transcript_path:realpathSync(file),hook_event_name:'sessionStart'}});
+  const queued=readdirSync(join(captureDir(),'queue')).map(name=>JSON.parse(readFileSync(join(captureDir(),'queue',name),'utf8')));expect(JSON.stringify(queued)).toContain('approved root alias');expect(JSON.stringify(queued)).toContain('canonical root spelling');expect(queued.every(batch=>batch.sessionId===id)).toBe(true);
 }));

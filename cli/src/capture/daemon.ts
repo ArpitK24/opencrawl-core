@@ -9,6 +9,7 @@ import {captureExcluded} from './policy.ts';
 import {hash,readsTranscript,HARNESSES} from './parse.ts';
 import {recordNativeDaemonHook,daemonRegistration,daemonSubagent,daemonPathAllowed,sameDaemonBinding,daemonSession,type DaemonRegistration,type DaemonNotice} from './daemon-handoff.ts';
 import {pendingLiveSince} from './live-batches.ts';
+import {version,compiled} from '../distribution.ts';
 
 export const daemonDir=()=>join(captureDir(),'daemon');
 const read=<T>(file:string,fallback:T):T=>{try{return JSON.parse(readFileSync(file,'utf8'));}catch(error:any){if(error.code==='ENOENT')return fallback;throw error;}};
@@ -37,13 +38,13 @@ export async function runCaptureDaemon({signal,flushMs=10_000,reconcileMs=30_000
     if(initial.backgroundStartup&&!processStartupTask)throw Error('Background session startup is configured but its handler is unavailable');
     let stopped=false,wakeCapture=()=>{},wakeUpload=()=>{},wakeStartup=()=>{},inboxDirty=true,queueDirty=true,startupDirty=true;
     let nextReconcile=Date.now()+reconcileMs,inboxRetryAt=0;
-    const counters={captures:0,sessionChecks:0,uploads:0,startups:0};
+    const counters={captures:0,sessionChecks:0,noticeReads:0,uploads:0,startups:0};
     const retryFile=join(daemonDir(),'retry.json');
     const generationFile=join(daemonDir(),'generation.json'),generation=read(generationFile,null);
     let retry=read(retryFile,{attempt:0,dueAt:0});
     const current=()=>{
       const config=readCaptureConfig();
-      if(!config||!captureDaemonEnabled(config)||config.disabled&&!config.backgroundStartup||config.api!==initial.api||config.installationId!==initial.installationId||config.owner.userId!==initial.owner.userId||config.owner.tenantId!==initial.owner.tenantId)return null;
+      if(!config||!captureDaemonEnabled(config)||config.disabled&&!config.backgroundStartup||config.api!==initial.api||config.installationId!==initial.installationId||config.owner.userId!==initial.owner.userId||config.owner.tenantId!==initial.owner.tenantId||HARNESSES.some(harness=>config.roots[harness]!==initial.roots[harness])||JSON.stringify(read(generationFile,null))!==JSON.stringify(generation))return null;
       return config;
     };
     const stop=()=>{stopped=true;wakeCapture();wakeUpload();wakeStartup();};
@@ -80,20 +81,29 @@ export async function runCaptureDaemon({signal,flushMs=10_000,reconcileMs=30_000
     // One damaged local record must not prevent healthy sessions from capturing.
     // Preserve its bytes for inspection; explicit purge removes held records too.
     const hold=(file:string,error:unknown)=>{recordError(error);renameSync(file,file+'.held');syncDirectory(dirname(file));};
-    let inboxAfter='';const blockedNotices=new Map<string,string>();
+    let inboxAfter='';
+    const blockedNotices=new Map<string,{name:string,attempt:number,dueAt:number}>(),noticeSessions=new Map<string,string>();
     const inbox=async()=>{
-      inboxDirty=false;let failed=false;
+      inboxDirty=false;let nextRetry=Infinity;const finished=new Set<string>();
       const ordered=names(join(daemonDir(),'inbox')).filter(name=>!name.startsWith('startup-')).sort();
+      const retained=new Set(ordered);
+      for(const [name,session]of noticeSessions)if(!retained.has(name)){noticeSessions.delete(name);if(blockedNotices.get(session)?.name===name)blockedNotices.delete(session);}
       const after=ordered.findIndex(name=>name>inboxAfter),candidates=after>0?[...ordered.slice(after),...ordered.slice(0,after)]:ordered;
       inboxDirty=candidates.length>64;
+      const deferred=(session:string,name:string)=>{
+        const blocked=blockedNotices.get(session);if(!blocked)return false;
+        nextRetry=Math.min(nextRetry,blocked.dueAt);
+        return blocked.name!==name||Date.now()<blocked.dueAt;
+      };
       // Read one payload at a time: 64 queued large tool results must not mean
       // 64 large objects resident in memory. Ordered filenames preserve ingress.
       for(const name of candidates.slice(0,64)){
         if(stopped)break;
         inboxAfter=name;
+        const cachedSession=noticeSessions.get(name);if(cachedSession&&deferred(cachedSession,name))continue;
         const file=join(daemonDir(),'inbox',name);let notice:DaemonNotice|LegacyNotice;
-        try{if(lstatSync(file).isSymbolicLink()||!lstatSync(file).isFile()||statSync(file).size>9*1024*1024)throw Error('Capture notice exceeds limit');const value=read<DaemonNotice|LegacyNotice|null>(file,null);if(!value)throw Error('Invalid capture notice');notice=value;}
-        catch(error){hold(file,error);continue;}
+        try{if(lstatSync(file).isSymbolicLink()||!lstatSync(file).isFile()||statSync(file).size>9*1024*1024)throw Error('Capture notice exceeds limit');counters.noticeReads++;const value=read<DaemonNotice|LegacyNotice|null>(file,null);if(!value)throw Error('Invalid capture notice');notice=value;}
+        catch(error){if(cachedSession&&blockedNotices.get(cachedSession)?.name===name)blockedNotices.delete(cachedSession);noticeSessions.delete(name);hold(file,error);finished.add(name);continue;}
         const config=current();if(!config){stop();return;}
         if(config.disabled)break;
         let registration:Registration|null=null,sessionKey='';
@@ -103,14 +113,15 @@ export async function runCaptureDaemon({signal,flushMs=10_000,reconcileMs=30_000
             if(!notice.record||!HARNESSES.includes(notice.record.harness)||!Number.isFinite(notice.at))throw Error('Invalid native capture notice');
             const {harness,event,at}=notice.record,session=daemonSession(harness,event,at);
             sessionKey=harness+':'+session.sessionId;
-            if(blockedNotices.has(sessionKey)&&blockedNotices.get(sessionKey)!==name)continue;
-            if(!config.harnesses?.includes(harness)||captureExcluded(config,{sessionId:session.sessionId,cwd:session.cwd??undefined})){blockedNotices.delete(sessionKey);hold(file,Error('Forward capture no longer selected'));continue;}
+            noticeSessions.set(name,sessionKey);
+            if(deferred(sessionKey,name))continue;
+            if(!config.harnesses?.includes(harness)||captureExcluded(config,{sessionId:session.sessionId,cwd:session.cwd??undefined})){blockedNotices.delete(sessionKey);noticeSessions.delete(name);finished.add(name);hold(file,Error('Forward capture no longer selected'));continue;}
             registration=daemonRegistration(config,notice);
           }else{
             const legacy=notice as LegacyNotice,{event,...fields}=legacy;
             registration={...fields,harness:'claude-code',...(event==='SessionEnd'?{endedAt:notice.at}:{})};
           }
-        }catch(error){if(blockedNotices.get(sessionKey)===name)blockedNotices.delete(sessionKey);hold(file,error);continue;}
+        }catch(error){if(blockedNotices.get(sessionKey)?.name===name)blockedNotices.delete(sessionKey);noticeSessions.delete(name);finished.add(name);hold(file,error);continue;}
         try{
           if('kind' in notice&&notice.record.harness!=='claude-code'){
             await spoolDaemonEvent(config,notice.record);queueDirty=true;wakeUpload();
@@ -120,11 +131,19 @@ export async function runCaptureDaemon({signal,flushMs=10_000,reconcileMs=30_000
             if(!previous||previous.at<=registration.at){enroll(registration);persist(registration);}
           }
           if('kind' in notice){const child=daemonSubagent(config,notice);if(child){enroll(child);persist(child);}}
-          remove(file);if(blockedNotices.get(sessionKey)===name)blockedNotices.delete(sessionKey);
-        }catch(error){recordError(error);failed=true;if(sessionKey)blockedNotices.set(sessionKey,name);}
+          remove(file);noticeSessions.delete(name);finished.add(name);if(blockedNotices.get(sessionKey)?.name===name)blockedNotices.delete(sessionKey);
+        }catch(error){
+          recordError(error);
+          if(sessionKey){const attempt=(blockedNotices.get(sessionKey)?.attempt??0)+1,dueAt=Date.now()+Math.min(30_000,Math.max(100,retryMs)*2**Math.min(attempt-1,8));blockedNotices.set(sessionKey,{name,attempt,dueAt});}
+          else nextRetry=Math.min(nextRetry,Date.now()+Math.max(100,retryMs));
+        }
         await yieldToOwner();
       }
-      if(failed){inboxDirty=true;inboxRetryAt=Date.now()+Math.max(100,retryMs);}else inboxRetryAt=0;
+      // Retry only the failing session with capped backoff. Already deferred
+      // payloads stay on disk; do not repeatedly parse their large tool bodies.
+      for(const blocked of blockedNotices.values())nextRetry=Math.min(nextRetry,blocked.dueAt);
+      if(Number.isFinite(nextRetry))inboxDirty=true;
+      inboxRetryAt=candidates.some(name=>!finished.has(name)&&!noticeSessions.has(name))?0:Number.isFinite(nextRetry)?Math.max(Date.now()+1,nextRetry):0;
     };
     const transcripts=(item:Active)=>{
       if(item.registration.harness==='antigravity'){addWatch(item,dirname(item.registration.path));return [resolveAntigravityTranscript(item.registration.path)];}
@@ -139,13 +158,13 @@ export async function runCaptureDaemon({signal,flushMs=10_000,reconcileMs=30_000
       visit(join(children,'subagents'));return files;
     };
     for(const name of names(join(daemonDir(),'sessions'))){const file=join(daemonDir(),'sessions',name);try{const registration=read<Registration|null>(file,null);if(registration)enroll({...registration,harness:registration.harness??'claude-code'});}catch(error){hold(file,error);}}
-    for(const [path,changed] of [[join(daemonDir(),'inbox'),()=>{inboxDirty=true;startupDirty=true;wakeCapture();wakeStartup();}],[join(captureDir(),'queue'),()=>{queueDirty=true;wakeUpload();wakeCapture();}]] as const){
+    for(const [path,changed] of [[join(daemonDir(),'inbox'),()=>{inboxDirty=true;inboxRetryAt=0;startupDirty=true;wakeCapture();wakeStartup();}],[join(captureDir(),'queue'),()=>{queueDirty=true;wakeUpload();wakeCapture();}]] as const){
       const watcher=watch(path,changed);watcher.on('error',stop);rootWatchers.push(watcher);
     }
     const configWatch=watch(captureDir(),(_event,name)=>{if(!name||name.toString()==='config.json'){if(!current())stop();else{wakeCapture();wakeUpload();startupDirty=true;wakeStartup();}}});
     configWatch.on('error',stop);rootWatchers.push(configWatch);
     const statusFile=join(daemonDir(),'status.json');
-    atomicJson(statusFile,{pid:process.pid,startedAt:new Date().toISOString(),state:'running'});onReady?.();
+    atomicJson(statusFile,{pid:process.pid,startedAt:new Date().toISOString(),state:'running',executable:process.execPath,version,compiled:compiled()});onReady?.();
     const capture=async()=>{
       let paused=false;
       while(!stopped){
@@ -266,7 +285,7 @@ export async function runCaptureDaemon({signal,flushMs=10_000,reconcileMs=30_000
     try{const results=await Promise.allSettled([guarded(capture()),guarded(upload()),guarded(startup())]);for(const result of results)if(result.status==='rejected')throw result.reason;}
     finally{
       stop();signal?.removeEventListener('abort',stop);for(const watcher of rootWatchers)watcher.close();for(const item of active.values())for(const watcher of item.watchers.values())watcher.close();
-      atomicJson(statusFile,{pid:process.pid,stoppedAt:new Date().toISOString(),state:'stopped',...counters});
+      atomicJson(statusFile,{pid:process.pid,stoppedAt:new Date().toISOString(),state:'stopped',executable:process.execPath,version,compiled:compiled(),...counters});
     }
   },0);}catch(error:any){if(error.code!=='SESSION_BUSY')throw error;}
 }
