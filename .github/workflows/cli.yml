@@ -159,6 +159,7 @@ jobs:
           set -euo pipefail
           NATIVE_BINARY="$(node -e 'const p=require("node:path");console.log(p.resolve("cli/dist",process.platform+"-"+process.arch,"bin","opencrawl"))')"
           bun cli/scripts/daemon-upgrade-smoke.ts "$RUNNER_TEMP/daemon-supervisor-evidence" "$NATIVE_BINARY"
+          bun cli/scripts/daemon-upgrade-smoke.ts "$RUNNER_TEMP/daemon-supervisor-evidence" "$NATIVE_BINARY" --plugin
       - name: Report unverified Windows native worker
         if: always() && runner.os == 'Windows' && steps.native_supervisor.outcome == 'failure'
         shell: bash

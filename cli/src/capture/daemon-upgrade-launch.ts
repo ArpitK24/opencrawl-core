@@ -22,7 +22,7 @@ export function scheduleDaemonUpgrade({native=compiled(),platform=process.platfo
 }={}){
   if(!native||!['darwin','linux'].includes(platform)||process.env.OPENCRAWL_NO_UPDATE==='1'||hasPluginContext())return;
   const config=readCaptureConfig();
-  if(!config||config.disabled||config.authPending||config.hookOwnership==='plugin'||config.harnesses?.length===0||captureDaemonEnabled(config)||!owned(config))return;
+  if(!config||config.authPending||(!config.daemonRequested&&(config.disabled||config.hookOwnership==='plugin'||config.harnesses?.length===0))||captureDaemonEnabled(config)||!owned(config))return;
   const directory=join(captureDir(),'daemon'),receipt=join(directory,'upgrade-attempt.json');
   mkdirSync(directory,{recursive:true,mode:0o700});
   if(existsSync(receipt)){try{const prior=JSON.parse(readFileSync(receipt,'utf8'));if(prior.version===version&&prior.nextAttemptAt>now&&prior.nextAttemptAt<=now+15*60_000)return;}catch{/* A damaged cooldown cannot permanently suppress migration. */}}

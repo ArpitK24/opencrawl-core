@@ -143,3 +143,12 @@ test('a damaged migration binding preserves old notices without breaking the cur
   expect(existsSync(marker+'.held')).toBe(true);expect(readFileSync(join(directory,'retained.json'),'utf8')).toBe('retained bytes');
   expect(importLegacyDaemonNotices(readCaptureConfig()!)).toBe(false);
 }));
+
+for(const disabled of [false,true])test('requested plugin daemon stages startup without enabling paused recording '+disabled,()=>fixture(async config=>{
+ const before:CaptureConfig={...config,hookOwnership:'plugin',disabled,harnesses:disabled?[]:['cursor'],backgroundStartup:false,daemonRequested:{backgroundStartup:true}};
+ atomicJson(join(captureDir(),'config.json'),before);
+ expect(await upgradeCaptureDaemon({install:async(candidate)=>{expect(candidate.backgroundStartup).toBe(true);expect(candidate.daemonRequested).toBeUndefined();expect(readCaptureConfig()).toEqual(before);throw Error('no service');}})).toEqual({state:'fallback',reason:'bootstrap-failed'});
+ expect(readCaptureConfig()).toEqual(before);
+ expect(await upgradeCaptureDaemon({install:async()=>({supervised:true})})).toEqual({state:'activated'});
+ expect(readCaptureConfig()).toMatchObject({disabled,harnesses:before.harnesses,backgroundStartup:true,captureWorker:'daemon-v1',installationId:before.installationId,owner:before.owner});
+}));

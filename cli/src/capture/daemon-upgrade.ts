@@ -17,11 +17,12 @@ export async function upgradeCaptureDaemon({install=(candidate,before)=>installC
   install?:Installer;ready?:(stage:DaemonBootstrap)=>Promise<boolean>;cleanup?:()=>void;command?:string[];
 }={}):Promise<DaemonUpgradeResult> {
   const before=readCaptureConfig();
-  if(!before||before.disabled||before.authPending||before.harnesses?.length===0||before.hookOwnership==='plugin')return {state:'not-selected'};
+  if(!before||before.authPending||(!before.daemonRequested&&(before.disabled||before.harnesses?.length===0||before.hookOwnership==='plugin')))return {state:'not-selected'};
   if(captureDaemonEnabled(before))return {state:'already-enabled'};
   try{return await withSessionLock('capture:daemon-upgrade',async()=>{
     if(!isDeepStrictEqual(readCaptureConfig(),before))return {state:'busy'};
     const stage:DaemonBootstrap={id:randomUUID(),expiresAt:Date.now()+30_000,before,candidate:{...before,harnesses:before.harnesses??['claude-code','codex'],captureWorker:'daemon-v1',...(command?{command}:{})}};
+    if(before.daemonRequested){stage.candidate.backgroundStartup=before.daemonRequested.backgroundStartup;delete stage.candidate.daemonRequested;}
     atomicJson(bootstrapFile(),stage);
     let activated=false;
     const serviceFile=join(captureDir(),'daemon','service.json');
