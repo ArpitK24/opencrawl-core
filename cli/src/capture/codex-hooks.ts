@@ -4,8 +4,12 @@ import {createHash} from 'node:crypto';
 import {configDir} from '../session.ts';
 import {verifyPluginBundle} from '../setup/plugin-context.ts';
 import {spawn} from 'node:child_process';
+import {searchContextMarker} from '../search-context.ts';
 
 const owned=new Set(['OpenCrawl session capture','OpenCrawl session startup']);
+// Review every bundled permission together; search context must not become a
+// second surprise after the capture hooks have already been approved.
+const pluginOwned=new Set([...owned,searchContextMarker]);
 export type CodexHookReview={state:'not_applicable'|'unknown'|'observed';total:number;pending:number|null;disabled:number|null};
 type Snapshot={review:CodexHookReview;file:string;bytes:string;config:string;keys:Set<string>;binding?:string;pluginId?:string};
 function globalSnapshot(root:string):Snapshot {
@@ -44,7 +48,7 @@ function snapshot(root:string):Snapshot {
   for(const [event,groups] of Object.entries(value.hooks??{}))if(Array.isArray(groups))groups.forEach((group:unknown,g:number)=>{
    if(!group||typeof group!=='object'||!('hooks' in group)||!Array.isArray(group.hooks))return;
    group.hooks.forEach((hook:unknown,h:number)=>{
-    if(hook&&typeof hook==='object'&&'statusMessage' in hook&&typeof hook.statusMessage==='string'&&owned.has(hook.statusMessage))keys.add(`${pluginId}:hooks/hooks.json:${event.replace(/([a-z0-9])([A-Z])/g,'$1_$2').toLowerCase()}:${g}:${h}`);
+    if(hook&&typeof hook==='object'&&'statusMessage' in hook&&typeof hook.statusMessage==='string'&&pluginOwned.has(hook.statusMessage))keys.add(`${pluginId}:hooks/hooks.json:${event.replace(/([a-z0-9])([A-Z])/g,'$1_$2').toLowerCase()}:${g}:${h}`);
    });
   });
   const config=existsSync(join(root,'config.toml'))?readFileSync(join(root,'config.toml'),'utf8'):'';
@@ -102,7 +106,7 @@ export async function inspectCodexHooks(root:string,query=nativeCodexHooks):Prom
   if(after.file!==before.file||after.bytes!==before.bytes||after.config!==before.config||after.binding!==before.binding||after.pluginId!==before.pluginId||!value||typeof value!=='object'||!('data' in value)||!Array.isArray(value.data))return before.review;
   const hooks:Record<string,unknown>[]=[];
   for(const entry of value.data){if(!entry||typeof entry!=='object'||!Array.isArray(entry.hooks)||!Array.isArray(entry.errors)||entry.errors.length)return before.review;
-   for(const hook of entry.hooks)if(hook&&typeof hook==='object'&&typeof hook.sourcePath==='string'&&owned.has(hook.statusMessage)){
+   for(const hook of entry.hooks)if(hook&&typeof hook==='object'&&typeof hook.sourcePath==='string'&&(before.pluginId?pluginOwned:owned).has(hook.statusMessage)){
     const matches=before.pluginId?hook.source==='plugin'&&hook.pluginId===before.pluginId&&realpathSync(hook.sourcePath)===realpathSync(before.file):resolve(hook.sourcePath)===resolve(before.file);
     if(matches)hooks.push(hook);
    }
@@ -112,7 +116,7 @@ export async function inspectCodexHooks(root:string,query=nativeCodexHooks):Prom
  } catch {return before.review;}
 }
 export function codexHookReviewMessage(review:CodexHookReview):string|null{
- if(review.state==='unknown')return 'Codex hook trust could not be verified. Open /hooks (or desktop Settings > Hooks) to review OpenCrawl session capture and session startup; trust any new or changed definitions you approve, then start a new session.';
- if(review.pending)return `Codex will not run ${review.pending} OpenCrawl hook${review.pending===1?'':'s'} until you review and trust their current definitions: open /hooks (or desktop Settings > Hooks), review OpenCrawl session capture and session startup, then start a new session.${review.disabled?` Another ${review.disabled} OpenCrawl hook${review.disabled===1?' is':'s are'} disabled; keep intentional opt-outs.`:''}`;
+ if(review.state==='unknown')return 'Codex hook trust could not be verified. Open /hooks (or desktop Settings > Hooks) to review the listed OpenCrawl session capture, session startup and search context hooks; trust any new or changed definitions you approve, then start a new session.';
+ if(review.pending)return `Codex will not run ${review.pending} OpenCrawl hook${review.pending===1?'':'s'} until you review and trust their current definitions: open /hooks (or desktop Settings > Hooks), review the listed OpenCrawl session capture, session startup and search context hooks, then start a new session.${review.disabled?` Another ${review.disabled} OpenCrawl hook${review.disabled===1?' is':'s are'} disabled; keep intentional opt-outs.`:''}`;
  return review.disabled?`${review.disabled} OpenCrawl hook${review.disabled===1?' is':'s are'} disabled in Codex. Review /hooks (or desktop Settings > Hooks); keep intentional opt-outs, or enable the hooks you want to use.`:null;
 }
