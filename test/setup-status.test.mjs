@@ -198,6 +198,19 @@ test('rejected Codex completion cannot donate its nonce to a later matching call
   assert.equal((await f.setup.read(owner)).installations[0].clients[0].mcp.state,'observed');
 });
 
+test('Claude tool_use-only marker cannot prove capture even when its input is searchable',async()=>{
+  const f=await fixture(),selected={...selection,client:'claude-code'},proof=(await f.setup.verify(owner,selected)).proof;
+  f.advance(1000);const timestamp=f.batch().events[0].timestamp,eventId='claude-search-call';
+  f.setHits([f.hit({text:proof.marker,provenance:{userId:owner.userId,installationId:selection.installationId,harness:'claude-code',sessionId:'native-session',eventId}})]);
+  await f.setup.session(owner,f.batch({harness:'claude-code',events:[{id:eventId,kind:'message',timestamp,data:{role:'assistant',content:[
+    {type:'tool_use',id:'native-search',name:'mcp__opencrawl__search',input:{query:proof.marker}},
+  ]}}]}));
+  const checked=await f.setup.verify(owner,selected);
+  assert.equal(checked.proof.state,'waiting_capture');assert.equal(checked.captureObservedAt,undefined);
+  assert.equal(f.searches,0,'indexed tool input cannot bypass the conversational capture requirement');
+  assert.equal((await f.setup.read(owner)).firstWin,null);
+});
+
 test('Claude native tool_use and tool_result blocks bind MCP without treating terminal output as authentication',async()=>{
   const f=await fixture(),selected={...selection,client:'claude-code'},proof=(await f.setup.verify(owner,selected)).proof;
   f.advance(1000);const timestamp=f.batch().events[0].timestamp;
