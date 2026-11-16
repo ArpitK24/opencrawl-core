@@ -125,7 +125,10 @@ On a **disposable fresh installation**, add `--exercise` to create a synthetic f
 administrator and run device OAuth, duplicate capture, conflicting-event rejection,
 Temporal indexing, authenticated MCP retrieval, scope/origin denial and token refresh.
 It retains a synthetic account and capture fixture in the instance. Its generated
-account Secret permits repeat runs after pod replacement and upgrades. Do not use
+account Secret permits repeat runs after pod replacement and upgrades. `--existing`
+refuses to recreate the account, capture or index fixture, so a data loss cannot be
+hidden by reseeding. `--deny-marker` additionally checks that a synthetic marker
+from another installation is absent from authenticated search. Do not use
 exercise mode as an unannounced production smoke test.
 
 ```sh
@@ -133,7 +136,7 @@ node verify.mts --config disposable.json --exercise
 kubectl --context CONTEXT -n NAMESPACE rollout restart deployment/RELEASE-app deployment/RELEASE-worker
 kubectl --context CONTEXT -n NAMESPACE rollout status deployment/RELEASE-app
 kubectl --context CONTEXT -n NAMESPACE rollout status deployment/RELEASE-worker
-node verify.mts --config disposable.json --exercise
+node verify.mts --config disposable.json --exercise --existing
 ```
 
 For infrastructure failures inspect Pods, Events, PVCs and the named release.
@@ -143,7 +146,8 @@ an intermediate stage. Rerun the same command/configuration to resume.
 
 ## Upgrades, backup and removal
 
-Pin a released runtime digest and chart version. Back up PostgreSQL, raw objects,
+Pin a released runtime digest and chart version. When selecting the runtime by
+digest only, set `githubConnector.tag` to the matching published connector tag. Back up PostgreSQL, raw objects,
 credentials, and the installation journal together before upgrades. Follow the
 runtime's migration instructions; Helm rollback alone cannot undo a database change.
 Keep the organization, storage prefix, index and Temporal binding stable. Moving

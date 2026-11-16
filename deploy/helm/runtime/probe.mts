@@ -7,7 +7,7 @@ import {connectorClient} from '../../../dist/src/connectors/temporal/client.mjs'
 import {selfhostTemporalSettings} from '../../../dist/src/selfhost/temporal-settings.mjs';
 import {realmIndex} from '../../../dist/src/search/realm-format.mjs';
 
-const env=process.env,results:object[]=[],exercise=env.CONFORMANCE_EXERCISE==='true';
+const env=process.env,results:object[]=[],exercise=env.CONFORMANCE_EXERCISE==='true',existing=env.CONFORMANCE_EXISTING==='true';
 const required=(key:string)=>{const value=env[key];assert.ok(value,`${key} required`);return value;};
 async function check(name:string,hint:string,run:()=>Promise<unknown>){
   const started=Date.now();
@@ -25,6 +25,9 @@ await check('object-storage','Check bucket existence, credentials, endpoint and 
 const temporal=selfhostTemporalSettings();
 await check('temporal-namespace','Check Temporal address, namespace, TLS and credentials.',async()=>{
   const c=await connectorClient(temporal);try{await c.connection.workflowService.describeNamespace({namespace:temporal.namespace});}finally{await c.connection.close();}
+});
+await check('worker-poller','Check the worker readiness probe and session task-queue configuration.',async()=>{
+  const c=await connectorClient(temporal);try{const response=await c.connection.workflowService.describeTaskQueue({namespace:temporal.namespace,taskQueue:{name:env.TEMPORAL_SESSION_TASK_QUEUE||'session-indexing-v1'},taskQueueType:1});assert.ok(response.pollers?.length);}finally{await c.connection.close();}
 });
 await check('opensearch-index','Grant access to the configured index and check app/worker readiness.',async()=>{
   const index=env.OPENCRAWL_OPENSEARCH_INDEX||realmIndex('selfhost',required('OPENCRAWL_ORGANIZATION_ID'));
@@ -46,7 +49,7 @@ if(exercise){
   await check('login-and-device-grant','Exercise mode creates a synthetic first admin on fresh installations; use its saved Secret for repeat runs.',async()=>{
     const account={email:required('CONFORMANCE_EMAIL'),password:required('CONFORMANCE_PASSWORD')};
     let login=await form('/auth/login',account);
-    if(login.status===401){assert.equal((await form('/auth/signup',{...account,setup:required('OPENCRAWL_SETUP_TOKEN'),name:'Conformance',workspace:'Helm validation'})).status,303);login=await form('/auth/login',account);}
+    if(login.status===401&&!existing){assert.equal((await form('/auth/signup',{...account,setup:required('OPENCRAWL_SETUP_TOKEN'),name:'Conformance',workspace:'Helm validation'})).status,303);login=await form('/auth/login',account);}
     assert.equal(login.status,303);
     const r=await request('/api/cli/device',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:'opencrawl-cli'})});assert.equal(r.status,200);
     const device=await r.json();assert.equal((await form('/device',{user_code:device.user_code,decision:'approve'})).status,200);await delay((device.interval||5)*1000);
@@ -54,12 +57,12 @@ if(exercise){
     const identity=await request('/api/sessions/identity',{headers:bearer});assert.equal(identity.status,200);principal=(await identity.json()).data.principal;assert.equal(principal.tenantId,env.OPENCRAWL_ORGANIZATION_ID);
   });
   const marker=required('CONFORMANCE_MARKER'),text=`Synthetic Helm conformance fixture ${marker}.`;
-  await check('capture-idempotency-and-conflict','Inspect app-state/event-identity storage and capture validation.',async()=>{
+  if(!existing)await check('capture-idempotency-and-conflict','Inspect app-state/event-identity storage and capture validation.',async()=>{
     const batch={schemaVersion:1,owner:principal,harness:'codex',origin:'cli',installationId:marker,sessionId:marker,events:[{id:marker+'-message',kind:'message',data:{role:'user',content:text}}],attachments:[]};
     const capture=(value:unknown)=>request('/api/sessions/batches',{method:'POST',headers:{...bearer,'content-type':'application/json'},body:JSON.stringify(value)});
     assert.equal((await capture(batch)).status,200);assert.equal((await capture(batch)).status,200);batch.events[0].data.content+=' conflicting';assert.equal((await capture(batch)).status,409);
   });
-  await check('temporal-indexing','Check worker pollers, task queues, S3 access and index write permissions.',async()=>{
+  if(!existing)await check('temporal-indexing','Check worker pollers, task queues, S3 access and index write permissions.',async()=>{
     const c=await connectorClient(temporal);try{await c.client.workflow.execute('indexSessionsV1',{workflowId:'helm-'+marker+'-'+Date.now(),taskQueue:env.TEMPORAL_SESSION_TASK_QUEUE||'session-indexing-v1',args:[{sourceId:'sessions-'+env.OPENCRAWL_ORGANIZATION_ID+'-v1'}],workflowExecutionTimeout:'5 minutes'});}finally{await c.connection.close();}
   });
   await check('mcp-search','Indexing completed but authenticated MCP retrieval did not find the fixture.',async()=>{
@@ -67,6 +70,7 @@ if(exercise){
     async function rpc(method:string,params:unknown){const r=await request('/mcp',{method:'POST',headers:{...bearer,'content-type':'application/json',accept:'application/json, text/event-stream',...(session?{'Mcp-Session-Id':session}:{})},body:JSON.stringify({jsonrpc:'2.0',id:++id,method,params})});assert.equal(r.status,200);session=r.headers.get('mcp-session-id')||session;const raw=await r.text(),payload=JSON.parse(raw.startsWith('data:')||raw.startsWith('event:')?raw.split('\n').find(l=>l.startsWith('data:'))!.slice(5):raw);assert.ok(!payload.error&&!payload.result?.isError);return payload.result;}
     await rpc('initialize',{protocolVersion:'2025-11-25',capabilities:{},clientInfo:{name:'OpenCrawl Helm conformance',version:'1'}});
     await rpc('tools/call',{name:'test_connection',arguments:{}});
+    if(env.CONFORMANCE_DENY_MARKER){const denied=await rpc('tools/call',{name:'search',arguments:{query:env.CONFORMANCE_DENY_MARKER,source:'sessions'}});assert.ok(!JSON.stringify(denied).includes('Synthetic Helm conformance fixture '+env.CONFORMANCE_DENY_MARKER+'.'));}
     for(let attempt=0;attempt<30;attempt++){const r=await rpc('tools/call',{name:'search',arguments:{query:marker,source:'sessions'}});if(JSON.stringify(r).includes(text))return;await delay(2000);}throw Error('Fixture absent');
   });
   await check('browser-scope-and-origin','Authenticated browser operations must reject caller-supplied scope and a foreign Origin.',async()=>{
@@ -77,4 +81,4 @@ if(exercise){
     const r=await request('/api/cli/token',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:'opencrawl-cli',grant_type:'refresh_token',refresh_token:grant.refresh_token})});assert.equal(r.status,200);assert.ok((await r.json()).access_token);
   });
 }
-console.log(JSON.stringify({schemaVersion:1,status:'passed',exercise,revision:env.REVISION,organization:env.OPENCRAWL_ORGANIZATION_ID,checkedAt:new Date().toISOString(),results}));
+console.log(JSON.stringify({schemaVersion:1,status:'passed',exercise,existing,revision:env.REVISION,organization:env.OPENCRAWL_ORGANIZATION_ID,checkedAt:new Date().toISOString(),results}));
