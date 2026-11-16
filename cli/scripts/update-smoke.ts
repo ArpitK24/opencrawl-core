@@ -1,8 +1,9 @@
 import {withTestState} from '../../test/fixtures/memory-application-state.mjs';
 // Prove a real npm-installed N launcher adopts a fully installed N+1 launcher
 // and native binary, using a disposable loopback registry and cache.
-import {readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, cpSync, existsSync, renameSync, realpathSync} from 'node:fs';
+import {readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, cpSync, existsSync, renameSync} from 'node:fs';
 import assert from 'node:assert/strict';
+import {assertSameFile} from './file-identity.ts';
 import {join, resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
@@ -150,9 +151,9 @@ try {
     const upgradedConfig = readFileSync(join(capture, 'config.json'), 'utf8');
     const migrated=JSON.parse(upgradedConfig);
     assert.equal(migrated.command.length,1,'Migrated capture must invoke one native executable');
-    // macOS may canonicalize /var to /private/var in process.execPath. Require
-    // the same executable while comparing every other capture field exactly.
-    assert.equal(realpathSync(migrated.command[0]),realpathSync(join(env.XDG_CACHE_HOME,'opencrawl/releases',version,'node_modules/@getopencrawl','cli-'+platform,'bin',process.platform==='win32'?'opencrawl.exe':'opencrawl')));
+    // Path spelling can differ through macOS /var or Windows 8.3 aliases.
+    // Require the same file identity, not matching bytes in a different file.
+    assertSameFile(nodeExecutable, migrated.command[0], join(env.XDG_CACHE_HOME,'opencrawl/releases',version,'node_modules/@getopencrawl','cli-'+platform,'bin',process.platform==='win32'?'opencrawl.exe':'opencrawl'));
     assert.deepEqual({...migrated,command:config.command},{...config,hookMode:'native-v4'});
     const selectedApi = (...args: string[]) => JSON.parse(sync(['node', launcher, 'skills', 'status', '--client', 'claude-code', '--json', ...args])).data.api;
     delete env.OPENCRAWL_API_URL;
