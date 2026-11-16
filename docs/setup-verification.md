@@ -61,9 +61,11 @@ status. It is not required to enable capture to search existing authorized data.
 
 ## Runtime integration
 
-- Construct `createSetupStatus({store, prefix, search: authorizedSearch})` from
-  `@getopencrawl/opencrawl-core/setup/status`. Storage must support conditional
-  writes; state keys include the authenticated tenant and user.
+- Construct `createSetupStatus({state, search: authorizedSearch})` from
+  `@getopencrawl/opencrawl-core/setup/status` using the ready core
+  `ApplicationState`. Its PostgreSQL setup repository provides atomic conditional
+  writes scoped to the authenticated tenant and user. Existing deployments must
+  complete their application-state migration before starting this service.
 - The CLI uses `GET /api/setup`, `POST /api/setup/installation`, and
   `POST /api/setup/verify` through `createSetupHandler({setup, authenticate})` from
   `@getopencrawl/opencrawl-core/setup/http`. Responses are
