@@ -105,6 +105,15 @@ live('conflicting per-source migration evidence rolls back all newly inserted ba
  assert.deepEqual(rows,[{source_hash:hash('wrong original bytes')}],'Original contradictory evidence is retained, never overwritten');
 });
 
+live('an unexpected other-domain receipt for a batched key still prevents final readiness',async t=>{
+ const f=await fixture(t,{count:3});f.interruptAfter(1);await assert.rejects(f.run(),/batch-boundary interruption/);
+ const key=f.definitions[0].key;
+ await f.database.pool.query('INSERT INTO opencrawl_application_migrations(namespace,domain,source_key,source_hash,target_hash,imported_rows) VALUES($1,$2,$3,$4,$4,0)',[f.database.namespace,'unexpected-domain',key,hash('unrelated evidence')]);
+ f.resume();await assert.rejects(f.run(),/receipts do not cover the source manifest/);
+ assert.equal((await f.database.pool.query('SELECT state FROM opencrawl_application_installations WHERE namespace=$1',[f.database.namespace])).rows[0].state,'importing');
+ assert.equal((await f.database.pool.query("SELECT count(*)::int n FROM opencrawl_application_migrations WHERE namespace=$1 AND domain='unexpected-domain'",[f.database.namespace])).rows[0].n,1,'Conflicting evidence is preserved');
+});
+
 live('receipt batches reject reordered reads, final source drift, duplicate entries and foreign owner payloads',async t=>{
  const reordered=await fixture(t,{count:3});reordered.reverse();await assert.rejects(reordered.run(),/Source changed after inventory/);
  assert.equal((await reordered.database.pool.query('SELECT count(*)::int n FROM opencrawl_application_migrations WHERE namespace=$1',[reordered.database.namespace])).rows[0].n,0);

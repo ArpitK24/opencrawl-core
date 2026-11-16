@@ -15,6 +15,28 @@ export interface ApplicationDatabase {
   close(): Promise<void>;
 }
 
+/** Called under the owning schema advisory lock. Validate the existing index
+ * without taking CREATE INDEX's ShareLock on every runtime startup. */
+export async function ensureByteOrderIndex(client:PoolClient,table:string,index:string,columns:readonly string[]){
+  if(!columns.length||![table,index,...columns].every(value=>/^[a-z_]+$/.test(value)))throw new Error('Invalid byte-order index definition');
+  const {rows}=await client.query(`SELECT idx.relkind,i.indisvalid,i.indisready,i.indislive,
+    i.indrelid=t.oid AS owns_table,i.indpred IS NULL AND i.indexprs IS NULL AS plain,
+    i.indnkeyatts,i.indnatts,am.amname,i.indcollation::oid[] AS collations,i.indoption::smallint[] AS options,
+    ARRAY(SELECT a.attname::text FROM unnest(i.indkey::smallint[]) WITH ORDINALITY k(n,pos) LEFT JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=k.n ORDER BY pos) AS columns,
+    ARRAY(SELECT a.attcollation FROM unnest(i.indkey::smallint[]) WITH ORDINALITY k(n,pos) LEFT JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=k.n ORDER BY pos) AS column_collations,
+    'pg_catalog."C"'::regcollation::oid AS c_collation,
+    i.indclass::oid[] <@ ARRAY(SELECT oid FROM pg_opclass WHERE opcname='text_ops' AND opcnamespace='pg_catalog'::regnamespace AND opcmethod=idx.relam) AS text_ops
+    FROM pg_class t JOIN pg_class idx ON idx.relnamespace=t.relnamespace AND idx.relname=$2
+    LEFT JOIN pg_index i ON i.indexrelid=idx.oid LEFT JOIN pg_am am ON am.oid=idx.relam
+    WHERE t.oid=to_regclass($1)`,[table,index]);
+  if(!rows.length){
+    await client.query(`CREATE INDEX ${index} ON ${table}(${columns.map((name,i)=>name+(i===columns.length-1?' COLLATE "C"':'')).join(',')})`);return;
+  }
+  const found=rows[0];
+  if(found.relkind!=='i'||!found.indisvalid||!found.indisready||!found.indislive||!found.owns_table||!found.plain||!found.text_ops||found.amname!=='btree'||found.indnkeyatts!==columns.length||found.indnatts!==columns.length||!isDeepStrictEqual(found.columns,columns)||found.options.some((value:number)=>value!==0)||found.collations.some((value:number,i:number)=>Number(value)!==Number(i===columns.length-1?found.c_collation:found.column_collations[i])))
+    throw new Error('Existing migration byte-order index is incompatible: '+index);
+}
+
 export function createApplicationDatabase({namespace,sourceIdentity, ...config}: PoolConfig & {namespace: string;sourceIdentity?:ApplicationSourceIdentity}): ApplicationDatabase {
   if (!namespace || namespace.length > 2048 || namespace.includes('\0')) throw new Error('A stable application-state namespace is required');
   const identitySchema = 'oc_auth_' + createHash('sha256').update(namespace).digest('hex').slice(0, 24);
@@ -65,6 +87,9 @@ export function createApplicationDatabase({namespace,sourceIdentity, ...config}:
             domain text NOT NULL, source_key text NOT NULL, source_version text, source_hash text NOT NULL,
             target_hash text NOT NULL, imported_rows bigint NOT NULL CHECK(imported_rows >= 0),
             completed_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(namespace, domain, source_key))`);
+        // Even CREATE INDEX IF NOT EXISTS takes a writer-conflicting table lock.
+        // The schema advisory lock serializes this one-time offline upgrade.
+        await ensureByteOrderIndex(client,'opencrawl_application_migration_sources','opencrawl_application_sources_byte_order',['namespace','source_key']);
         const result = await client.query('SELECT version FROM opencrawl_application_schema WHERE singleton');
         if (result.rows[0]?.version !== 1) throw new Error('Unsupported application database schema; use the supported upgrade');
       }).catch(error => {preparing = undefined; throw error;});

@@ -121,7 +121,7 @@ export async function migrateApplicationSources<Result extends object>(options:A
     }
     if(!existing)await assertUnboundTargetEmpty(client,database);
     const sources=await options.sources();
-    await client.query(`CREATE TEMP TABLE oc_application_migration_scan(source_key text PRIMARY KEY,domain text NOT NULL,source_version text,source_hash text NOT NULL,source_bytes bigint NOT NULL,verified boolean NOT NULL DEFAULT false) ON COMMIT PRESERVE ROWS`);
+    await client.query(`CREATE TEMP TABLE oc_application_migration_scan(source_key text COLLATE "C" PRIMARY KEY,domain text NOT NULL,source_version text,source_hash text NOT NULL,source_bytes bigint NOT NULL,verified boolean NOT NULL DEFAULT false) ON COMMIT PRESERVE ROWS`);
     let fresh=true,mutableObjects=0;const listedKeys=createHash('sha256');
     let initialBatch:SessionEntry[]=[];
     async function readSessionTargets(items:readonly SessionEntry[],allowMissing=false){
@@ -192,7 +192,7 @@ export async function migrateApplicationSources<Result extends object>(options:A
           return {domain:item.entry.domain,source_key:item.entry.key,source_version:item.entry.version,source_hash:item.entry.hash,target_hash:targetHash,imported_rows:1};
         });
         await client.query(`INSERT INTO opencrawl_application_migrations(namespace,domain,source_key,source_version,source_hash,target_hash,imported_rows) SELECT $1,x.domain,x.source_key,x.source_version,x.source_hash,x.target_hash,x.imported_rows FROM jsonb_to_recordset($2::jsonb) AS x(domain text,source_key text,source_version text,source_hash text,target_hash text,imported_rows bigint) ON CONFLICT DO NOTHING`,[ns,JSON.stringify(values)]);
-        const {rows}=await client.query('SELECT domain,source_key,source_version,source_hash,target_hash,imported_rows FROM opencrawl_application_migrations WHERE namespace=$1 AND source_key=ANY($2::text[])',[ns,values.map(value=>value.source_key)]);
+        const {rows}=await client.query("SELECT domain,source_key,source_version,source_hash,target_hash,imported_rows FROM opencrawl_application_migrations WHERE namespace=$1 AND domain='session-indexing' AND source_key=ANY($2::text[])",[ns,values.map(value=>value.source_key)]);
         if(rows.length!==values.length)fail('Migration receipt conflicts with previously imported data');
         const found=new Map(rows.map(row=>[row.source_key,row]));
         for(const value of values){const actual=found.get(value.source_key);if(!actual||actual.domain!==value.domain||actual.source_version!==value.source_version||actual.source_hash!==value.source_hash||actual.target_hash!==value.target_hash||Number(actual.imported_rows)!==value.imported_rows)fail('Migration receipt conflicts with previously imported data');}
