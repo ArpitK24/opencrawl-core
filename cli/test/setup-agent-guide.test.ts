@@ -30,22 +30,27 @@ test('setup guides preserve the actual invocation and quote client/server argume
  }
 });
 
-test('standalone setup reference uses the current executable without hardcoding another server',()=>{
- const guide=skillFiles()['references/setup.md'];
- expect(guide).toBe(setupAgentGuide());
- expect(guide).toContain('`'+formatSetupCommand(['setup','status','--local','--json'])+'`');
- expect(guide).toContain('`'+formatSetupCommand(['setup','hooks','--json'])+'`');
- expect(guide).toContain('`'+formatSetupCommand(['verify-installation','--client','<this-client>','--json'])+'`');
- expect(guide).not.toContain('--api');
+test('the condensed general skill points to native setup without embedding a checkout-bound guide',()=>{
+ const files=skillFiles(),skill=files['SKILL.md'];
+ expect(Object.keys(files)).toEqual(['SKILL.md']);
+ expect(skill).toContain('this same conversation');
+ expect(skill).toContain("native plugin's opencrawl-setup skill");
+ expect(skill).toContain('bound CLI command, profile and server');
+ expect(skill).toContain('saved plugin, future-recording and history choices');
+ expect(skill).toContain('preserve opt-outs and do not repeat the questionnaire');
+ expect(skill).not.toContain('references/');
+ expect(skill).not.toContain(process.execPath);
+ expect(skill).not.toContain(import.meta.dir);
 });
 
-test('every native plugin gives its onboarding and shared setup reference the same client-bound guide',()=>{
+test('every native plugin retains its client-bound setup guide beside the single-file general skill',()=>{
  const api='https://selected.example';
  for(const client of ['claude-code','codex','cursor','antigravity'] as const){
   const files=setupPluginFiles(client,api),guide=files['skills/opencrawl-setup/SKILL.md'];
   expect(guide).toStartWith(setupAgentGuide(client,api,undefined,process.platform,client==='codex'?{name:setupPluginIdentity(api).name,url:api+'/mcp'}:undefined));
   expect(guide).toContain(setupPluginIdentity(api).name);
-  expect(files['skills/opencrawl/references/setup.md']).toBe(guide);
+  expect(Object.keys(files).filter(name=>name.startsWith('skills/opencrawl/'))).toEqual(['skills/opencrawl/SKILL.md']);
+  expect(files['skills/opencrawl/SKILL.md']).toBe(skillFiles()['SKILL.md']);
   expect(guide).toContain('`'+formatSetupCommand(['verify-installation','--client',client,'--json','--api',api])+'`');
   expect(guide).not.toMatch(/`opencrawl (setup|verify-installation)/);
   const hookCommand='`'+formatSetupCommand(['setup','hooks','--json','--api',api])+'`';

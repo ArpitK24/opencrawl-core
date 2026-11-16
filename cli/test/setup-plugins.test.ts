@@ -51,7 +51,8 @@ test('all four bundles contain native hooks bound to the exact profile, command 
   const runner=files[process.platform==='win32'?'scripts/opencrawl-hook.cmd':'scripts/opencrawl-hook.sh'];
   expect(runner).toContain(identity.name);expect(runner).toContain('OPENCRAWL_CONFIG_HOME');expect(runner).toContain('private profile');expect(runner).toContain('private cli');
   expect(files['skills/opencrawl-setup/SKILL.md']).toContain(identity.name);expect(files['skills/opencrawl-setup/SKILL.md']).toContain('Never switch to a separate "test MCP" prompt');
-  expect(files['skills/opencrawl/references/search.md']).toContain('Lexical search recipe');
+  expect(files['skills/opencrawl/SKILL.md']).toContain('Search is lexical');
+  expect(Object.keys(files).some(name=>name.startsWith('skills/opencrawl/references/'))).toBe(false);
   if(client==='codex'){const manifest=JSON.parse(files['.codex-plugin/plugin.json']);expect(manifest).toMatchObject({hooks:'./hooks/hooks.json',mcpServers:'./.mcp.json',skills:'./skills/'});expect(JSON.parse(files['.mcp.json']).mcpServers).toEqual({[identity.name]:{type:'http',url:origin+'/mcp'}});expect(files['plugin.json']).toBeUndefined();expect(files['mcp.json']).toBeUndefined();}
  }
 });
@@ -60,7 +61,7 @@ test('generated Cursor rule delivers retrieval and native notifications for its 
  const rule=files['rules/opencrawl.mdc'];
  for(const phrase of ['alwaysApply: true',identity.name,origin,'exact command, profile','first-tool receipt','notify_on_output','block_until_ms:0','Registration alone is not listening','Do not run board diagnostics','use OpenCrawl search'])expect(rule).toContain(phrase);
  expect(rule).not.toContain('app.getopencrawl.com');expect(rule).not.toContain('opencrawl_search');
- expect(files['skills/opencrawl/references/participation.md']).toContain('notify_on_output');
+ expect(files['skills/opencrawl/SKILL.md']).toContain('## Coordination');
 });
 test('native registration prepares a plugin and resumes without reinstalling before activation',()=>fixture(async(home,options,calls)=>{
  const first=await installSetupPlugins(origin,['codex'],options);expect(first.results[0]?.status).toBe('prepared');
