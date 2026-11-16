@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Node 24+, kubectl and Helm. No application build or npm install is required.
-import {readFileSync,writeFileSync,mkdirSync,existsSync,chmodSync,unlinkSync} from 'node:fs';
+import {readFileSync,writeFileSync,mkdirSync,existsSync,chmodSync,unlinkSync,cpSync} from 'node:fs';
 import {dirname,resolve,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
@@ -61,9 +61,20 @@ export function plan(c:Values){return {schemaVersion:1,release:c.release,namespa
 export function airbyteValues(c:Values,secretName:string,dbHost:string,storagePassword:string):Values {
   const d=c.databases.airbyte,dbSecret=d.mode==='bundled'?secretName:d.existingSecret;
   const jdbc='jdbc:postgresql://'+(d.mode==='bundled'?dbHost:d.host)+':'+(d.port||5432)+'/'+d.name+(d.tls?'?sslmode=verify-full'+(d.caPath?'&sslrootcert='+encodeURIComponent(d.caPath):'&sslfactory=org.postgresql.ssl.DefaultJavaSSLFactory'):'?sslmode=disable');
-  return merge({global:{env_vars:{DATABASE_URL:jdbc,CONFIG_DATABASE_REPLICA_URL:jdbc},airbyteUrl:`http://${c.release}-airbyte-server-svc:8001`,auth:{enabled:true,secretName:secretName,security:{cookieSecureSetting:false}},database:{type:d.tls?'external':'internal',host:d.mode==='bundled'?dbHost:d.host,port:d.port||5432,name:d.name,user:d.user,secretName:dbSecret,passwordSecretKey:'DATABASE_PASSWORD',replica:{userSecretKey:'DATABASE_USER',passwordSecretKey:'DATABASE_PASSWORD'}},tracking:{enabled:false,strategy:'logging'},workloads:{resources:{useConnectorResourceDefaults:false,mainContainer:{cpu:{request:'100m',limit:'2'},memory:{request:'256Mi',limit:'2Gi'}},check:{cpu:{request:'100m'},memory:{request:'256Mi'}},discover:{cpu:{request:'100m'},memory:{request:'256Mi'}},sidecar:{cpu:{request:'100m'},memory:{request:'128Mi'}}}}},
+  return merge({global:{airbyteUrl:`http://${c.release}-airbyte-server-svc:8001`,auth:{enabled:true,secretName:secretName,security:{cookieSecureSetting:false}},database:{jdbcUrl:jdbc,type:d.tls?'external':'internal',host:d.mode==='bundled'?dbHost:d.host,port:d.port||5432,name:d.name,user:d.user,secretName:dbSecret,passwordSecretKey:'DATABASE_PASSWORD',replica:{userSecretKey:'DATABASE_USER',passwordSecretKey:'DATABASE_PASSWORD'}},tracking:{enabled:false,strategy:'logging'},workloads:{resources:{useConnectorResourceDefaults:false,mainContainer:{cpu:{request:'100m',limit:'2'},memory:{request:'256Mi',limit:'2Gi'}},check:{cpu:{request:'100m'},memory:{request:'256Mi'}},discover:{cpu:{request:'100m'},memory:{request:'256Mi'}},sidecar:{cpu:{request:'100m'},memory:{request:'128Mi'}}}}},
       postgresql:{enabled:false},temporal:{secretName:dbSecret,database:{host:d.mode==='bundled'?dbHost:d.host,port:d.port||5432,user:d.user,passwordSecretKey:'DATABASE_PASSWORD'},env_vars:{DBNAME:d.temporalName,VISIBILITY_DBNAME:d.visibilityName,SKIP_DB_CREATE:'true',POSTGRES_TLS_DISABLE_HOST_VERIFICATION:'false',SQL_TLS_DISABLE_HOST_VERIFICATION:'false',SQL_HOST_VERIFICATION:'true',SQL_HOST_NAME:d.mode==='bundled'?dbHost:d.host,...(d.caPath?{POSTGRES_TLS_CA_FILE:d.caPath,SQL_CA:d.caPath}:{})}},
       connectorBuilderServer:{enabled:false},server:{env_vars:{JOB_RESOURCE_VARIANT_OVERRIDE:'lowresource'}},minio:{rootUser:'opencrawl',rootPassword:storagePassword,storage:{volumeClaimValue:'5Gi'},resources:{requests:{cpu:'100m',memory:'256Mi'},limits:{memory:'1Gi'}}}},c.airbyte.values);
+}
+
+// A parent template supplies the JDBC URL missing from the pinned upstream values.
+// Preserve upstream hooks and emit each environment variable exactly once.
+export function prepareAirbyteChart(stateDir:string,archive:Uint8Array):string {
+  if(createHash('sha256').update(archive).digest('hex')!=='ec25fcddc952dbef05183f426149553f78db0f7e61642c9d13c77e32c93433a3')fail('CHART_CHECKSUM','Airbyte chart checksum mismatch');
+  const wrapper=join(stateDir,'airbyte-wrapper');
+  cpSync(join(dirname(fileURLToPath(import.meta.url)),'airbyte-wrapper'),wrapper,{recursive:true});
+  mkdirSync(join(wrapper,'charts'),{recursive:true});
+  writeFileSync(join(wrapper,'charts/airbyte-2.4.0.tgz'),archive,{mode:0o600});
+  return wrapper;
 }
 
 async function install(c:Values,stateDir:string,through='application'){
@@ -104,13 +115,13 @@ async function install(c:Values,stateDir:string,through='application'){
     const d=c.databases.airbyte,dbSecret=d.mode==='bundled'?secretName:d.existingSecret;
     const airbyte=airbyteValues(c,secretName,dbHost,secrets.AWS_SECRET_ACCESS_KEY);
     // Upstream MinIO requires a value; this generated file is private and never emitted.
-    progress('airbyte');const privateValues=values('airbyte.private.json',airbyte);
+    progress('airbyte');const privateValues=values('airbyte.private.json',{airbyte});
     const airbyteChart=join(stateDir,'airbyte-2.4.0.tgz');
     try{
       const archive=existsSync(airbyteChart)?readFileSync(airbyteChart):Buffer.from(await (await fetch('https://airbytehq.github.io/charts/airbyte-2.4.0.tgz',{signal:AbortSignal.timeout(60000)})).arrayBuffer());
-      if(createHash('sha256').update(archive).digest('hex')!=='ec25fcddc952dbef05183f426149553f78db0f7e61642c9d13c77e32c93433a3')fail('CHART_CHECKSUM','Airbyte chart checksum mismatch');
+      const wrapper=prepareAirbyteChart(stateDir,archive);
       writeFileSync(airbyteChart,archive,{mode:0o600});
-      helm(['upgrade','--install',c.release+'-airbyte',airbyteChart,'-n',c.namespace,'-f',privateValues,'--wait','--timeout','25m']);
+      helm(['upgrade','--install',c.release+'-airbyte',wrapper,'-n',c.namespace,'-f',privateValues,'--wait','--timeout','25m']);
     }finally{unlinkSync(privateValues);}
     // Catalog repair is scoped to the pinned bundled Airbyte release. External Airbyte is never changed.
     const bootstrapEnv=[{name:'PG_TLS_ENABLED',value:String(!!d.tls)},{name:'PG_TLS_CA_PATH',value:d.caPath||''},{name:'PGHOST',value:d.mode==='bundled'?dbHost:d.host},{name:'PGPORT',value:String(d.port||5432)},{name:'PGDATABASE',value:d.name},{name:'PGUSER',value:d.user},{name:'PGPASSWORD',valueFrom:{secretKeyRef:{name:dbSecret,key:'DATABASE_PASSWORD'}}},{name:'AIRBYTE_URL',value:airbyteUrl},{name:'AIRBYTE_WORKSPACE_NAME',value:c.release},{name:'AIRBYTE_CLIENT_ID',valueFrom:{secretKeyRef:{name:secretName,key:'AB_INSTANCE_ADMIN_CLIENT_ID'}}},{name:'AIRBYTE_CLIENT_SECRET',valueFrom:{secretKeyRef:{name:secretName,key:'AB_INSTANCE_ADMIN_CLIENT_SECRET'}}}];
