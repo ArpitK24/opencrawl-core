@@ -1,5 +1,5 @@
-import {existsSync,readFileSync,readdirSync,mkdirSync,unlinkSync,openSync,writeFileSync,fsyncSync,closeSync,renameSync} from 'node:fs';
-import {join,dirname} from 'node:path';
+import {existsSync,readFileSync,readdirSync,mkdirSync,unlinkSync,openSync,writeFileSync,fsyncSync,closeSync,renameSync,realpathSync} from 'node:fs';
+import {join,dirname,isAbsolute} from 'node:path';
 import {homedir} from 'node:os';
 import {isDeepStrictEqual} from 'node:util';
 import {spawn,spawnSync} from 'node:child_process';
@@ -172,12 +172,19 @@ export async function installCaptureDaemon(config:CaptureConfig,{home=homedir(),
       return recordFailure(error);
     };
     const isAbsent=(result:ReturnType<typeof spawnSync>)=>result.status===113&&!result.error&&!result.signal&&String(result.stderr).includes('Could not find service');
-    const loadedFromPath=(result:ReturnType<typeof spawnSync>)=>String(result.stdout).split('\n').some(line=>line.trim()==='path = '+path);
+    const sameServicePath=(candidate:unknown)=>{
+      if(typeof candidate!=='string'||!isAbsolute(candidate))return false;
+      if(candidate===path)return true;
+      try{return realpathSync(candidate)===realpathSync(path);}catch{return false;}
+    };
+    const loadedFromPath=(result:ReturnType<typeof spawnSync>)=>String(result.stdout).split('\n').some(line=>{
+      const value=line.trim();return value.startsWith('path = ')&&sameServicePath(value.slice(7));
+    });
     const checked=invoke('print',['print',target]);
     const absent=isAbsent(checked);
     if(checked.status!==0&&!absent)failed('print',checked);
     if(checked.status===0){
-      const owned=previous?.kind==='launchd'&&previous.label===label()&&previous.path===path&&existing!==null;
+      const owned=previous?.kind==='launchd'&&previous.label===label()&&sameServicePath(previous.path)&&existing!==null;
       if(!owned||!loadedFromPath(checked))throw new CliError('CAPTURE_SUPERVISION_CONFLICT','The loaded LaunchAgent is not bound to this profile receipt and service file. Its registration was preserved.');
     }
     unchanged(beforeGeneration);
