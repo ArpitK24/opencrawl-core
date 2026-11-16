@@ -28,7 +28,7 @@ await check('temporal-namespace','Check Temporal address, namespace, TLS and cre
 });
 await check('opensearch-index','Grant access to the configured index and check app/worker readiness.',async()=>{
   const index=env.OPENCRAWL_OPENSEARCH_INDEX||realmIndex('selfhost',required('OPENCRAWL_ORGANIZATION_ID'));
-  const authorization=env.OPENCRAWL_OPENSEARCH_USERNAME?{authorization:'Basic '+Buffer.from(env.OPENCRAWL_OPENSEARCH_USERNAME+':'+required('OPENCRAWL_OPENSEARCH_PASSWORD')).toString('base64')}:{};
+  const authorization:Record<string,string>=env.OPENCRAWL_OPENSEARCH_USERNAME?{authorization:'Basic '+Buffer.from(env.OPENCRAWL_OPENSEARCH_USERNAME+':'+required('OPENCRAWL_OPENSEARCH_PASSWORD')).toString('base64')}:{};
   const r=await fetch(required('OPENCRAWL_OPENSEARCH_URL')+'/'+index+'/_mapping',{headers:authorization,redirect:'error',signal:AbortSignal.timeout(15000)});assert.equal(r.status,200);
   const mapping=await r.json();assert.equal(mapping[index].mappings._meta.tenantId,env.OPENCRAWL_ORGANIZATION_ID);
 });

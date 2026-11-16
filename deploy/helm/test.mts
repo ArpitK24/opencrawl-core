@@ -13,7 +13,7 @@ test('installation plan bundles all resources and preserves independent external
   const mixed=configuration({...input,databases:{app:{mode:'external',existingSecret:'app-db'}},opensearch:{mode:'external',url:'https://search.test'}});
   assert.equal(mixed.databases.temporal.mode,'bundled');assert.equal(mixed.databases.airbyte.mode,'bundled');assert.equal(mixed.opensearch.mode,'external');
   const external=configuration({...input,postgresql:{enabled:false},databases:{app:{mode:'external',existingSecret:'app-db'}},temporal:{mode:'external',address:'temporal.test:7233'},opensearch:{mode:'external',url:'https://search.test'},objectStorage:{mode:'external',endpoint:'https://s3.test',bucket:'existing',existingSecret:'s3'},airbyte:{mode:'disabled'}});
-  assert.equal(plan(external).steps.length,2);assert.equal(plan(external).steps[0].components.postgresql,false);
+  assert.equal(plan(external).steps.length,2);assert.equal(plan(external).steps[0].components?.postgresql,false);
 });
 test('invalid external modes, unsafe identifiers, incomplete credentials and wrong context fail before mutation',()=>{
   for(const patch of [{context:''},{temporal:{mode:'typo'}},{postgresql:{enabled:false}},{databases:{app:{name:'db;DROP DATABASE postgres'}}},{databases:{app:{mode:'external'}}},{opensearch:{mode:'external'}},{objectStorage:{mode:'external'}},{airbyte:{mode:'external'}},{unknown:true}])assert.throws(()=>configuration({...input,...patch}));
