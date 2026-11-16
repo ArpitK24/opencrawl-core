@@ -9,7 +9,7 @@ import {CliError} from './oauth.ts';
 
 declare const OPENCRAWL_VERSION:string;
 export const version=typeof OPENCRAWL_VERSION==='string'?OPENCRAWL_VERSION:'0.2.0-dev';
-export const PACKAGE='@getopencrawl/cli',REGISTRY='https://registry.npmjs.org',CHANNEL='next';
+export const PACKAGE='@getopencrawl/cli',REGISTRY='https://registry.npmjs.org',CHANNEL='latest';
 export const cacheRoot=()=>join(process.env.XDG_CACHE_HOME||join(homedir(),'.cache'),'opencrawl');
 export const nativeRoot=()=>join(process.env.XDG_DATA_HOME||join(homedir(),'.local','share'),'opencrawl');
 export const nativeBin=()=>join(process.env.OPENCRAWL_INSTALL_DIR||join(homedir(),'.local','bin'),process.platform==='win32'?'opencrawl.cmd':'opencrawl');

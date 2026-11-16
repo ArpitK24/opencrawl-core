@@ -1,12 +1,12 @@
 #!/bin/sh
 # Native install: no Node, npm, Bun installation, login or capture enrollment.
 set -eu
-version=${1:-next}
+version=${1:-latest}
 case "$version" in
-  next) version=$(curl -fsSL --retry 3 https://registry.npmjs.org/@getopencrawl/cli/next | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p') ;;
+  latest|next) version=$(curl -fsSL --retry 3 https://registry.npmjs.org/@getopencrawl/cli/latest | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p') ;;
 esac
 if ! printf '%s\n' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
-  echo 'Usage: install.sh [next|VERSION]' >&2; exit 1
+  echo 'Usage: install.sh [latest|VERSION]' >&2; exit 1
 fi
 case "$(uname -s)" in Darwin) os=darwin ;; Linux) os=linux ;; *) echo 'Use install.ps1 on Windows.' >&2; exit 1 ;; esac
 case "$(uname -m)" in arm64|aarch64) arch=arm64 ;; x86_64|amd64) arch=x64 ;; *) echo 'Unsupported CPU architecture.' >&2; exit 1 ;; esac

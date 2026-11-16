@@ -61,7 +61,7 @@ if (import.meta.main) {
     if (runs.total_count > 100) throw Error('Incomplete release check inventory');
     let eligible = head.object.sha === revision && ready(runs.workflow_runs, revision, process.env.GITHUB_REPOSITORY!);
     if (eligible) {
-      const response = await fetch('https://registry.npmjs.org/@getopencrawl%2fcli/next', {signal: AbortSignal.timeout(30_000)});
+      const response = await fetch('https://registry.npmjs.org/@getopencrawl%2fcli/latest', {signal: AbortSignal.timeout(30_000)});
       if (!response.ok) throw Error(`Published CLI channel unavailable: ${response.status}`);
       const cli = await response.json() as {version: string; opencrawlRevision?: string};
       cliVersion(cli.version);

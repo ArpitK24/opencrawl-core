@@ -60,7 +60,7 @@ test('stable versions cannot become paths or downgrade; unsupported targets fail
 
 test('updates publish complete releases, throttle, and preserve the working copy on failure', async () => isolated(async (directory, root) => {
   let requests = 0;
-  const fetcher = async (url: string) => { expect(url.endsWith('/next')).toBe(true); requests++; return new Response(JSON.stringify({name: '@getopencrawl/cli', version: '0.2.0'})); };
+  const fetcher = async (url: string) => { expect(url.endsWith('/latest')).toBe(true); requests++; return new Response(JSON.stringify({name: '@getopencrawl/cli', version: '0.2.0'})); };
   const pointer = join(cache(directory), 'current.json');
   await expect(launcher.update({root, fetcher, force: true, install: async () => { throw new Error('offline'); }})).rejects.toThrow('offline');
   expect(existsSync(pointer)).toBe(false);
