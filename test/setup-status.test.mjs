@@ -323,7 +323,7 @@ test('Antigravity rejects unrelated steps, wrappers, sessions, stale timestamps 
     const f=await agyFixture();change(f);await f.ingest([f.output,f.hook]);
     assert.equal((await f.read()).mcp.state,'observed',name);
   }
-  for(const extra of [{captureMode:'history'},{sessionId:'other-native'},{installationId:'other-installation'},{harness:'codex'}]){
+  for(const extra of [{captureMode:'history'},{captureMode:undefined},{sessionId:'other-native'},{installationId:'other-installation'},{harness:'codex'}]){
     const f=await agyFixture();await f.ingest([f.output,f.hook],extra);
     assert.equal((await f.read()).mcp.state,'observed',JSON.stringify(extra));
   }

@@ -748,7 +748,7 @@ export async function drainCaptureNotices(config=readCaptureConfig()!,{until=Inf
     if(!captureExcluded(readCaptureConfig()??config,{...meta,cwd:meta?.cwd??hookFields.cwd})) {
       const attachments:any[]=[];
       const data=attachmentTransform(event,attachments,hookFields.cwd??homedir());
-      enqueue(config,{...meta,cwd:meta?.cwd??hookFields.cwd},[{id,kind:'hook',timestamp:at,data}],attachments);
+      enqueue(config,{...meta,cwd:meta?.cwd??hookFields.cwd,captureMode:'live'},[{id,kind:'hook',timestamp:at,data}],attachments);
     }
     unlinkSync(path);syncDirectory(dirname(path));processed++;
     }catch(error){firstError??=error;}
