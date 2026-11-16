@@ -1,3 +1,4 @@
+import {transcriptCheckpoint} from './transcript-checkpoint.ts';
 import {readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, fstatSync, lstatSync, realpathSync, openSync, readSync, closeSync, unlinkSync, createReadStream} from 'node:fs';
 import {gzip} from 'node:zlib';
 import {promisify} from 'node:util';
@@ -382,7 +383,22 @@ export async function captureTranscript(config:CaptureConfig,harness:TranscriptH
     const st={size:approvedFile&&!compressed?Math.min(source.size,approvedFile.bytes):source.size};
     let offset=old.offset;
     if(old.forwardBoundary&&compressed&&!reconcileHistory)return old.meta;
-    if(st.size<offset || (old.ino && old.ino!==source.ino) || compressed)offset=0;
+    const reset=st.size<offset || Boolean(old.ino && old.ino!==source.ino);
+    if(old.forwardBoundary&&!reconcileHistory){
+      // A rewritten source has an unknown pre-consent prefix. Preserve the
+      // future-only boundary at its current end; only later appends may enter.
+      const boundaryFd=openSync(path,'r'),last=Buffer.alloc(1);
+      try{
+        const current=fstatSync(boundaryFd);
+        if(current.ino!==source.ino||current.size!==source.size)throw new CliError('CAPTURE_SOURCE_CHANGED','Transcript changed while preserving its consent boundary; retry capture.');
+        if(reset||typeof old.checkpoint!=='string'||old.checkpoint!==transcriptCheckpoint(boundaryFd,offset)){
+          if(current.size)readSync(boundaryFd,last,0,1,current.size-1);
+          atomicJson(stateFile,{offset:current.size,ino:current.ino,parserVersion:old.parserVersion??1,forwardBoundary:true,checkpoint:transcriptCheckpoint(boundaryFd,current.size),skipPartial:Boolean(current.size&&last[0]!==10)});
+          return;
+        }
+      }finally{closeSync(boundaryFd);}
+    }
+    if(reset || compressed)offset=0;
     // Parser upgrades must not silently start a historical import in hooks/sync.
     // An explicitly approved backfill may reread older cursors to recover newly
     // supported native records; unchanged event IDs remain idempotent downstream.
@@ -455,6 +471,13 @@ export async function captureTranscript(config:CaptureConfig,harness:TranscriptH
       }
     };
     try {
+      // The source can be replaced between the boundary check and this open.
+      // Validate the descriptor that will actually supply parser bytes too.
+      if(old.forwardBoundary&&!reconcileHistory&&fd!==undefined){
+        const current=fstatSync(fd);
+        if(current.ino!==source.ino||current.size!==source.size||old.checkpoint!==transcriptCheckpoint(fd,offset))
+          throw new CliError('CAPTURE_SOURCE_CHANGED','Transcript changed before reading its consent boundary; retry capture.');
+      }
     if(scoped&&meta.sessionId&&meta.sessionId!==expectedSession&&!(scoped.agentId&&meta.sessionId===scoped.sessionId))throw new CliError('CAPTURE_SESSION_MISMATCH','Saved transcript identity differs from the registered native session');
       if(scoped&&fd!==undefined){
         if(fstatSync(fd).ino!==source.ino||assertSessionTranscriptPath(config,harness,scoped.sessionId,harness==='antigravity'?resolveAntigravityTranscript(file):file,sessionPath??file).path!==path)throw new CliError('CAPTURE_SESSION_PATH_REJECTED','Native transcript changed before reading');
@@ -541,7 +564,7 @@ export async function captureTranscript(config:CaptureConfig,harness:TranscriptH
           if(events.length>=(reconcileHistory?1000:200)){await spool({...meta,captureMode:reconcileHistory?'history':'live'},events.splice(0),attachments.splice(0));eventBytes=0;}
         }
         await spool({...meta,captureMode:reconcileHistory?'history':'live'},events,attachments);
-        offset+=bytes.length;atomicJson(stateFile,{offset,ino:source.ino,parserVersion,meta});
+        offset+=bytes.length;atomicJson(stateFile,{offset,ino:source.ino,parserVersion,meta,...(old.forwardBoundary&&!reconcileHistory?{forwardBoundary:true,checkpoint:transcriptCheckpoint(fd!,offset),skipPartial}: {})});
       }
       if(compressed){
         if(!archiveComplete)throw new CliError('CAPTURE_ARCHIVE_INVALID','Compressed transcript ended with an unfinished JSONL record; repair the archive and rerun the approved import.');

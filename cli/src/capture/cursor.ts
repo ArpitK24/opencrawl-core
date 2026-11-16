@@ -1,4 +1,5 @@
 import {CliError} from '../oauth.ts';
+import {transcriptCheckpoint} from './transcript-checkpoint.ts';
 import {createHash} from 'node:crypto';
 import {grokBotEvents, GROK_BOT_HOOK_EVENTS} from './grok-bot.ts';
 import {realpathSync, openSync, closeSync, readSync, fstatSync, lstatSync} from 'node:fs';
@@ -45,23 +46,19 @@ function openCursorTranscript(root:string,sessionId:string,file:string) {
   if(!fstatSync(fd).isFile()){closeSync(fd);throw new CliError('CAPTURE_PATH_REJECTED','Cursor transcript is not a regular file');}
   return fd;
 }
-function cursorFingerprint(fd:number,end:number) {
-  const bytes=Buffer.alloc(Math.min(end,1024)),count=readSync(fd,bytes,0,bytes.length,end-bytes.length);
-  return createHash('sha256').update(bytes.subarray(0,count)).digest('hex');
-}
 /** Enrollment reads only a bounded fingerprint and the final newline, never old messages. */
 export function cursorTranscriptBoundary(root:string,sessionId:string,file:string) {
   const fd=openCursorTranscript(root,sessionId,file);
   try{
     const stat=fstatSync(fd),last=Buffer.alloc(1);if(stat.size)readSync(fd,last,0,1,stat.size-1);
-    return {offset:stat.size,ino:stat.ino,checkpoint:cursorFingerprint(fd,stat.size),skipPartial:Boolean(stat.size&&last[0]!==10)};
+    return {offset:stat.size,ino:stat.ino,checkpoint:transcriptCheckpoint(fd,stat.size),skipPartial:Boolean(stat.size&&last[0]!==10)};
   }finally{closeSync(fd);}
 }
 export function* cursorTranscript(root: string, sessionId: string, file: string, offset=0, ino?: number, checkpoint?: string,{forwardBoundary=false,skipPartial=false}:{forwardBoundary?:boolean;skipPartial?:boolean}={}) {
   const fd=openCursorTranscript(root,sessionId,file);
   try {
     const stat=fstatSync(fd);
-    const fingerprint=(end:number)=>cursorFingerprint(fd,end);
+    const fingerprint=(end:number)=>transcriptCheckpoint(fd,end);
     // Replaying a rewritten prefix is safe only when its original messages were
     // already observed. A consent boundary has deliberately never parsed them.
     const changed=offset>stat.size||ino!==undefined&&ino!==stat.ino||offset>0&&(!checkpoint||checkpoint!==fingerprint(offset));
