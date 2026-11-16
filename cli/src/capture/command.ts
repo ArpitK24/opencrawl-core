@@ -192,7 +192,7 @@ export async function collectCommand(action:string,api:string,values:any) {
         const notice=harness==='claude-code'&&['SessionStart','UserPromptSubmit'].includes(event?.hook_event_name)?captureAttentionNotice():null;
         if(notice)process.stdout.write(JSON.stringify({systemMessage:notice,hookSpecificOutput:{hookEventName:event.hook_event_name,additionalContext:notice}})+'\n');
         await upgradeCaptureHooks();
-        if(values.managed)await ownedCaptureWorker();
+        if(values.managed||plugin&&(harness==='claude-code'||harness==='codex'&&event.hook_event_name!=='SessionEnd'))await ownedCaptureWorker();
       }catch(e){try{recordError(e);}catch{}}
       return null;
     }

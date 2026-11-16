@@ -51,7 +51,7 @@ export function pluginHookFiles(client:PluginClient,binding:PluginHookBinding,pl
   const daemon=client==='claude-code';
   const managed=client==='codex'&&event!=='SessionEnd';
   return {type:'command',...invocation,command:invocation.command+' '+args(['collect','hook','--harness',client,'--api',api,...(client==='antigravity'?['--event',event]:[])]),
-   timeout:daemon?10:managed?120:client==='codex'?3:30,statusMessage:captureMarker,...(managed||daemon?{async:true}:{})};
+   timeout:daemon?120:managed?120:client==='codex'?3:30,statusMessage:captureMarker,...(managed||daemon?{async:true}:{})};
  };
  if(client==='devin'){
   const hooks=Object.fromEntries(DEVIN_HOOK_EVENTS.map(event=>[event,[{hooks:[event==='SessionStart'
@@ -71,7 +71,7 @@ export function pluginHookFiles(client:PluginClient,binding:PluginHookBinding,pl
   return {[runner]:script,'hooks.json':json({[pluginName+'-startup']:{SessionStart:[{type:startup.type,command:startup.command,timeout:startup.timeout}],PreToolUse:[{matcher:searchMatcher,hooks:[{type:search.type,command:search.command,timeout:search.timeout}]}]},
    [pluginName+'-capture']:{SessionStart:[entry('SessionStart')],PostToolUse:[{matcher:'*',hooks:[entry('PostToolUse')]}],PostInvocation:[entry('PostInvocation')],Stop:[entry('Stop')]}})};
  }
- const events=client==='claude-code'?['SessionStart','UserPromptSubmit','SessionEnd']
+ const events=client==='claude-code'?['SessionStart','UserPromptSubmit','Stop','SessionEnd']
   :['SessionStart','UserPromptSubmit','PreToolUse','PostToolUse','Stop','SubagentStop','SessionEnd'];
  const hooks:Record<string,unknown[]>=Object.fromEntries(events.map(event=>[event,[{hooks:event==='SessionStart'?[startup,capture(event)]:[capture(event)]}]]));
  (hooks.PreToolUse??=[]).push({matcher:searchMatcher,hooks:[search]});

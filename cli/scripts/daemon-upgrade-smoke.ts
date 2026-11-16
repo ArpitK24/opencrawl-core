@@ -1,3 +1,4 @@
+import {prepareFallbackPlugins,proveOnlinePluginFallback} from './plugin-fallback-proof.ts';
 /** Isolated native acceptance for upgrade/fallback. No user client settings or
  * credentials are read; an optional published old executable tests late hooks. */
 import assert from 'node:assert/strict';
@@ -8,7 +9,7 @@ import {createHash} from 'node:crypto';
 import {captureDir,readCaptureConfig,captureHook,drainCaptureNotices,type CaptureConfig} from '../src/capture/runtime.ts';
 import {upgradeCaptureDaemon} from '../src/capture/daemon-upgrade.ts';
 import {installCaptureDaemon,uninstallCaptureDaemon} from '../src/capture/daemon-service.ts';
-import {installSetupPlugins,setupPluginIdentity} from '../src/setup/plugins.ts';
+import {setupPluginIdentity} from '../src/setup/plugins.ts';
 import {atomicJson,withSessionLock} from '../src/session.ts';
 
 const [evidenceArg,binaryArg,thirdArg]=process.argv.slice(2);
@@ -34,12 +35,12 @@ try{
   const config:CaptureConfig={schemaVersion:1,api:receiver.url.origin,installationId:'native-upgrade',owner:{tenantId:'fixture',userId:'fixture'},installedAt:new Date().toISOString(),harnesses:['claude-code','codex','cursor'],roots:{'claude-code':join(root,'claude'),codex:join(root,'codex'),cursor:join(root,'cursor')},command:[binary],hookMode:'native-v5',...(pluginMode?{hookOwnership:'plugin',backgroundStartup:false,daemonRequested:{backgroundStartup:true}}:{})};
   atomicJson(join(captureDir(),'config.json'),config);
   atomicJson(join(captureDir(),'receiver-token.json'),{api:config.api,token:'synthetic-upgrade-token'});
-  const hookEnv={...process.env};
+  const hookEnv={...process.env},pluginRoots=new Map<string,string>();
   if(pluginMode){
-    const plugins=await installSetupPlugins(config.api,['cursor'],{home:root,command:[binary]});
-    const plugin=plugins.results.find(row=>row.client==='cursor');assert(plugin?.directory);
+    for(const [client,directory] of await prepareFallbackPlugins([binary],config,root))pluginRoots.set(client,directory);
+    const directory=pluginRoots.get('cursor')!;
     delete hookEnv.OPENCRAWL_SESSIONS_TOKEN;
-    Object.assign(hookEnv,{OPENCRAWL_PLUGIN_API:config.api,OPENCRAWL_PLUGIN_NAME:setupPluginIdentity(config.api).name,OPENCRAWL_PLUGIN_CLIENT:'cursor',OPENCRAWL_PLUGIN_ROOT:plugin.directory});
+    Object.assign(hookEnv,{OPENCRAWL_PLUGIN_API:config.api,OPENCRAWL_PLUGIN_NAME:setupPluginIdentity(config.api).name,OPENCRAWL_PLUGIN_CLIENT:'cursor',OPENCRAWL_PLUGIN_ROOT:directory});
   }
   const runHook=async(executable:string,prompt:string)=>{
     const started=performance.now();
@@ -50,6 +51,10 @@ try{
   const fallback=await upgradeCaptureDaemon({install:async()=>{throw Error('synthetic bootstrap failure');},cleanup:()=>{}});
   assert.equal(fallback.state,'fallback');assert.deepEqual(readCaptureConfig(),config);
   if(pluginMode){
+    fail=false;
+    await proveOnlinePluginFallback(config,pluginRoots,batches);
+    result.onlineFallbackFinalAnswers=['claude-code','codex','cursor'];
+    fail=true;
     result.fallbackHookMs=await runHook(binary,'native fallback is retained');
     const child=Bun.spawn([binary,'session','start','--harness','cursor','--api',config.api],{env:hookEnv,stdin:new Blob([JSON.stringify({session_id:'fallback',hook_event_name:'sessionStart'})]),stdout:'pipe',stderr:'pipe'});
     const [code,out,err]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]);assert.equal(code,0,err);assert(out.includes('register this session'));result.startupFallbackExplicit=true;
