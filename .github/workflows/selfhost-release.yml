@@ -59,8 +59,13 @@ jobs:
           runtime=$(node -p 'const r=require("./artifacts/release.json"); r.image.repository+"@"+r.image.digest')
           connector=$(node -p 'const r=require("./artifacts/release.json"); r.githubConnector.repository+"@"+r.githubConnector.digest')
           for platform in linux/amd64 linux/arm64; do
-            docker pull --platform "$platform" "$runtime"
-            docker pull --platform "$platform" "$connector"
+            for image in "$runtime" "$connector"; do
+              docker pull --platform "$platform" "$image"
+              test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = "$platform"
+              # The classic Docker store cannot bind one index digest to both architectures.
+              # Remove this verified local image before pulling the next platform.
+              docker image rm "$image"
+            done
           done
       - name: Publish versioned release assets
         env:
