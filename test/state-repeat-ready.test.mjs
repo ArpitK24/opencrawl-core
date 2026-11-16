@@ -11,7 +11,7 @@ import {ensureWriteBarrierSchema} from '../dist/src/state/write-barriers.mjs';
 import {createSearchContextJobs} from '../dist/src/state/search-context-jobs.mjs';
 import {createSearchContextContinuations} from '../dist/src/state/search-context-continuations.mjs';
 import {createPostgresEventIdentities} from '../dist/src/sessions/postgres-identities.mjs';
-import {postgresUrl} from './fixtures/application-database.mjs';
+import {postgresUrl,dropTestSchemas} from './fixtures/application-database.mjs';
 
 const live=(name,fn)=>test(name,{skip:!postgresUrl},fn);
 const source={version:1,bucket:'ready-fixture',prefix:'sessions/production/v1',organizationId:null};
@@ -23,7 +23,7 @@ async function fixture(t){
  const config={connectionString:postgresUrl,namespace,sourceIdentity:source,options:'-c search_path='+schema+' -c lock_timeout=400ms',max:3};
  const database=createApplicationDatabase(config);await database.ready();
  await database.pool.query("INSERT INTO opencrawl_application_installations(namespace,source_identity,migration_id,state,verified_at,inventory_complete) VALUES($1,$2,$3,'ready',now(),true)",[namespace,source,randomUUID()]);
- t.after(async()=>{await database.close();try{await admin.query(`DROP SCHEMA ${schema} CASCADE; DROP SCHEMA IF EXISTS ${database.identitySchema} CASCADE`);}finally{await admin.end();}});
+ t.after(async()=>{await database.close();try{await dropTestSchemas(admin,[schema,database.identitySchema]);}finally{await admin.end();}});
  return {database,schema,config};
 }
 async function allReady(database,config){

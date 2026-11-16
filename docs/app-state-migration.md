@@ -195,6 +195,13 @@ preserves their exact source hashes and normalized typed audit rows in
 original key. They never become PostgreSQL indexing skip receipts. Object receipts
 must still match exactly one original integration landing prefix in their donor.
 
+Historical Slack `slack-v1` through `slack-v4` object receipts may omit
+`sourceRecords`; those producers did not record the source count. Migration
+preserves that omission as an unknown SQL `NULL` in the audit and omits the field
+on exact readback. It never invents zero or grants active indexing authority.
+Newer pipelines still require the count, and every receipt retains its original
+source binding and full connector catch-up requirement.
+
 `connectorCatchupRequired` reports how many historical caches require the release
 catch-up gate. Import readiness proves retained application state, not connector
 catch-up. Activate full scans of current authorized connector references using the

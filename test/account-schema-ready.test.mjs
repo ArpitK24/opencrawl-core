@@ -8,13 +8,13 @@ import {createAccountState} from '../dist/src/state/account-state.mjs';
 import {createCaptureCredentials} from '../dist/src/sessions/credentials.mjs';
 import {createCaptureHandler} from '../dist/src/sessions/ingest.mjs';
 import {sessionScope} from '../dist/src/sessions/event-identity.mjs';
-import {postgresUrl} from './fixtures/application-database.mjs';
+import {postgresUrl,dropTestSchemas} from './fixtures/application-database.mjs';
 const live=(name,run)=>test(name,{skip:!postgresUrl},run),owner={tenantId:'org_schema',userId:'user_owner'},peer={...owner,userId:'user_peer'};
 const hash=value=>createHash('sha256').update(value).digest('hex');
 async function fixture(t){
  const schema='oc_account_'+randomUUID().replaceAll('-',''),admin=new Pool({connectionString:postgresUrl,max:1});await admin.query(`CREATE SCHEMA ${schema}`);
  const database=createApplicationDatabase({connectionString:postgresUrl,namespace:schema,max:4,options:'-c search_path='+schema+' -c lock_timeout=400ms'});let closed=false;
- const close=async()=>{if(closed)return;closed=true;await database.close();try{await admin.query(`DROP SCHEMA ${schema} CASCADE; DROP SCHEMA IF EXISTS ${database.identitySchema} CASCADE`);}finally{await admin.end();}};
+ const close=async()=>{if(closed)return;closed=true;await database.close();try{await dropTestSchemas(admin,[schema,database.identitySchema]);}finally{await admin.end();}};
  t.after(close);await database.ready();return {database,close};
 }
 async function schemaEvidence(database){return (await database.pool.query(`SELECT c.relname,con.oid::text,con.conname,pg_get_constraintdef(con.oid) AS definition FROM pg_constraint con JOIN pg_class c ON c.oid=con.conrelid WHERE c.relnamespace=current_schema()::regnamespace AND c.relname IN ('opencrawl_capture_credentials','opencrawl_capture_generations') ORDER BY c.relname,con.conname`)).rows;}
@@ -104,6 +104,6 @@ live('legacy account upgrade drops only its owning index when an earlier schema 
   const accounts=createAccountState(scoped);await accounts.ready();assert.deepEqual(await accounts.exportCredential(record.id),record);
   assert.deepEqual((await database.pool.query("SELECT c.oid::text,c.relname,i.indrelid::text FROM pg_class c JOIN pg_index i ON i.indexrelid=c.oid WHERE c.relnamespace=$1::regnamespace AND c.relname='opencrawl_capture_credentials_owner'",[shadow])).rows[0],before);
   assert.equal((await database.pool.query("SELECT to_regclass($1||'.opencrawl_capture_credentials_owner') AS old",[database.namespace])).rows[0].old,null);
- }finally{await database.pool.query(`DROP SCHEMA ${shadow} CASCADE`);}
+ }finally{await dropTestSchemas(database.pool,[shadow]);}
 
 });
