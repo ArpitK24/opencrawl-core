@@ -34,6 +34,7 @@ test('standalone setup reference uses the current executable without hardcoding 
  const guide=skillFiles()['references/setup.md'];
  expect(guide).toBe(setupAgentGuide());
  expect(guide).toContain('`'+formatSetupCommand(['setup','status','--local','--json'])+'`');
+ expect(guide).toContain('`'+formatSetupCommand(['setup','hooks','--json'])+'`');
  expect(guide).toContain('`'+formatSetupCommand(['verify-installation','--client','<this-client>','--json'])+'`');
  expect(guide).not.toContain('--api');
 });
@@ -47,6 +48,8 @@ test('every native plugin gives its onboarding and shared setup reference the sa
   expect(files['skills/opencrawl/references/setup.md']).toBe(guide);
   expect(guide).toContain('`'+formatSetupCommand(['verify-installation','--client',client,'--json','--api',api])+'`');
   expect(guide).not.toMatch(/`opencrawl (setup|verify-installation)/);
+  const hookCommand='`'+formatSetupCommand(['setup','hooks','--json','--api',api])+'`';
+  if(client==='codex')expect(guide).toContain(hookCommand);else expect(guide).not.toContain(hookCommand);
  }
 });
 

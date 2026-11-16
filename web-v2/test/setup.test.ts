@@ -59,6 +59,7 @@ test('setup and agent handoff target the selected server with shell-safe argumen
   const commands=setupCommands('http://[::1]:4310/mcp');
   assert.equal(commands.setup,"opencrawl setup --api 'http://[::1]:4310'");
   assert.ok(commands.handoff.includes("--api 'http://[::1]:4310' --local --json"));
+  assert.ok(commands.handoff.includes("MCP connection at http://[::1]:4310/mcp"));
   assert.ok(!commands.setup.includes('app.getopencrawl.com'));
   assert.ok(commands.handoff.includes('opencrawl setup status'));
   assert.ok(commands.handoff.includes('--client CLIENT --json'));

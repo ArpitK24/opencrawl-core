@@ -112,6 +112,7 @@ test('self-host Setup commands keep the selected server and contain no cloud fal
   await start(page,partial);
   await expect(page.getByLabel('Setup command',{exact:true})).toHaveValue("opencrawl setup --api 'https://knowledge.example.test'");
   await expect(page.getByLabel('Agent handoff',{exact:true})).toHaveValue(/verify-installation --api 'https:\/\/knowledge.example.test' --client CLIENT --json/);
+  await expect(page.getByLabel('Agent handoff',{exact:true})).toHaveValue(/MCP connection at https:\/\/knowledge.example.test\/mcp/);
 });
 
 test('mobile Setup stays within the viewport and navigation is keyboard accessible',async({page})=>{
