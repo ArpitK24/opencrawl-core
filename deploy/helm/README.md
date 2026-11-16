@@ -190,7 +190,9 @@ database provisioning or automatic destructive cleanup is included in this v1.
 
 The self-host image workflow publishes both architectures from the same Git revision,
 with SBOM and provenance attestations. After required CI and staging conformance pass,
-bump the chart version and run **Release self-host kit** on main. It refuses to package
-private, missing or single-architecture images. Release assets include the chart,
+bump the chart version and run **Release self-host kit** on main with the tested
+full mainline SHA in `revision`. It refuses to package private, missing or
+single-architecture images, and downloads both architectures with an empty Docker
+credential configuration before publication. Release assets include the chart,
 complete installer kit, image digest receipt and SHA256SUMS. Chart and runtime releases
 do not deploy or update OpenCrawl Cloud.

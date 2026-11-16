@@ -1,6 +1,11 @@
 name: Release self-host kit
 on:
   workflow_dispatch:
+    inputs:
+      revision:
+        description: 'Tested full mainline SHA to release'
+        required: true
+        type: string
 permissions:
   contents: write
   actions: read
@@ -10,6 +15,16 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.revision }}
+          fetch-depth: 0
+      - name: Require the tested immutable mainline source
+        env:
+          REVISION: ${{ inputs.revision }}
+        run: |
+          [[ "$REVISION" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$REVISION"
+          git merge-base --is-ancestor "$REVISION" origin/main
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24'
@@ -29,12 +44,12 @@ jobs:
       - name: Require successful runtime CI
         env:
           GH_TOKEN: ${{ github.token }}
-          REVISION: ${{ github.sha }}
+          REVISION: ${{ inputs.revision }}
         run: |
           gh run list --commit "$REVISION" --workflow ci.yml --json conclusion,status --jq 'any(.[]; .status == "completed" and .conclusion == "success")' | grep -qx true
       - name: Pin public image digests and package
         env:
-          REVISION: ${{ github.sha }}
+          REVISION: ${{ inputs.revision }}
         run: node deploy/helm/release-kit.mts --revision "$REVISION" --out artifacts
       - name: Verify anonymous image pulls on both architectures
         run: |
@@ -50,7 +65,7 @@ jobs:
       - name: Publish versioned release assets
         env:
           GH_TOKEN: ${{ github.token }}
-          REVISION: ${{ github.sha }}
+          REVISION: ${{ inputs.revision }}
         run: |
           version=$(node -p 'JSON.parse(require("fs").readFileSync("artifacts/release.json")).version')
           cat > artifacts/release-notes.md <<'EOF'
