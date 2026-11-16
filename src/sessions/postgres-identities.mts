@@ -1,6 +1,7 @@
 import {Pool, type PoolClient, type PoolConfig} from 'pg';
 import {randomUUID} from 'node:crypto';
 import {gunzipSync} from 'node:zlib';
+import {ensureSchemaIndex} from '../state/postgres.mjs';
 import {digest,eventIdentityLocation,eventFingerprints,eventIdentityConflict,sourceBatchIdentity,MAX_EVENT_LEDGER_BYTES} from './event-identity.mjs';
 import {parseJson,serviceError,type EventIdentityStore,type SessionIdentity,type SessionBatch,type SessionEvent,type ObjectStore} from './types.mjs';
 
@@ -45,8 +46,8 @@ export function createPostgresEventIdentities({namespace,...config}:PoolConfig&{
       event_hash bytea NOT NULL CHECK(octet_length(event_hash)=32),
       content_hash bytea NOT NULL CHECK(octet_length(content_hash)=32),
       PRIMARY KEY(session_id,event_hash));
-      CREATE INDEX IF NOT EXISTS opencrawl_event_identity_resource ON opencrawl_event_identity_sessions(namespace,resource);
       CREATE TABLE IF NOT EXISTS opencrawl_event_identity_deletions(namespace text NOT NULL, resource text NOT NULL, PRIMARY KEY(namespace,resource))`);
+    await ensureSchemaIndex(client,{table:'opencrawl_event_identity_sessions',name:'opencrawl_event_identity_resource',keys:['namespace','resource']});
     await client.query('INSERT INTO opencrawl_event_identity_schema(singleton,version,database_id) VALUES(true,1,$1) ON CONFLICT DO NOTHING',[randomUUID()]);
     const result=await client.query<{version:number;database_id:string}>('SELECT version,database_id FROM opencrawl_event_identity_schema WHERE singleton');
     if(result.rows[0]?.version!==1)unavailable('Unsupported event identity database schema');

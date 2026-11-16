@@ -93,6 +93,12 @@ The first index build belongs in this stopped-writer upgrade phase; later
 readiness checks validate the existing index without rebuilding it. Keep the
 original upgrade journal and backup when resuming an interrupted upgrade.
 
+The stopped-writer upgrade also applies known legacy column, constraint and
+index changes once. Current runtime readiness validates their definitions
+without repeating `ALTER TABLE` or `CREATE INDEX` on installed objects. An
+incompatible existing definition stops preparation for operator review; the
+runtime does not replace it automatically.
+
 The supported single-organization installation uses one landing bucket. A legacy
 integration pointing at another bucket stops migration before any import; its
 state requires an explicitly reviewed multi-store inventory, not an assumed

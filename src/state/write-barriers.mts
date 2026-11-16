@@ -1,7 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import type {PoolClient} from 'pg';
-import type {ApplicationDatabase} from './postgres.mjs';
+import {ensureSchemaIndex,type ApplicationDatabase} from './postgres.mjs';
 import {digest} from '../connectors/scope.mjs';
 import {serviceError} from '../sessions/types.mjs';
 
@@ -34,8 +34,8 @@ export async function ensureWriteBarrierSchema(database:ApplicationDatabase){
       operation text NOT NULL CHECK(operation IN ('object-put','search-write')),phase text NOT NULL CHECK(phase IN ('writing','settled')),
       started_at bigint NOT NULL CHECK(started_at >= 0),settled_at bigint,instance text NOT NULL,target text NOT NULL,
       PRIMARY KEY(namespace,fence_key,writer_id),FOREIGN KEY(namespace,fence_key) REFERENCES opencrawl_write_fences(namespace,fence_key),
-      CHECK(phase <> 'settled' OR settled_at IS NOT NULL));
-      CREATE INDEX IF NOT EXISTS opencrawl_resource_writers_pending ON opencrawl_resource_writers(namespace,fence_key) WHERE phase='writing'`);
+      CHECK(phase <> 'settled' OR settled_at IS NOT NULL))`);
+    await ensureSchemaIndex(client,{table:'opencrawl_resource_writers',name:'opencrawl_resource_writers_pending',keys:['namespace','fence_key'],predicate:{column:'phase',equals:'writing'}});
   });
 }
 
