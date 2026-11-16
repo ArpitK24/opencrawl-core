@@ -477,3 +477,15 @@ test('ordinary resume repairs only unverified future boundaries and never waits 
  const text=JSON.stringify(readdirSync(queue).filter(name=>name.endsWith('.json')).flatMap(name=>(JSON.parse(readFileSync(join(queue,name),'utf8')) as {events:unknown[]}).events));
  expect(text).toContain('ALREADY APPROVED');expect(text).toContain('APPROVED AFTER RESUME');expect(text).not.toContain('PRIVATE LEGACY TAIL');
 }));
+
+for(const failure of ['throw','unsupervised'] as const)test('approved history starts independently of daemon fallback '+failure,()=>fixture(async api=>{
+ const started:SetupState[]=[];
+ const result=await setupCommand('apply',api,{yes:true,plugins:'codex',forward:'none',history:'codex'},{
+  installPlugins:async()=>({results:[{client:'codex',status:'installed'}],humanTasks:[]}),
+  installDaemon:async()=>{if(failure==='throw')throw Error('unavailable');return {kind:'external',supervised:false,status:'required',command:[]};},
+  launchHistory:state=>{started.push(state);return {state:'queued',jobId:state.historyJob?.id};}
+ });
+ expect(started).toHaveLength(1);expect(started[0]?.historyJob?.clients).toEqual(['codex']);expect(started[0]?.historyJob?.files).toHaveLength(1);
+ expect(result).toMatchObject({status:'needs_attention',history:{state:'queued',jobId:started[0]?.historyJob?.id},worker:{kind:'fallback'}});
+ expect(readCaptureConfig()).toMatchObject({harnesses:[],historyHarnesses:['codex'],daemonRequested:{backgroundStartup:true}});
+}));
