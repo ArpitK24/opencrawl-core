@@ -17,7 +17,7 @@ import {hookRunner} from '../hook-runner.ts';
 import {reconcileHookEntries, reconcileHookGroups} from '../hook-config.ts';
 import {installCaptureDaemon,uninstallCaptureDaemon} from './daemon-service.ts';
 import {defaultClaudeDesktopSessionsRoot} from './desktop-history.ts';
-import {establishForwardBoundaries} from '../setup/watermarks.ts';
+import {establishForwardBoundaries,hasUnverifiedForwardBoundaries} from '../setup/watermarks.ts';
 import {establishCursorForwardBoundaries} from '../setup/cursor-watermarks.ts';
 const marker='OpenCrawl session capture';
 const quote=(s:string)=>process.platform==='win32'?'"'+s.replace(/"/g,'""')+'"':"'"+s.replace(/'/g,"'\\''")+"'";
@@ -235,7 +235,16 @@ export async function installCapture(api:string,{background=false,deferAuth=fals
   // authoritative until every newly selected source has a durable boundary.
   const needsBoundary=(h:Harness)=>!previous||previous.disabled||changed||previous.authPending||!(previous.harnesses??[]).includes(h)||previous.roots[h]!==config.roots[h];
   if(enrolled.includes('cursor')&&needsBoundary('cursor'))await establishCursorForwardBoundaries(config,previous);
-  if(selectionMode==='replace')establishForwardBoundaries(config,enrolled.filter(h=>readsTranscript(h)&&needsBoundary(h)) as TranscriptHarness[]);
+  if(selectionMode==='replace'){
+    establishForwardBoundaries(config,enrolled.filter(h=>readsTranscript(h)&&needsBoundary(h)) as TranscriptHarness[]);
+    // Explicit setup/resume repairs only ambiguous, already-consented boundaries.
+    // The worker never scans or resets them automatically; queues/history stay intact.
+    const repairHarnesses=enrolled.filter(h=>readsTranscript(h)&&!needsBoundary(h)) as TranscriptHarness[];
+    // A spool owner may need configuration to refresh credentials. Never wait
+    // for it while holding configuration; a busy repair leaves cursors intact.
+    if(hasUnverifiedForwardBoundaries(config,repairHarnesses))await withSessionLock('capture:spool',async()=>establishForwardBoundaries(config,repairHarnesses,{onlyUnverified:true}),0);
+    if(enrolled.includes('cursor')&&!needsBoundary('cursor'))await establishCursorForwardBoundaries(config,previous,{onlyUnverified:true});
+  }
   if(receiverToken)atomicJson(join(captureDir(),'receiver-token.json'),{api,token:receiverToken});
   if(hookOwnership==='global'){
   if(previous)for(const h of removed.filter((h):h is Exclude<Harness,'devin'>=>h!=='devin')){const file=hookFile(previous,h);if(!existsSync(file))continue;if(h==='claude-code'||h==='codex')modifyHooks(file,[],null);else if(h==='antigravity')modifyAntigravityHooks(file,null);else modifyCursorFormatHooks(file,null,h);}

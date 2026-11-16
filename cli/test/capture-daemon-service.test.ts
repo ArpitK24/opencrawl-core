@@ -177,16 +177,16 @@ for(const timeout of [false,true])test(`Mac bootstrap ${timeout?'timeout':'exit'
     const secret='private-service-stderr-and-error-message';
     const failure:SpawnSyncReturns<Buffer>=timeout?{...outcome(),status:null,signal:'SIGTERM',error:Object.assign(Error(secret),{code:'ETIMEDOUT'})}:outcome(5,secret,secret);
     const calls:string[]=[];let caught:unknown;
-    try{await installCaptureDaemon(f.config,{home:f.root,platform:'darwin',run:runner((command,args)=>{expect(command).toBe('launchctl');calls.push(args[0]!);return args[0]==='bootstrap'?failure:outcome(3,secret,secret);})});}catch(error){caught=error;}
+    try{await installCaptureDaemon(f.config,{home:f.root,platform:'darwin',run:runner((command,args)=>{expect(command).toBe('launchctl');calls.push(args[0]!);return args[0]==='bootstrap'?failure:outcome(113,'','Could not find service');})});}catch(error){caught=error;}
     expect(caught).toBeInstanceOf(CliError);expect(caught).toMatchObject({code:'CAPTURE_SUPERVISION_FAILED',exitCode:1});
     const expected={operation:'bootstrap',exitStatus:timeout?null:5,signal:timeout?'SIGTERM':null,errorCode:timeout?'ETIMEDOUT':null};
     const receipt=JSON.parse(readFileSync(f.receipt,'utf8'));
-    expect(receipt).toMatchObject({kind:'launchd',status:'failed',supervised:false,operations:[{operation:'bootout',exitStatus:3,signal:null,errorCode:null},expected]});
+    expect(receipt).toMatchObject({kind:'launchd',status:'failed',supervised:false,operations:[{operation:'print',exitStatus:113,signal:null,errorCode:null},expected]});
     expect(JSON.parse(readFileSync(join(captureDir(),'last-error.json'),'utf8')).code).toBe('CAPTURE_SUPERVISION_FAILED');
     expect((caught as Error).message).toContain('launchctl bootstrap');
     expect((caught as Error).message).toContain(`exit=${expected.exitStatus??'none'}, signal=${expected.signal??'none'}, error=${expected.errorCode??'none'}`);
     for(const text of [JSON.stringify(receipt),(caught as Error).message]){expect(text).not.toContain(secret);expect(text).not.toContain('login');}
-    expect(calls).toEqual(['bootout','bootstrap']);
+    expect(calls).toEqual(['print','bootstrap']);
     expect(readFileSync(join(captureDir(),'config.json'),'utf8')).toBe(before);expect(readFileSync(queued,'utf8')).toBe('retained');
   }finally{if(uid)Object.defineProperty(process,'getuid',uid);else delete process.getuid;}
 }));
@@ -198,7 +198,7 @@ import * as setup from ${module('setup/command.ts')};
 import {installCaptureDaemon} from ${module('capture/daemon-service.ts')};
 Object.defineProperty(process,'getuid',{configurable:true,value:()=>501});
 const config=${JSON.stringify(f.config)},secret='private-launchctl-output';
-const run=(_command,args)=>({pid:0,output:[null,Buffer.from(secret),Buffer.from(secret)],stdout:Buffer.from(secret),stderr:Buffer.from(secret),status:args[0]==='bootstrap'?5:3,signal:null});
+const run=(_command,args)=>({pid:0,output:[null,Buffer.from(secret),Buffer.from(secret)],stdout:Buffer.from(secret),stderr:Buffer.from(args[0]==='print'?'Could not find service':secret),status:args[0]==='bootstrap'?5:113,signal:null});
 mock.module(${module('setup/command.ts')},()=>({...setup,setupCommand:async()=>installCaptureDaemon(config,{home:${JSON.stringify(f.root)},platform:'darwin',run})}));
 globalThis.fetch=()=>{throw Error('Unexpected network');};
 const {main}=await import(${module('cli.ts')});process.exitCode=await main(['setup','resume','--api',config.api,'--json']);`;
@@ -253,4 +253,73 @@ test('source CLI worker environment selects paused profile before reading a diff
     expect(existsSync(join(captureDir(),'daemon','status.json'))).toBe(false);
     expect(existsSync(join(capture,'daemon','status.json'))).toBe(false);
   }finally{clearTimeout(timeout);child.kill();await child.exited;}
+}));
+
+
+for(const mode of ['capture','startup','queue'] as const)test(`Mac repeat ${mode} setup restarts its owned definition without removing it`,()=>fixture(async f=>{
+ const uid=Object.getOwnPropertyDescriptor(process,'getuid');Object.defineProperty(process,'getuid',{configurable:true,value:()=>501});
+ try{
+  const config={...f.config,...(mode==='startup'?{disabled:true,harnesses:[],backgroundStartup:true}:mode==='queue'?{harnesses:[],backgroundStartup:false}:{})};
+  atomicJson(join(captureDir(),'config.json'),config);const configBytes=readFileSync(join(captureDir(),'config.json'),'utf8');
+  const queued=join(captureDir(),'queue','retained.json');mkdirSync(dirname(queued));writeFileSync(queued,'retained');
+  const calls:string[][]=[];let loaded=false;
+  const run=runner((_command,args)=>{calls.push(args);if(args[0]==='print')return loaded?outcome(0,'path = '+f.unit('darwin')):outcome(113,'','Could not find service');if(args[0]==='bootstrap'){expect(loaded).toBe(false);loaded=true;return outcome();}if(args[0]==='kickstart'){expect(loaded).toBe(true);expect(args).toEqual(['kickstart','-k','gui/501/'+f.label]);return outcome();}throw Error('Must not remove a matching service');});
+  await installCaptureDaemon(config,{home:f.root,platform:'darwin',run});
+  const plist=readFileSync(f.unit('darwin'),'utf8'),generation=readFileSync(join(captureDir(),'daemon','generation.json'),'utf8');
+  // A stable managed entry may select newer binary bytes. Always restart it;
+  // neither an identical plist nor an old running status proves current code.
+  mkdirSync(dirname(config.command[0]!),{recursive:true});writeFileSync(config.command[0]!,'new wrapper target');
+  expect(await installCaptureDaemon(config,{home:f.root,platform:'darwin',run})).toMatchObject({kind:'launchd',status:'installed',supervised:true});
+  expect(calls.map(args=>args[0])).toEqual(['print','bootstrap','print','kickstart']);
+  expect(readFileSync(f.unit('darwin'),'utf8')).toBe(plist);expect(readFileSync(join(captureDir(),'daemon','generation.json'),'utf8')).toBe(generation);
+  expect(readFileSync(join(captureDir(),'config.json'),'utf8')).toBe(configBytes);expect(readFileSync(queued,'utf8')).toBe('retained');
+ }finally{if(uid)Object.defineProperty(process,'getuid',uid);else delete process.getuid;}
+}));
+
+test('Mac missing job with stale receipt bootstraps; changed owned definition explicitly replaces',()=>fixture(async f=>{
+ const uid=Object.getOwnPropertyDescriptor(process,'getuid');Object.defineProperty(process,'getuid',{configurable:true,value:()=>501});
+ try{
+  const path=f.unit('darwin');ownedUnit(path,f.config,'darwin');atomicJson(f.receipt,{kind:'launchd',status:'installed',label:f.label,path});
+  atomicJson(join(captureDir(),'daemon','status.json'),{state:'running',pid:123});
+  const calls:string[]=[];let loaded=false;
+  const run=runner((_command,args)=>{calls.push(args[0]!);if(args[0]==='print')return loaded?outcome(0,'path = '+path):outcome(113,'','Could not find service');if(args[0]==='bootstrap'){loaded=true;return outcome();}if(args[0]==='bootout'){loaded=false;return outcome();}throw Error('Unexpected command');});
+  await installCaptureDaemon(f.config,{home:f.root,platform:'darwin',run});expect(calls).toEqual(['print','bootstrap']);
+  const next={...f.config,command:[join(f.root,'new selected CLI')]};atomicJson(join(captureDir(),'config.json'),next);calls.length=0;
+  await installCaptureDaemon(next,{home:f.root,platform:'darwin',run});expect(calls).toEqual(['print','bootout','bootstrap']);expect(readFileSync(path,'utf8')).toBe(launchAgent(next));
+ }finally{if(uid)Object.defineProperty(process,'getuid',uid);else delete process.getuid;}
+}));
+
+test('Mac kickstart failure retains exact registration and safe actionable diagnostics',()=>fixture(async f=>{
+ const uid=Object.getOwnPropertyDescriptor(process,'getuid');Object.defineProperty(process,'getuid',{configurable:true,value:()=>501});
+ try{
+  const path=f.unit('darwin'),bytes=ownedUnit(path,f.config,'darwin');atomicJson(f.receipt,{kind:'launchd',status:'installed',label:f.label,path});
+  const calls:string[]=[];const generation=join(captureDir(),'daemon','generation.json');atomicJson(generation,{generation:'existing-worker'});const generationBefore=readFileSync(generation,'utf8');
+  await expect(installCaptureDaemon(f.config,{home:f.root,platform:'darwin',run:runner((_command,args)=>{calls.push(args[0]!);return args[0]==='print'?outcome(0,'path = '+path):outcome(5,'private-output','private-error');})})).rejects.toMatchObject({code:'CAPTURE_SUPERVISION_FAILED'});
+  expect(calls).toEqual(['print','kickstart']);expect(readFileSync(path,'utf8')).toBe(bytes);expect(readFileSync(generation,'utf8')).toBe(generationBefore);
+  const receipt=readFileSync(f.receipt,'utf8');expect(JSON.parse(receipt)).toMatchObject({status:'failed',supervised:false,operations:[{operation:'print',exitStatus:0},{operation:'kickstart',exitStatus:5}]});expect(receipt).not.toContain('private-');
+ }finally{if(uid)Object.defineProperty(process,'getuid',uid);else delete process.getuid;}
+}));
+
+for(const mode of ['unknown','foreign','changed-config','changed-generation'] as const)test(`Mac ${mode} state cannot replace or claim a service`,()=>fixture(async f=>{
+ const uid=Object.getOwnPropertyDescriptor(process,'getuid');Object.defineProperty(process,'getuid',{configurable:true,value:()=>501});
+ try{
+  const path=f.unit('darwin'),bytes=ownedUnit(path,f.config,'darwin');atomicJson(f.receipt,{kind:'launchd',status:'installed',label:f.label,path});
+  const generation=join(captureDir(),'daemon','generation.json');atomicJson(generation,{generation:'before'});const before=readFileSync(f.receipt,'utf8'),calls:string[]=[];
+  const code=mode==='unknown'?'CAPTURE_SUPERVISION_FAILED':mode==='foreign'?'CAPTURE_SUPERVISION_CONFLICT':'CAPTURE_CONFIG_CHANGED';
+  await expect(installCaptureDaemon(f.config,{home:f.root,platform:'darwin',run:runner((_command,args)=>{
+   calls.push(args[0]!);
+   if(args[0]==='print'){
+    if(mode==='unknown')return outcome(1,'','permission denied');
+    if(mode==='changed-config')atomicJson(join(captureDir(),'config.json'),{...f.config,disabled:true});
+    return outcome(0,'path = '+(mode==='foreign'?'/foreign/service.plist':path));
+   }
+   if(args[0]==='kickstart'&&mode==='changed-generation'){atomicJson(generation,{generation:'successor'});return outcome();}
+   throw Error('Unexpected mutation');
+  })})).rejects.toMatchObject({code});
+  expect(readFileSync(path,'utf8')).toBe(bytes);
+  if(mode!=='changed-generation')expect(JSON.parse(readFileSync(generation,'utf8')).generation).toBe('before');
+  else expect(JSON.parse(readFileSync(generation,'utf8')).generation).toBe('successor');
+  if(mode!=='unknown')expect(readFileSync(f.receipt,'utf8')).toBe(before);
+  expect(calls).toEqual(mode==='changed-generation'?['print','kickstart']:['print']);
+ }finally{if(uid)Object.defineProperty(process,'getuid',uid);else delete process.getuid;}
 }));

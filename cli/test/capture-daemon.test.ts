@@ -427,11 +427,11 @@ isolatedTest('supervisor result is factual and bootstrap failure propagates with
   const {installCaptureDaemon,launchAgent}=await import('../src/capture/daemon-service.ts');
   const config=readCaptureConfig()!,before=readFileSync(join(captureDir(),'config.json'),'utf8'),calls:string[][]=[];
   await expect(installCaptureDaemon({...config,installationId:'stale-installation'},{home:f.dir,platform:'darwin',run:(()=>{throw Error('must not run');}) as any})).rejects.toThrow('configuration changed');
-  const run=((command:string,args:string[])=>{expect(command).toBe('launchctl');calls.push(args);return {status:args[0]==='bootstrap'?17:0};}) as any;
+  const run=((command:string,args:string[])=>{expect(command).toBe('launchctl');calls.push(args);return {status:args[0]==='bootstrap'?17:113,stderr:Buffer.from('Could not find service')};}) as any;
   await expect(installCaptureDaemon(config,{home:f.dir,platform:'darwin',run})).rejects.toThrow('Could not install');
   expect(readFileSync(join(captureDir(),'config.json'),'utf8')).toBe(before);
   expect(JSON.parse(readFileSync(join(daemonDir(),'service.json'),'utf8'))).toMatchObject({status:'failed',supervised:false});
-  expect(calls.map(args=>args[0])).toEqual(['bootout','bootstrap']);
+  expect(calls.map(args=>args[0])).toEqual(['print','bootstrap']);
   expect(calls[0][1]).toMatch(/^gui\/501\/com\.getopencrawl\.capture\.[a-f0-9]{12}$/);expect(calls[1][1]).toBe('gui/501');
   // The fake's file is intentionally retained as the same failed installation would be.
   const service=await installCaptureDaemon(config,{home:f.dir,platform:'linux',service:false,ensure:async()=>{}});

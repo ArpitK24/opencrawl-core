@@ -1,4 +1,4 @@
-import {transcriptCheckpoint} from './transcript-checkpoint.ts';
+import {transcriptCheckpoint,transcriptIdentity,transcriptIdentityMatches} from './transcript-checkpoint.ts';
 import {readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, fstatSync, lstatSync, realpathSync, openSync, readSync, closeSync, unlinkSync, createReadStream} from 'node:fs';
 import {gzip} from 'node:zlib';
 import {promisify} from 'node:util';
@@ -384,16 +384,17 @@ export async function captureTranscript(config:CaptureConfig,harness:TranscriptH
     let offset=old.offset;
     if(old.forwardBoundary&&compressed&&!reconcileHistory)return old.meta;
     const reset=st.size<offset || Boolean(old.ino && old.ino!==source.ino);
+    let boundaryIdentity:string|undefined;
     if(old.forwardBoundary&&!reconcileHistory){
       // A rewritten source has an unknown pre-consent prefix. Preserve the
       // future-only boundary at its current end; only later appends may enter.
       const boundaryFd=openSync(path,'r'),last=Buffer.alloc(1);
       try{
-        const current=fstatSync(boundaryFd);
+        const current=fstatSync(boundaryFd);boundaryIdentity=transcriptIdentity(boundaryFd);
         if(current.ino!==source.ino||current.size!==source.size)throw new CliError('CAPTURE_SOURCE_CHANGED','Transcript changed while preserving its consent boundary; retry capture.');
-        if(reset||typeof old.checkpoint!=='string'||old.checkpoint!==transcriptCheckpoint(boundaryFd,offset)){
+        if(!transcriptIdentityMatches(old.identity,boundaryIdentity)||reset||typeof old.checkpoint!=='string'||old.checkpoint!==transcriptCheckpoint(boundaryFd,offset)){
           if(current.size)readSync(boundaryFd,last,0,1,current.size-1);
-          atomicJson(stateFile,{offset:current.size,ino:current.ino,parserVersion:old.parserVersion??1,forwardBoundary:true,checkpoint:transcriptCheckpoint(boundaryFd,current.size),skipPartial:Boolean(current.size&&last[0]!==10)});
+          atomicJson(stateFile,{offset:current.size,ino:current.ino,identity:boundaryIdentity,parserVersion:old.parserVersion??1,forwardBoundary:true,checkpoint:transcriptCheckpoint(boundaryFd,current.size),skipPartial:Boolean(current.size&&last[0]!==10)});
           return;
         }
       }finally{closeSync(boundaryFd);}
@@ -475,7 +476,7 @@ export async function captureTranscript(config:CaptureConfig,harness:TranscriptH
       // Validate the descriptor that will actually supply parser bytes too.
       if(old.forwardBoundary&&!reconcileHistory&&fd!==undefined){
         const current=fstatSync(fd);
-        if(current.ino!==source.ino||current.size!==source.size||old.checkpoint!==transcriptCheckpoint(fd,offset))
+        if(transcriptIdentity(fd)!==boundaryIdentity||current.size!==source.size||old.checkpoint!==transcriptCheckpoint(fd,offset))
           throw new CliError('CAPTURE_SOURCE_CHANGED','Transcript changed before reading its consent boundary; retry capture.');
       }
     if(scoped&&meta.sessionId&&meta.sessionId!==expectedSession&&!(scoped.agentId&&meta.sessionId===scoped.sessionId))throw new CliError('CAPTURE_SESSION_MISMATCH','Saved transcript identity differs from the registered native session');
@@ -564,7 +565,7 @@ export async function captureTranscript(config:CaptureConfig,harness:TranscriptH
           if(events.length>=(reconcileHistory?1000:200)){await spool({...meta,captureMode:reconcileHistory?'history':'live'},events.splice(0),attachments.splice(0));eventBytes=0;}
         }
         await spool({...meta,captureMode:reconcileHistory?'history':'live'},events,attachments);
-        offset+=bytes.length;atomicJson(stateFile,{offset,ino:source.ino,parserVersion,meta,...(old.forwardBoundary&&!reconcileHistory?{forwardBoundary:true,checkpoint:transcriptCheckpoint(fd!,offset),skipPartial}: {})});
+        offset+=bytes.length;atomicJson(stateFile,{offset,ino:source.ino,parserVersion,meta,...(old.forwardBoundary&&!reconcileHistory?{forwardBoundary:true,identity:boundaryIdentity,checkpoint:transcriptCheckpoint(fd!,offset),skipPartial}: {})});
       }
       if(compressed){
         if(!archiveComplete)throw new CliError('CAPTURE_ARCHIVE_INVALID','Compressed transcript ended with an unfinished JSONL record; repair the archive and rerun the approved import.');
@@ -739,8 +740,8 @@ export async function captureCursorNotice(config:CaptureConfig,notice:CaptureHoo
   // Text transcript metadata is not the native JSONL fallback. Keep the
   // authoritative content hooks working without opening referenced text.
   if(typeof file==='string'&&file.endsWith('.jsonl')&&existsSync(file)) {
-    const transcriptState={offset:state.offset,ino:state.ino,checkpoint:state.checkpoint};
-    for(const record of cursorTranscript(harnessRoot(config,'cursor'),session.sessionId,file,transcriptState.offset,transcriptState.ino,transcriptState.checkpoint,{forwardBoundary:state.forwardBoundary===true,skipPartial:state.skipPartial===true})) {
+    const transcriptState={offset:state.offset,ino:state.ino,checkpoint:state.checkpoint,identity:state.identity};
+    for(const record of cursorTranscript(harnessRoot(config,'cursor'),session.sessionId,file,transcriptState.offset,transcriptState.ino,transcriptState.checkpoint,{forwardBoundary:state.forwardBoundary===true,skipPartial:state.skipPartial===true,identity:transcriptState.identity})) {
       if(record.forwardRebased){
         state.hooks={};state.transcript={};state.emitted={};delete state.thoughtHooks;delete state.startSequence;delete state.startAt;
         recordError(new CliError('CAPTURE_CURSOR_BOUNDARY_CHANGED','Cursor rewrote a pre-consent transcript boundary; earlier bytes remain excluded. New appended records and native content hooks continue.'));
@@ -751,7 +752,7 @@ export async function captureCursorNotice(config:CaptureConfig,notice:CaptureHoo
           timestamp:record.data.role==='user'?(state.startAt??notice.at):notice.at,nativeId:null,parentId:null,turnId:notice.event.generation_id??null,agentId:null,data:record.data},'transcript');
         if(event){const transformed=attachmentTransform(event,attachments,session.cwd??homedir());events.push(transformed);eventBytes+=Buffer.byteLength(JSON.stringify(transformed));}
       }
-      state.offset=record.offset;state.ino=record.ino;state.checkpoint=record.checkpoint;state.skipPartial=record.skipPartial;
+      state.offset=record.offset;state.ino=record.ino;state.identity=record.identity;state.checkpoint=record.checkpoint;state.skipPartial=record.skipPartial;
       if(events.length>=100||attachments.length>=8||eventBytes>=1024*1024){await yieldToOwner();commit();}
     }
   }

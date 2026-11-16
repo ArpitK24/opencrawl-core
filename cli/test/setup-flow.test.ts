@@ -1,15 +1,18 @@
 import {test,expect} from 'bun:test';
 import {createServer} from 'node:http';
-import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync,existsSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,appendFileSync,readFileSync,readdirSync,realpathSync,statSync,rmSync,existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {publishSetup,type SetupServerStatus} from '../src/setup/api.ts';
 import {type CodexHookReview} from '../src/capture/codex-hooks.ts';
 import {setupCommand as realSetupCommand,formatSetupOutput,formatSetupCommand} from '../src/setup/command.ts';
 import {readSetupState,updateSetupState,historyBenefit,type SetupState} from '../src/setup/state.ts';
-import {readCaptureConfig,captureDir} from '../src/capture/runtime.ts';
+import {readCaptureConfig,captureDir,captureTranscript} from '../src/capture/runtime.ts';
 import {installCapture,uninstallCapture} from '../src/capture/install.ts';
 import {hookRunner} from '../src/hook-runner.ts';
+import {atomicJson,withSessionLock} from '../src/session.ts';
+import {hash} from '../src/capture/parse.ts';
+import {validTranscriptIdentity} from '../src/capture/transcript-checkpoint.ts';
 import {applySelectionKey,type SelectionCursor} from '../src/setup/select.ts';
 import type {SelectionScreen} from '../src/setup/select.ts';
 const setupCommand=(action:string,api:string,values:Parameters<typeof realSetupCommand>[2],dependencies:NonNullable<Parameters<typeof realSetupCommand>[3]>={})=>realSetupCommand(action,api,values,{platform:'darwin',installDaemon:async()=>({kind:'launchd',status:'installed',supervised:true,label:'fixture',path:'fixture'}),...dependencies});
@@ -425,4 +428,49 @@ test('unbound saved deferred choices cannot enter run, plan, or apply implicitly
  await setupCommand('resume',api,{json:true},setupCodex);
  expect(readCaptureConfig()).toMatchObject({harnesses:[],historyHarnesses:[],owner:{tenantId:'tenant',userId:'user'}});
  expect(readSetupState(scope)?.selections).toEqual({plugins:{codex:true},forward:{codex:false},history:{codex:false}});expect(readSetupState(scope)?.historyJob).toBeUndefined();
+}));
+
+
+test('ordinary resume repairs only unverified future boundaries and never waits on an active spool owner',()=>fixture(async(api,dir)=>{
+ const file=join(dir,'codex','sessions','one.jsonl'),exactFile=join(dir,'codex','sessions','exact.jsonl');
+ writeFileSync(exactFile,JSON.stringify({type:'session_meta',payload:{id:'exact',source:'cli'}})+'\n');
+ await setupCommand('apply',api,{yes:true,plugins:'codex',forward:'codex',history:'none'},setupCodex);
+ const config=readCaptureConfig()!,stateFile=(path:string)=>join(captureDir(),'state',hash('codex'+realpathSync(path))+'.json');
+ const statePath=stateFile(file),exactPath=stateFile(exactFile),exactBefore=readFileSync(exactPath,'utf8');
+ const line=(text:string)=>JSON.stringify({type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text}]}})+'\n';
+ const capture=()=>captureTranscript(config,'codex',file,{session_id:'one'});
+ const resume=()=>setupCommand('resume',api,{json:true},{...setupCodex,choose:async()=>{throw Error('Unexpected questionnaire');}});
+ // An unchanged exact profile does not acquire the busy spool lock at all.
+ await withSessionLock('capture:spool',async()=>{expect(await resume()).toMatchObject({status:'configured'});});
+ appendFileSync(file,line('ALREADY APPROVED'));await capture();
+ const queue=join(captureDir(),'queue'),queued=new Map(readdirSync(queue).filter(name=>name.endsWith('.json')).map(name=>[name,readFileSync(join(queue,name),'utf8')]));
+ expect(queued.size).toBeGreaterThan(0);
+ const before=JSON.parse(readFileSync(statePath,'utf8')) as Record<string,unknown>;delete before.identity;atomicJson(statePath,before);
+ appendFileSync(file,line('PRIVATE LEGACY TAIL'));
+ const oldState=readFileSync(statePath,'utf8'),configPath=join(captureDir(),'config.json'),oldConfig=readFileSync(configPath,'utf8');
+ const choices=readSetupState({api,tenantId:'tenant',userId:'user'})!;
+ // A normal legacy cursor without a future boundary and a recording-off
+ // client's boundary must not be reset as a side effect of the repair.
+ const legacyFile=join(dir,'codex','sessions','legacy.jsonl');writeFileSync(legacyFile,line('LEGACY'));
+ const legacyPath=stateFile(legacyFile),legacyBytes=JSON.stringify({offset:7,ino:statSync(legacyFile).ino,parserVersion:2});writeFileSync(legacyPath,legacyBytes);
+ const offFile=join(dir,'claude','projects','project','off.jsonl');mkdirSync(join(offFile,'..'),{recursive:true});writeFileSync(offFile,'{}\n');
+ const offPath=join(captureDir(),'state',hash('claude-code'+realpathSync(offFile))+'.json'),offBytes=JSON.stringify({offset:0,ino:1,forwardBoundary:true});writeFileSync(offPath,offBytes);
+ await expect(capture()).rejects.toMatchObject({code:'CAPTURE_FILE_IDENTITY_UNVERIFIED'});
+ await withSessionLock('capture:spool',async()=>{
+  await expect(resume()).rejects.toMatchObject({code:'SESSION_BUSY'});
+  expect(readFileSync(statePath,'utf8')).toBe(oldState);expect(readFileSync(configPath,'utf8')).toBe(oldConfig);
+  // Release configuration immediately on contention, so this spool owner can
+  // finish a credential update instead of forming a configuration/spool cycle.
+  await withSessionLock('capture:configuration',async()=>{},0);
+ });
+ expect(await resume()).toMatchObject({status:'configured'});
+ const repaired=JSON.parse(readFileSync(statePath,'utf8')) as {identity:unknown;offset:number;forwardBoundary:boolean};
+ expect(validTranscriptIdentity(repaired.identity)).toBe(true);expect(repaired).toMatchObject({offset:statSync(file).size,forwardBoundary:true});
+ expect(readFileSync(exactPath,'utf8')).toBe(exactBefore);expect(readFileSync(legacyPath,'utf8')).toBe(legacyBytes);expect(readFileSync(offPath,'utf8')).toBe(offBytes);
+ expect(readdirSync(queue).filter(name=>name.endsWith('.json')).sort()).toEqual([...queued.keys()].sort());
+ for(const [name,bytes] of queued)expect(readFileSync(join(queue,name),'utf8')).toBe(bytes);
+ const after=readSetupState({api,tenantId:'tenant',userId:'user'})!;expect(after.selections).toEqual(choices.selections);expect(after.historyJob).toEqual(choices.historyJob);
+ appendFileSync(file,line('APPROVED AFTER RESUME'));await capture();
+ const text=JSON.stringify(readdirSync(queue).filter(name=>name.endsWith('.json')).flatMap(name=>(JSON.parse(readFileSync(join(queue,name),'utf8')) as {events:unknown[]}).events));
+ expect(text).toContain('ALREADY APPROVED');expect(text).toContain('APPROVED AFTER RESUME');expect(text).not.toContain('PRIVATE LEGACY TAIL');
 }));

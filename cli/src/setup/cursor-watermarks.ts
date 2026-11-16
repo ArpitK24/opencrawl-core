@@ -5,10 +5,11 @@ import {atomicJson,withSessionLock} from '../session.ts';
 import {CliError} from '../oauth.ts';
 import {captureDir,readCaptureConfig,type CaptureConfig} from '../capture/runtime.ts';
 import {cursorTranscriptBoundary} from '../capture/cursor.ts';
+import {validTranscriptIdentity} from '../capture/transcript-checkpoint.ts';
 import {hash} from '../capture/parse.ts';
 
 /** Explicit enrollment only. The worker never enumerates a native history tree. */
-export async function establishCursorForwardBoundaries(config:CaptureConfig,expectedConfig:CaptureConfig|null){
+export async function establishCursorForwardBoundaries(config:CaptureConfig,expectedConfig:CaptureConfig|null,{onlyUnverified=false}:{onlyUnverified?:boolean}={}){
  const root=config.roots.cursor;if(!root)return;
  const dirs=(path:string)=>existsSync(path)?readdirSync(path,{withFileTypes:true}).filter(entry=>entry.isDirectory()&&!entry.isSymbolicLink()).map(entry=>entry.name).sort():[];
  for(const project of dirs(join(root,'projects'))){
@@ -23,7 +24,8 @@ export async function establishCursorForwardBoundaries(config:CaptureConfig,expe
     if(!isDeepStrictEqual(current,expectedConfig))throw new CliError('CAPTURE_CONFIG_CHANGED','Cursor recording changed before its consent boundary was saved.');
     const stateFile=join(captureDir(),'state','cursor-'+hash(sessionId)+'.json');
     // Refuse malformed saved state instead of hiding damage during enrollment.
-    if(existsSync(stateFile))JSON.parse(readFileSync(stateFile,'utf8'));
+    const previous=existsSync(stateFile)?JSON.parse(readFileSync(stateFile,'utf8')):{};
+    if(onlyUnverified&&(!previous.forwardBoundary||validTranscriptIdentity(previous.identity)))return;
     const boundary=cursorTranscriptBoundary(root,sessionId,file);
     atomicJson(stateFile,{...boundary,forwardBoundary:true,hooks:{},transcript:{},emitted:{}});
    });
