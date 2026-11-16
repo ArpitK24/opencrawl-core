@@ -32,7 +32,7 @@
     "registry": "https://registry.npmjs.org"
   },
   "scripts": {
-    "test": "bun test",
+    "test": "bun scripts/test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "bun scripts/build.ts"
   },
