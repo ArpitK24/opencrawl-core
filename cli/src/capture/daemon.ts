@@ -1,13 +1,13 @@
-// Claude capture worker. Only hooks enroll sessions; the historical source
+// Session capture worker. Only hooks enroll sessions; the historical source
 // catalogue is deliberately not an input to this worker.
 import {watch,existsSync,mkdirSync,readFileSync,readdirSync,statSync,lstatSync,realpathSync,unlinkSync,renameSync,type FSWatcher} from 'node:fs';
-import {join,dirname,basename,resolve,sep} from 'node:path';
-import {randomUUID} from 'node:crypto';
+import {join,dirname,basename} from 'node:path';
 import {setImmediate as yieldToOwner} from 'node:timers/promises';
 import {atomicJson,syncDirectory,withSessionLock} from '../session.ts';
-import {captureDir,readCaptureConfig,captureTranscript,flushCaptures,refreshCaptureIdentity,recordError,captureDaemonEnabled,captureDaemonHarnesses,type CaptureConfig} from './runtime.ts';
+import {captureDir,readCaptureConfig,captureTranscript,flushCaptures,refreshCaptureIdentity,recordError,captureDaemonEnabled,captureDaemonHarnesses,captureCursorNotice,spoolDaemonEvent,resolveAntigravityTranscript,type CaptureConfig} from './runtime.ts';
 import {captureExcluded} from './policy.ts';
-import {hash} from './parse.ts';
+import {hash,readsTranscript,HARNESSES} from './parse.ts';
+import {recordNativeDaemonHook,daemonRegistration,daemonSubagent,daemonPathAllowed,sameDaemonBinding,daemonSession,type DaemonRegistration,type DaemonNotice} from './daemon-handoff.ts';
 import {pendingLiveSince} from './live-batches.ts';
 
 export const daemonDir=()=>join(captureDir(),'daemon');
@@ -15,45 +15,28 @@ const read=<T>(file:string,fallback:T):T=>{try{return JSON.parse(readFileSync(fi
 const names=(dir:string)=>readdirSync(dir).filter(name=>name.endsWith('.json'));
 const remove=(file:string)=>{try{unlinkSync(file);syncDirectory(dirname(file));}catch(error:any){if(error.code!=='ENOENT')throw error;}};
 function directories(){for(const dir of ['inbox','sessions'])mkdirSync(join(daemonDir(),dir),{recursive:true,mode:0o700});for(const dir of ['queue','rejected'])mkdirSync(join(captureDir(),dir),{recursive:true,mode:0o700});}
-type Registration={sessionId:string,path:string,cwd?:string,pid:number,endedAt?:number,at:number,api:string,installationId:string,owner:Pick<CaptureConfig['owner'],'tenantId'|'userId'>};
-type Notice=Registration&{event:'SessionStart'|'SessionEnd'};
-const key=(session:Registration)=>hash(session.sessionId+':'+session.path);
-const sameBinding=(registration:Registration,config:CaptureConfig)=>!config.authPending&&registration.api===config.api&&registration.installationId===config.installationId&&registration.owner?.tenantId===config.owner.tenantId&&registration.owner?.userId===config.owner.userId;
+type Registration=DaemonRegistration;
+type LegacyNotice=Omit<Registration,'harness'>&{harness?:'claude-code',event:'SessionStart'|'SessionEnd'};
+const key=(session:Registration)=>hash((session.harness==='claude-code'?'':session.harness+':')+session.sessionId+':'+session.path);
+const sameBinding=sameDaemonBinding;
 const alive=(pid:number)=>{try{process.kill(pid,0);return true;}catch(error:any){return error.code!=='ESRCH';}};
+export const recordDaemonHook=(event:any,pid=process.ppid)=>recordNativeDaemonHook('claude-code',event,pid);
 
-/** A hook durably hands off a small pointer. No network, parsing, or global
- * configuration lock, even if the worker is offline or uploading. */
-export function recordDaemonHook(event:any,pid=process.ppid) {
-  const config=readCaptureConfig();if(!config||config.disabled||config.authPending||!captureDaemonEnabled(config)||!config.harnesses?.includes('claude-code'))return false;
-  if(event?.cursor_version||!['SessionStart','SessionEnd'].includes(event?.hook_event_name))return false;
-  if(typeof event.session_id!=='string'||!/^[\w.:-]{1,200}$/.test(event.session_id)||typeof event.transcript_path!=='string')throw Error('Invalid Claude capture registration');
-  const path=resolve(event.transcript_path),root=resolve(config.roots['claude-code'],'projects')+sep;
-  if(!path.startsWith(root)||basename(path)!==event.session_id+'.jsonl')throw Error('Claude transcript outside configured session');
-  const cwd=typeof event.cwd==='string'?event.cwd:undefined;
-  if(captureExcluded(config,{sessionId:event.session_id,cwd}))return false;
-  if(!Number.isSafeInteger(pid)||pid<=0)throw Error('Invalid Claude process identity');
-  directories();
-  const notice:Notice={sessionId:event.session_id,path,cwd,pid,event:event.hook_event_name,at:Date.now(),api:config.api,installationId:config.installationId,owner:{tenantId:config.owner.tenantId,userId:config.owner.userId}};
-  const current=readCaptureConfig();
-  if(!current||current.disabled||!captureDaemonEnabled(current)||!current.harnesses?.includes('claude-code')||!sameBinding(notice,current)||captureExcluded(current,{sessionId:notice.sessionId,cwd:notice.cwd}))return false;
-  atomicJson(join(daemonDir(),'inbox',randomUUID()+'.json'),notice);return true;
-}
-
-type Active={registration:Registration,watchers:Map<string,FSWatcher>,signatures:Map<string,string>,dirty:boolean,closingAt?:number,retryAt:number};
+type Active={registration:Registration,watchers:Map<string,FSWatcher>,signatures:Map<string,string>,dirty:boolean,lastActivity:number,closingAt?:number,retryAt:number};
 export type SessionStartTask={kind:'session-start',id:string,at:number,api:string,installationId:string,owner:{tenantId:string,userId:string},harness:string,sessionId:string,payload:unknown};
-export type DaemonOptions={signal?:AbortSignal,flushMs?:number,reconcileMs?:number,settleMs?:number,retryMs?:number,onReady?:()=>void,processStartupTask?:(config:CaptureConfig,task:SessionStartTask)=>Promise<void>};
+export type DaemonOptions={signal?:AbortSignal,flushMs?:number,reconcileMs?:number,settleMs?:number,idleMs?:number,retryMs?:number,onReady?:()=>void,processStartupTask?:(config:CaptureConfig,task:SessionStartTask)=>Promise<void>};
 
 /** One process per capture installation. Filesystem notifications schedule
  * bounded local work; a separate upload loop cannot stall transcript recording.
  * Timed recovery checks visit only currently enrolled sessions. */
-export async function runCaptureDaemon({signal,flushMs=10_000,reconcileMs=30_000,settleMs=2000,retryMs=1000,onReady,processStartupTask}:DaemonOptions={}) {
+export async function runCaptureDaemon({signal,flushMs=10_000,reconcileMs=30_000,settleMs=2000,idleMs=300_000,retryMs=1000,onReady,processStartupTask}:DaemonOptions={}) {
   const initial=readCaptureConfig();if(!initial||!captureDaemonEnabled(initial)||initial.disabled&&!initial.backgroundStartup)return;
   directories();
   try{return await withSessionLock('capture:daemon',async()=>{
     const active=new Map<string,Active>(),rootWatchers:FSWatcher[]=[];
     if(initial.backgroundStartup&&!processStartupTask)throw Error('Background session startup is configured but its handler is unavailable');
     let stopped=false,wakeCapture=()=>{},wakeUpload=()=>{},wakeStartup=()=>{},inboxDirty=true,queueDirty=true,startupDirty=true;
-    let nextReconcile=Date.now()+reconcileMs;
+    let nextReconcile=Date.now()+reconcileMs,inboxRetryAt=0;
     const counters={captures:0,sessionChecks:0,uploads:0,startups:0};
     const retryFile=join(daemonDir(),'retry.json');
     const generationFile=join(daemonDir(),'generation.json'),generation=read(generationFile,null);
@@ -73,46 +56,79 @@ export async function runCaptureDaemon({signal,flushMs=10_000,reconcileMs=30_000
       if(Number.isFinite(ms))timer=setTimeout(finish,Math.max(1,ms));
       if(stopped)finish();
     });
-    const mark=(item:Active)=>{item.dirty=true;wakeCapture();};
+    const mark=(item:Active)=>{item.dirty=true;item.lastActivity=Date.now();wakeCapture();};
     const addWatch=(item:Active,path:string,recursive=false)=>{
       if(item.watchers.has(path)||!existsSync(path))return;
       try{
         const watcher=watch(path,{recursive},(_event,name)=>{
-          if(recursive||!name||name.toString()===basename(item.registration.path)||name.toString()===basename(item.registration.path,'.jsonl'))mark(item);
+          if(recursive||!name||name.toString()===basename(item.registration.path)||name.toString()===basename(item.registration.path,'.jsonl')||item.registration.harness==='antigravity'&&['transcript.jsonl','transcript_full.jsonl'].includes(name.toString()))mark(item);
         });
         watcher.on('error',()=>{watcher.close();item.watchers.delete(path);mark(item);});item.watchers.set(path,watcher);
       }catch{ /* The periodic check recovers filesystems without notifications. */ }
     };
     const enroll=(registration:Registration)=>{
       const config=current();
-      if(!config||typeof registration.sessionId!=='string'||!(/^[\w.:-]{1,200}$/).test(registration.sessionId)||typeof registration.path!=='string'||!Number.isSafeInteger(registration.pid)||registration.pid<=0||!Number.isFinite(registration.at))throw Error('Invalid saved Claude capture registration');
-      if(!resolve(registration.path).startsWith(resolve(config.roots['claude-code'],'projects')+sep)||basename(registration.path)!==registration.sessionId+'.jsonl')throw Error('Saved Claude transcript outside configured session');
+      if(!config||typeof registration.sessionId!=='string'||!(/^[\w.:-]{1,200}$/).test(registration.sessionId)||typeof registration.path!=='string'||registration.pid!==undefined&&(!Number.isSafeInteger(registration.pid)||registration.pid<=0)||!Number.isFinite(registration.at))throw Error('Invalid saved capture registration');
+      if(!HARNESSES.includes(registration.harness)||!daemonPathAllowed(config,registration.harness,registration.sessionId,registration.path))throw Error('Saved transcript outside native session');
       if(!sameBinding(registration,config))throw Error('Capture registration is unbound or belongs to another installation; retained for inspection');
       const id=key(registration),prior=active.get(id);
       if(prior){prior.registration=registration;prior.closingAt=registration.endedAt;mark(prior);return;}
-      const item:Active={registration,watchers:new Map(),signatures:new Map(),dirty:true,closingAt:registration.endedAt,retryAt:0};
+      const item:Active={registration,watchers:new Map(),signatures:new Map(),dirty:true,lastActivity:registration.at,closingAt:registration.endedAt,retryAt:0};
       active.set(id,item);addWatch(item,dirname(registration.path));
     };
     const persist=(registration:Registration)=>atomicJson(join(daemonDir(),'sessions',key(registration)+'.json'),registration);
     // One damaged local record must not prevent healthy sessions from capturing.
     // Preserve its bytes for inspection; explicit purge removes held records too.
     const hold=(file:string,error:unknown)=>{recordError(error);renameSync(file,file+'.held');syncDirectory(dirname(file));};
-    const inbox=()=>{
-      inboxDirty=false;
-      const candidates=names(join(daemonDir(),'inbox')).filter(name=>!name.startsWith('startup-'));inboxDirty=candidates.length>64;
-      const pending=candidates.slice(0,64).flatMap(name=>{
-        const file=join(daemonDir(),'inbox',name);try{const notice=read<Notice|null>(file,null);return notice?[{file,notice}]:[];}catch(error){hold(file,error);return [];}
-      }).sort((a,b)=>a.notice.at-b.notice.at);
-      for(const {file,notice} of pending){try{
-        const id=key(notice),previous=active.get(id)?.registration;
-        if(previous&&previous.at>notice.at){remove(file);continue;}
-        const endedAt=notice.event==='SessionEnd'?notice.at:undefined;
-        const {event:_,...fields}=notice;
-        const registration:Registration={...fields,...(endedAt?{endedAt}:{})};
-        enroll(registration);persist(registration);remove(file);
-      }catch(error){hold(file,error);}}
+    let inboxAfter='';const blockedNotices=new Map<string,string>();
+    const inbox=async()=>{
+      inboxDirty=false;let failed=false;
+      const ordered=names(join(daemonDir(),'inbox')).filter(name=>!name.startsWith('startup-')).sort();
+      const after=ordered.findIndex(name=>name>inboxAfter),candidates=after>0?[...ordered.slice(after),...ordered.slice(0,after)]:ordered;
+      inboxDirty=candidates.length>64;
+      // Read one payload at a time: 64 queued large tool results must not mean
+      // 64 large objects resident in memory. Ordered filenames preserve ingress.
+      for(const name of candidates.slice(0,64)){
+        if(stopped)break;
+        inboxAfter=name;
+        const file=join(daemonDir(),'inbox',name);let notice:DaemonNotice|LegacyNotice;
+        try{if(lstatSync(file).isSymbolicLink()||!lstatSync(file).isFile()||statSync(file).size>9*1024*1024)throw Error('Capture notice exceeds limit');const value=read<DaemonNotice|LegacyNotice|null>(file,null);if(!value)throw Error('Invalid capture notice');notice=value;}
+        catch(error){hold(file,error);continue;}
+        const config=current();if(!config){stop();return;}
+        if(config.disabled)break;
+        let registration:Registration|null=null,sessionKey='';
+        try{
+          if(!sameBinding(notice,config))throw Error('Capture notice belongs to another installation');
+          if('kind' in notice&&notice.kind==='capture'){
+            if(!notice.record||!HARNESSES.includes(notice.record.harness)||!Number.isFinite(notice.at))throw Error('Invalid native capture notice');
+            const {harness,event,at}=notice.record,session=daemonSession(harness,event,at);
+            sessionKey=harness+':'+session.sessionId;
+            if(blockedNotices.has(sessionKey)&&blockedNotices.get(sessionKey)!==name)continue;
+            if(!config.harnesses?.includes(harness)||captureExcluded(config,{sessionId:session.sessionId,cwd:session.cwd??undefined})){blockedNotices.delete(sessionKey);hold(file,Error('Forward capture no longer selected'));continue;}
+            registration=daemonRegistration(config,notice);
+          }else{
+            const legacy=notice as LegacyNotice,{event,...fields}=legacy;
+            registration={...fields,harness:'claude-code',...(event==='SessionEnd'?{endedAt:notice.at}:{})};
+          }
+        }catch(error){if(blockedNotices.get(sessionKey)===name)blockedNotices.delete(sessionKey);hold(file,error);continue;}
+        try{
+          if('kind' in notice&&notice.record.harness!=='claude-code'){
+            await spoolDaemonEvent(config,notice.record);queueDirty=true;wakeUpload();
+          }
+          if(registration){
+            const previous=active.get(key(registration))?.registration;
+            if(!previous||previous.at<=registration.at){enroll(registration);persist(registration);}
+          }
+          if('kind' in notice){const child=daemonSubagent(config,notice);if(child){enroll(child);persist(child);}}
+          remove(file);if(blockedNotices.get(sessionKey)===name)blockedNotices.delete(sessionKey);
+        }catch(error){recordError(error);failed=true;if(sessionKey)blockedNotices.set(sessionKey,name);}
+        await yieldToOwner();
+      }
+      if(failed){inboxDirty=true;inboxRetryAt=Date.now()+Math.max(100,retryMs);}else inboxRetryAt=0;
     };
     const transcripts=(item:Active)=>{
+      if(item.registration.harness==='antigravity'){addWatch(item,dirname(item.registration.path));return [resolveAntigravityTranscript(item.registration.path)];}
+      if(item.registration.harness!=='claude-code'){addWatch(item,dirname(item.registration.path));return [item.registration.path];}
       const files=[item.registration.path],children=join(dirname(item.registration.path),basename(item.registration.path,'.jsonl'));
       addWatch(item,dirname(item.registration.path));
       if(!existsSync(children)||lstatSync(children).isSymbolicLink())return files;
@@ -122,7 +138,7 @@ export async function runCaptureDaemon({signal,flushMs=10_000,reconcileMs=30_000
       const visit=(dir:string)=>{if(!existsSync(dir)||lstatSync(dir).isSymbolicLink())return;for(const entry of readdirSync(dir,{withFileTypes:true})){if(entry.isSymbolicLink())continue;const path=join(dir,entry.name);if(entry.isDirectory())visit(path);else if(entry.isFile()&&entry.name.endsWith('.jsonl'))files.push(path);}};
       visit(join(children,'subagents'));return files;
     };
-    for(const name of names(join(daemonDir(),'sessions'))){const file=join(daemonDir(),'sessions',name);try{const registration=read<Registration|null>(file,null);if(registration)enroll(registration);}catch(error){hold(file,error);}}
+    for(const name of names(join(daemonDir(),'sessions'))){const file=join(daemonDir(),'sessions',name);try{const registration=read<Registration|null>(file,null);if(registration)enroll({...registration,harness:registration.harness??'claude-code'});}catch(error){hold(file,error);}}
     for(const [path,changed] of [[join(daemonDir(),'inbox'),()=>{inboxDirty=true;startupDirty=true;wakeCapture();wakeStartup();}],[join(captureDir(),'queue'),()=>{queueDirty=true;wakeUpload();wakeCapture();}]] as const){
       const watcher=watch(path,changed);watcher.on('error',stop);rootWatchers.push(watcher);
     }
@@ -140,35 +156,42 @@ export async function runCaptureDaemon({signal,flushMs=10_000,reconcileMs=30_000
         }
         if(paused){paused=false;for(const item of active.values())item.dirty=true;}
         if(config.authPending){try{await refreshCaptureIdentity(config);Object.assign(initial,config);}catch(error){recordError(error);await wait('capture',60_000);continue;}}
-        if(inboxDirty){inbox();await yieldToOwner();}
+        if(inboxDirty&&Date.now()>=inboxRetryAt){await inbox();await yieldToOwner();}
         const now=Date.now(),reconcile=now>=nextReconcile;
         if(reconcile)nextReconcile=now+reconcileMs;
-        let next=active.size?nextReconcile:Infinity;
+        let next=Math.min(active.size?nextReconcile:Infinity,inboxDirty?inboxRetryAt||Date.now():Infinity);
         for(const [id,item] of active){
           if(stopped)break;
           const sessionConfig=current();if(!sessionConfig){stop();break;}
           if(sessionConfig.disabled){await wait('capture',Infinity);break;}
-          if(!sessionConfig.harnesses?.includes('claude-code')||captureExcluded(sessionConfig,item.registration)){
+          if(!sessionConfig.harnesses?.includes(item.registration.harness)||captureExcluded(sessionConfig,item.registration)){
             for(const watcher of item.watchers.values())watcher.close();active.delete(id);remove(join(daemonDir(),'sessions',id+'.json'));continue;
           }
           if(reconcile)item.dirty=true;
+          // Clients with a shared host PID cannot use that PID as a session
+          // lifetime. Retire idle watches; their next native hook re-enrolls the
+          // exact transcript from its existing durable cursor.
+          if(!item.registration.pid&&!item.closingAt){const expires=item.lastActivity+idleMs;if(Date.now()>=expires)item.closingAt=Date.now();else next=Math.min(next,expires);}
           if(!item.dirty&&(!item.closingAt||Date.now()<item.closingAt+settleMs)){if(item.closingAt)next=Math.min(next,item.closingAt+settleMs);continue;}
           if(Date.now()<item.retryAt){next=Math.min(next,item.retryAt);continue;}
           item.dirty=false;counters.sessionChecks++;
           try{
-            if(!alive(item.registration.pid)&&!item.closingAt){item.closingAt=Date.now();item.registration.endedAt=item.closingAt;persist(item.registration);}
+            if(item.registration.pid&&!alive(item.registration.pid)&&!item.closingAt){item.closingAt=Date.now();item.registration.endedAt=item.closingAt;persist(item.registration);}
             let changed=false,incomplete=false;
             for(const path of transcripts(item)){
               const latest=current();
               if(JSON.stringify(read(generationFile,null))!==JSON.stringify(generation)){stop();break;}
-              if(!latest||latest.disabled||!sameBinding(item.registration,latest)||!latest.harnesses?.includes('claude-code')||captureExcluded(latest,item.registration))break;
+              if(!latest||latest.disabled||!sameBinding(item.registration,latest)||!latest.harnesses?.includes(item.registration.harness)||captureExcluded(latest,item.registration))break;
               if(!existsSync(path))continue;
               const st=statSync(path),signature=[st.dev,st.ino,st.size,st.mtimeMs].join(':');
               if(item.signatures.get(path)!==signature){
-                await captureTranscript(latest,'claude-code',path,{session_id:item.registration.sessionId,cwd:item.registration.cwd},false,async()=>{queueDirty=true;wakeUpload();});
+                const harness=item.registration.harness;
+                if(harness==='cursor')await captureCursorNotice(latest,{id:'tail:'+id,at:new Date(item.registration.at).toISOString(),sequence:item.registration.at*1000,harness,event:{...item.registration.hook,conversation_id:item.registration.sessionId,transcript_path:path}},true);
+                else if(readsTranscript(harness))await captureTranscript(latest,harness,path,{...item.registration.hook,session_id:item.registration.sessionId,cwd:item.registration.cwd},false,async()=>{queueDirty=true;wakeUpload();},undefined,{sessionScoped:true,sessionPath:item.registration.path});
+                queueDirty=true;wakeUpload();item.lastActivity=Date.now();
                 item.signatures.set(path,signature);counters.captures++;changed=true;
               }
-              if(item.closingAt){const state=read(join(captureDir(),'state',hash('claude-code'+realpathSync(path))+'.json'),{offset:0});if(state.offset<st.size)incomplete=true;}
+              if(item.closingAt){const state=read(join(captureDir(),'state',(item.registration.harness==='cursor'?'cursor-'+hash(item.registration.sessionId):hash(item.registration.harness+realpathSync(path)))+'.json'),{offset:0});if(state.offset<st.size)incomplete=true;}
             }
             if(changed&&item.closingAt)item.closingAt=Date.now();
             if(item.closingAt){
@@ -178,7 +201,7 @@ export async function runCaptureDaemon({signal,flushMs=10_000,reconcileMs=30_000
           }catch(error){recordError(error);item.dirty=true;item.retryAt=Date.now()+reconcileMs;next=Math.min(next,item.retryAt);}
         }
         if(!captureDaemonHarnesses(config).length&&!config.backgroundStartup&&!queued()){stop();break;}
-        if(inboxDirty||[...active.values()].some(item=>item.dirty&&Date.now()>=item.retryAt))continue;
+        if(inboxDirty&&Date.now()>=inboxRetryAt||[...active.values()].some(item=>item.dirty&&Date.now()>=item.retryAt))continue;
         await wait('capture',next-Date.now());
       }
     };

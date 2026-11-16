@@ -43,7 +43,7 @@ export function pluginHookFiles(client:PluginClient,binding:PluginHookBinding,pl
  const capture=(event:string)=>{
   const daemon=client==='claude-code';
   const managed=client==='codex'&&event!=='SessionEnd';
-  return {type:'command',...invocation,command:invocation.command+' '+args(['collect','hook',...(managed?['--managed']:[]),'--harness',client,'--api',api,...(client==='antigravity'?['--event',event]:[])]),
+  return {type:'command',...invocation,command:invocation.command+' '+args(['collect','hook','--harness',client,'--api',api,...(client==='antigravity'?['--event',event]:[])]),
    timeout:daemon?10:managed?120:client==='codex'?3:30,statusMessage:captureMarker,...(managed||daemon?{async:true}:{})};
  };
  if(client==='cursor'){

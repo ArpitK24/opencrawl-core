@@ -18,6 +18,7 @@ import {reconcileHookEntries, reconcileHookGroups} from '../hook-config.ts';
 import {installCaptureDaemon,uninstallCaptureDaemon} from './daemon-service.ts';
 import {defaultClaudeDesktopSessionsRoot} from './desktop-history.ts';
 import {establishForwardBoundaries} from '../setup/watermarks.ts';
+import {establishCursorForwardBoundaries} from '../setup/cursor-watermarks.ts';
 const marker='OpenCrawl session capture';
 const quote=(s:string)=>process.platform==='win32'?'"'+s.replace(/"/g,'""')+'"':"'"+s.replace(/'/g,"'\\''")+"'";
 function readJson(file:string){return existsSync(file)?JSON.parse(readFileSync(file,'utf8')):{};}
@@ -228,14 +229,19 @@ export async function installCapture(api:string,{background=false,deferAuth=fals
     ...(previous?removed.map(h=>hookFile(previous,h)):[])]:[])];
   const originals=new Map(affected.map(path=>[path,existsSync(path)?readFileSync(path):null]));
   try {
-  atomicJson(join(captureDir(),'config.json'),config);
+  // The worker does not take the configuration lock. Its old consent remains
+  // authoritative until every newly selected source has a durable boundary.
+  const needsBoundary=(h:Harness)=>!previous||previous.disabled||changed||previous.authPending||!(previous.harnesses??[]).includes(h)||previous.roots[h]!==config.roots[h];
+  if(enrolled.includes('cursor')&&needsBoundary('cursor'))await establishCursorForwardBoundaries(config,previous);
+  if(selectionMode==='replace')establishForwardBoundaries(config,enrolled.filter(h=>readsTranscript(h)&&needsBoundary(h)) as TranscriptHarness[]);
   if(receiverToken)atomicJson(join(captureDir(),'receiver-token.json'),{api,token:receiverToken});
   if(hookOwnership==='global'){
   if(previous)for(const h of removed){const file=hookFile(previous,h);if(!existsSync(file))continue;if(h==='claude-code'||h==='codex')modifyHooks(file,[],null);else if(h==='antigravity')modifyAntigravityHooks(file,null);else modifyCursorFormatHooks(file,null,h);}
   configureHooks(config,enrolled);
   if(harnesses.includes('codex'))enableCodex(config.roots.codex);
   }
-  if(selectionMode==='replace')establishForwardBoundaries(config,enrolled.filter(h=>readsTranscript(h)&&(previous?.disabled||!(previous?.harnesses??[]).includes(h))) as TranscriptHarness[]);
+  if(changed&&['queue','notices','daemon/inbox','daemon/sessions'].some(dir=>existsSync(join(captureDir(),dir))&&readdirSync(join(captureDir(),dir)).length))throw new CliError('CAPTURE_PENDING_DESTINATION','Capture arrived for the previous destination during enrollment. Its pending bytes are preserved; retry after resolving them.');
+  atomicJson(join(captureDir(),'config.json'),config);
   } catch(error) {
     for(const [path,bytes] of originals) {
       if(bytes===null){try{unlinkSync(path);}catch{}}

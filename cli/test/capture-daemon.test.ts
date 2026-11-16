@@ -9,7 +9,9 @@ import {captureDir,readCaptureConfig,captureTranscript} from '../src/capture/run
 import {purgeLocalCapture} from '../src/capture/controls.ts';
 import {hash} from '../src/capture/parse.ts';
 import {randomUUID} from 'node:crypto';
-import {atomicJson} from '../src/session.ts';
+import {atomicJson,withSessionLock} from '../src/session.ts';
+import {recordNativeDaemonHook} from '../src/capture/daemon-handoff.ts';
+import {Database} from 'bun:sqlite';
 import {statePath,scopeKey} from '../src/setup/state.ts';
 import {processSessionStartTask,startupObservation} from '../src/session-start-task.ts';
 
@@ -32,7 +34,7 @@ async function fixture(run:(f:any)=>Promise<void>){
   let fail=false,loseAck=false,hold=false,requests=0;const held:Array<()=>void>=[];
   const server=createServer(async(req,res)=>{
     requests++;
-    if(req.url==='/api/sessions/identity'){res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({data:{principal:{tenantId:'fixture',userId:'fixture'}}}));return;}
+    if(req.url==='/api/sessions/identity'){res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({data:{principal:{tenantId:'fixture',userId:'fixture'},capabilities:{harnesses:['cursor','antigravity']}}}));return;}
     const chunks=[];for await(const chunk of req)chunks.push(chunk);const raw=Buffer.concat(chunks).toString();
     if(req.url==='/api/sessions/batches'){
       raws.push(raw);
@@ -68,6 +70,95 @@ async function fixture(run:(f:any)=>Promise<void>){
   }
 }
 import {dirname} from 'node:path';
+
+function nativeConfig(f:any,harness:'cursor'|'antigravity'|'codex'|'grok-bot'){
+  const config=readCaptureConfig()!;
+  config.harnesses=[harness];config.roots[harness]=join(f.dir,harness);
+  mkdirSync(config.roots[harness]!,{recursive:true});
+  writeFileSync(join(captureDir(),'config.json'),JSON.stringify(config));
+  return config;
+}
+
+isolatedTest('Cursor daemon preserves native tools and late transcript messages with no historical scan',async()=>fixture(async f=>{
+  const config=nativeConfig(f,'cursor'),path=join(config.roots.cursor!,'projects','project','agent-transcripts','cursor-session','cursor-session.jsonl');
+  mkdirSync(dirname(path),{recursive:true});
+  const line=(role:string,text:string)=>JSON.stringify({role,message:{content:[{type:'text',text}]}})+'\n';
+  writeFileSync(path,line('user','scoped cursor prompt'));
+  const event=(name:string,rest={})=>recordNativeDaemonHook('cursor',{conversation_id:'cursor-session',workspace_roots:[f.dir],transcript_path:path,hook_event_name:name,...rest});
+  event('beforeSubmitPrompt',{prompt:'scoped cursor prompt'});event('postToolUse',{tool_name:'read_file',tool_use_id:'tool-1',tool_input:{path:'fixture.txt'},tool_output:'native tool result'});
+  await f.start();await until(()=>f.batches.some((batch:any)=>batch.events.some((event:any)=>event.kind==='tool_result')));
+  appendFileSync(path,line('assistant','late cursor answer'));event('stop');
+  await until(()=>JSON.stringify(f.batches).includes('late cursor answer'));await until(()=>readdirSync(join(daemonDir(),'sessions')).length===0);
+  const events=f.batches.flatMap((batch:any)=>batch.events);
+  expect(events.filter((event:any)=>event.kind==='message'&&event.data.role==='user')).toHaveLength(1);
+  expect(events.find((event:any)=>event.kind==='tool_result').data).toMatchObject({call_id:'tool-1',output:'native tool result'});
+  expect(existsSync(join(captureDir(),'sources'))?readdirSync(join(captureDir(),'sources')):[]).toHaveLength(0);
+}));
+
+isolatedTest('Antigravity watches the native full transcript and retains live tool verification evidence',async()=>fixture(async f=>{
+  const config=nativeConfig(f,'antigravity'),path=join(config.roots.antigravity!,'antigravity-cli','brain','agy-session','.system_generated','logs','transcript.jsonl');
+  mkdirSync(dirname(path),{recursive:true});
+  const user=JSON.stringify({step_index:0,type:'USER_INPUT',source:'USER_EXPLICIT',status:'DONE',content:'<USER_REQUEST>\nAGY prompt\n</USER_REQUEST>'})+'\n';
+  writeFileSync(path,user);
+  const event=(name:string,rest={})=>recordNativeDaemonHook('antigravity',{conversationId:'agy-session',workspacePaths:[f.dir],transcriptPath:path,hookEventName:name,...rest});
+  event('SessionStart');await f.start({settleMs:150});await until(()=>f.batches.length>0);
+  event('PostToolUse',{stepIdx:1,toolCall:{name:'mcp_opencrawl_search_v1',args:{query:'fixture'}}});event('Stop',{fullyIdle:true});
+  writeFileSync(join(dirname(path),'transcript_full.jsonl'),user+JSON.stringify({step_index:2,type:'PLANNER_RESPONSE',source:'MODEL',status:'DONE',content:'full AGY answer'})+'\n');
+  await until(()=>JSON.stringify(f.batches).includes('full AGY answer'));await until(()=>readdirSync(join(daemonDir(),'sessions')).length===0);
+  const tools=f.batches.filter((batch:any)=>batch.events.some((event:any)=>event.kind==='hook'&&event.data.hookEventName==='PostToolUse'));
+  expect(tools.length).toBeGreaterThan(0);expect(tools.every((batch:any)=>batch.captureMode==='live')).toBe(true);
+}));
+
+isolatedTest('Codex resolves only indexed native session and child identities without a transcript catalog',async()=>fixture(async f=>{
+  const config=nativeConfig(f,'codex'),root=config.roots.codex,db=new Database(join(root,'state_5.sqlite'));
+  db.exec('CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, title TEXT, name TEXT, updated_at INTEGER, source TEXT)');
+  const source=(id:string,parent?:string)=>{
+    const path=join(root,'sessions','2026','11','16','rollout-2026-11-16-'+id+'.jsonl');mkdirSync(dirname(path),{recursive:true});
+    writeFileSync(path,JSON.stringify({type:'session_meta',payload:{id,cwd:f.dir,source:parent?{subagent:{thread_spawn:{parent_thread_id:parent}}}:'cli'}})+'\n'+JSON.stringify({type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'native '+id}]}})+'\n');
+    db.query('INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?)').run(id,path,'automatic','native title '+id,1794800000,parent?JSON.stringify({subagent:{thread_spawn:{parent_thread_id:parent}}}):'cli');return path;
+  };
+  source('parent');source('child','parent');source('unrelated');db.close();
+  recordNativeDaemonHook('codex',{session_id:'parent',hook_event_name:'UserPromptSubmit',transcript_path:null,cwd:f.dir});
+  recordNativeDaemonHook('codex',{session_id:'parent',hook_event_name:'SubagentStart',agent_id:'child',transcript_path:null,cwd:f.dir});
+  await f.start();await until(()=>JSON.stringify(f.batches).includes('native child')&&JSON.stringify(f.batches).includes('native title parent'));
+  expect(f.batches.every((batch:any)=>['parent','child'].includes(batch.sessionId))).toBe(true);
+  expect(readdirSync(join(daemonDir(),'sessions'))).toHaveLength(2);
+  expect(existsSync(join(captureDir(),'sources'))?readdirSync(join(captureDir(),'sources')):[]).toHaveLength(0);
+}));
+
+isolatedTest('native synchronous clients return after local handoff while config and upload are blocked',async()=>fixture(async f=>{
+  nativeConfig(f,'cursor');f.hold=true;
+  recordNativeDaemonHook('cursor',{conversation_id:'native-fast',hook_event_name:'beforeSubmitPrompt',prompt:'initial'});
+  await f.start();await until(()=>f.raws.length>0);
+  await withSessionLock('capture:configuration',async()=>{
+    const start=performance.now(),child=Bun.spawn([process.execPath,resolve(import.meta.dir,'../src/cli.ts'),'collect','hook','--harness','cursor'],{env:process.env,stdin:new Blob([JSON.stringify({conversation_id:'native-fast',hook_event_name:'beforeSubmitPrompt',prompt:'continues while upload blocked'})]),stdout:'pipe',stderr:'pipe'});
+    const [exit,stdout,stderr]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]);
+    expect(exit).toBe(0);expect(stderr).toBe('');expect(JSON.parse(stdout)).toEqual({continue:true});expect(performance.now()-start).toBeLessThan(1000);
+  });
+  f.hold=false;await until(()=>JSON.stringify(f.batches).includes('continues while upload blocked'));
+}));
+
+isolatedTest('one damaged Cursor session cannot monopolize a backlog and repaired events retain order',async()=>fixture(async f=>{
+  const config=nativeConfig(f,'cursor'),path=join(config.roots.cursor!,'projects','project','agent-transcripts','broken','broken.jsonl');
+  mkdirSync(dirname(path),{recursive:true});writeFileSync(path,'broken JSON\n');
+  for(let i=0;i<70;i++)recordNativeDaemonHook('cursor',{conversation_id:'broken',transcript_path:path,hook_event_name:'afterAgentResponse',text:'repair event '+i});
+  recordNativeDaemonHook('cursor',{conversation_id:'healthy',hook_event_name:'afterAgentResponse',text:'healthy session continues'});
+  await f.start();await until(()=>JSON.stringify(f.batches).includes('healthy session continues'));
+  expect(f.batches.some((batch:any)=>batch.sessionId==='broken')).toBe(false);
+  writeFileSync(path,'');await until(()=>f.batches.flatMap((batch:any)=>batch.events).filter((event:any)=>event.kind==='message'&&event.data.content[0].text.startsWith('repair event ')).length===70);
+  const events=f.batches.flatMap((batch:any)=>batch.events).filter((event:any)=>event.kind==='message'&&event.data.content[0].text.startsWith('repair event ')).sort((a:any,b:any)=>a.sequence-b.sequence);
+  expect(events.map((event:any)=>event.data.content[0].text)).toEqual(Array.from({length:70},(_,i)=>'repair event '+i));
+}));
+
+isolatedTest('idle native session watches retire and the next hook resumes the same byte cursor',async()=>fixture(async f=>{
+  const config=nativeConfig(f,'cursor'),path=join(config.roots.cursor!,'projects','project','agent-transcripts','idle','idle.jsonl');
+  mkdirSync(dirname(path),{recursive:true});
+  const line=(text:string)=>JSON.stringify({role:'assistant',message:{content:[{type:'text',text}]}})+'\n';writeFileSync(path,line('before idle'));
+  const event=()=>recordNativeDaemonHook('cursor',{conversation_id:'idle',transcript_path:path,hook_event_name:'sessionStart'});
+  event();await f.start({idleMs:100});await until(()=>JSON.stringify(f.batches).includes('before idle'));await until(()=>readdirSync(join(daemonDir(),'sessions')).length===0);
+  appendFileSync(path,line('after idle'));event();await until(()=>JSON.stringify(f.batches).includes('after idle'));
+  expect(f.batches.flatMap((batch:any)=>batch.events).filter((event:any)=>event.kind==='message'&&event.data.content[0].text==='before idle')).toHaveLength(1);
+}));
 
 isolatedTest('Claude installs two async capture hooks and preserves unrelated hooks',async()=>fixture(async f=>{
   const hooks=JSON.parse(readFileSync(join(f.dir,'claude','settings.json'),'utf8')).hooks;
@@ -374,4 +465,205 @@ isolatedTest('revoked startup tasks are held so a later selected client can regi
   await until(()=>!existsSync(valid.path));await f.stop();
   for(const task of revoked)expect(readFileSync(task.path+'.held','utf8')).toBe(task.bytes);
   expect(paths).toEqual(['/api/cli/me','/api/board/bootstrap']);expect(f.raws).toHaveLength(0);
+}));
+
+
+isolatedTest('Cursor forward enrollment skips prior prefixes and off intervals while new files keep their first prompt',async()=>fixture(async f=>{
+  const root=join(f.dir,'cursor');process.env.CURSOR_CONFIG_DIR=root;
+  const path=join(root,'projects','project','agent-transcripts','consent','consent.jsonl');mkdirSync(dirname(path),{recursive:true});
+  const line=(text:string)=>JSON.stringify({role:'user',message:{content:[{type:'text',text}]}})+'\n';
+  writeFileSync(path,line('PRIVATE OLD PREFIX'));
+  const select=async(harnesses:('cursor')[])=>installCapture(f.api,{home:f.dir,command:[],harnesses,historyHarnesses:[],selectionMode:'replace',hookOwnership:'plugin',daemon:true,daemonService:false,expectedOwner:readCaptureConfig()!.owner,expectedConfig:readCaptureConfig()});
+  await select(['cursor']);expect(readCaptureConfig()?.historyHarnesses).toEqual([]);
+  const event=(file=path,id='consent')=>recordNativeDaemonHook('cursor',{conversation_id:id,transcript_path:file,hook_event_name:'sessionStart'});
+  appendFileSync(path,line('FIRST APPROVED APPEND'));event();await f.start();await until(()=>JSON.stringify(f.batches).includes('FIRST APPROVED APPEND'));await f.stop();
+  expect(JSON.stringify(f.batches)).not.toContain('PRIVATE OLD PREFIX');
+  await select([]);appendFileSync(path,line('PRIVATE OFF INTERVAL'));await select(['cursor']);
+  appendFileSync(path,line('AFTER REOPTIN'));event();
+  const fresh=join(root,'projects','project','agent-transcripts','fresh','fresh.jsonl');mkdirSync(dirname(fresh),{recursive:true});writeFileSync(fresh,line('FRESH FIRST PROMPT'));event(fresh,'fresh');
+  await f.start();await until(()=>JSON.stringify(f.batches).includes('AFTER REOPTIN')&&JSON.stringify(f.batches).includes('FRESH FIRST PROMPT'));await f.stop();
+  expect(JSON.stringify(f.batches)).not.toContain('PRIVATE OLD PREFIX');expect(JSON.stringify(f.batches)).not.toContain('PRIVATE OFF INTERVAL');
+  expect(readCaptureConfig()).toMatchObject({harnesses:['cursor'],historyHarnesses:[]});
+  expect(readFileSync(join(captureDir(),'state','cursor-'+hash('consent')+'.json'),'utf8')).not.toContain('PRIVATE');
+}));
+
+for(const harness of ['codex','antigravity'] as const)isolatedTest(harness+' daemon respects explicit forward prefix and captures a new file first prompt',async()=>fixture(async f=>{
+  const root=join(f.dir,harness);process.env[harness==='codex'?'CODEX_HOME':'ANTIGRAVITY_HOME']=root;
+  const file=(id:string)=>harness==='codex'?join(root,'sessions','2026','11','16','rollout-2026-11-16-'+id+'.jsonl'):join(root,'antigravity-cli','brain',id,'.system_generated','logs','transcript.jsonl');
+  const content=(text:string,index:number)=>JSON.stringify(harness==='codex'?{type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text}]}}:{step_index:index,type:'USER_INPUT',source:'USER_EXPLICIT',status:'DONE',content:'<USER_REQUEST>\n'+text+'\n</USER_REQUEST>'})+'\n';
+  const create=(id:string,text:string)=>{const path=file(id);mkdirSync(dirname(path),{recursive:true});writeFileSync(path,(harness==='codex'?JSON.stringify({type:'session_meta',payload:{id,source:'cli'}})+'\n':'')+content(text,0));return path;};
+  const old=create('existing','PRIVATE PREFIX '+harness);
+  await installCapture(f.api,{home:f.dir,command:[],harnesses:[harness],historyHarnesses:[],selectionMode:'replace',hookOwnership:'plugin',daemon:true,daemonService:false,expectedOwner:readCaptureConfig()!.owner,expectedConfig:readCaptureConfig()});
+  appendFileSync(old,content('APPROVED APPEND '+harness,1));const fresh=create('fresh','FIRST PROMPT '+harness);
+  for(const [id,path]of [['existing',old],['fresh',fresh]])recordNativeDaemonHook(harness,harness==='codex'?{session_id:id,transcript_path:path,hook_event_name:'SessionStart'}:{conversationId:id,transcriptPath:path,hookEventName:'SessionStart'});
+  await f.start();await until(()=>JSON.stringify(f.batches).includes('APPROVED APPEND '+harness)&&JSON.stringify(f.batches).includes('FIRST PROMPT '+harness));await f.stop();
+  expect(JSON.stringify(f.batches)).not.toContain('PRIVATE PREFIX '+harness);expect(readCaptureConfig()?.historyHarnesses).toEqual([]);
+}));
+
+for(const harness of ['claude-code','codex','antigravity'] as const)isolatedTest(harness+' daemon rejects in-root redirects to another native session before reading',async()=>fixture(async f=>{
+  const config=harness==='claude-code'?readCaptureConfig()!:nativeConfig(f,harness),root=config.roots[harness]!;
+  const file=(id:string)=>harness==='claude-code'?join(root,'projects','fixture',id+'.jsonl'):harness==='codex'?join(root,'sessions','2026','11','16','rollout-'+id+'.jsonl'):join(root,'antigravity-cli','brain',id,'.system_generated','logs','transcript.jsonl');
+  const target=file('other'),source=file('session');mkdirSync(dirname(target),{recursive:true});mkdirSync(dirname(source),{recursive:true});
+  // Deliberately invalid JSON proves rejection occurs before any native parser.
+  writeFileSync(target,'OTHER SESSION MUST NOT BE PARSED');if(existsSync(source))rmSync(source);symlinkSync(target,source);
+  await expect(captureTranscript(config,harness,source,{session_id:'session'},false,undefined,undefined,{sessionScoped:true,sessionPath:source})).rejects.toMatchObject({code:'CAPTURE_SESSION_PATH_REJECTED'});
+  expect(f.raws).toHaveLength(0);expect(readdirSync(join(captureDir(),'queue'))).toEqual([]);expect(readdirSync(join(captureDir(),'state'))).toEqual([]);
+}));
+
+for(const harness of ['claude-code','codex'] as const)isolatedTest(harness+' daemon refuses a mismatched native header without reassigning captured ownership',async()=>fixture(async f=>{
+  const config=harness==='claude-code'?readCaptureConfig()!:nativeConfig(f,harness),path=harness==='claude-code'?f.path:join(config.roots.codex!,'sessions','2026','11','16','rollout-session.jsonl');mkdirSync(dirname(path),{recursive:true});
+  const content=harness==='claude-code'?JSON.stringify({type:'user',uuid:'wrong-session',sessionId:'other',message:{role:'user',content:'must not capture'}})+'\n':JSON.stringify({type:'session_meta',payload:{id:'other',source:'cli'}})+'\n'+JSON.stringify({type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'must not capture'}]}})+'\n';
+  writeFileSync(path,content);
+  await expect(captureTranscript(config,harness,path,{session_id:'session'},false,undefined,undefined,{sessionScoped:true,sessionPath:path})).rejects.toMatchObject({code:'CAPTURE_SESSION_MISMATCH'});
+  expect(readdirSync(join(captureDir(),'queue'))).toEqual([]);expect(readdirSync(join(captureDir(),'state'))).toEqual([]);
+}));
+
+isolatedTest('Claude daemon child identity stays bound to its registered parent subtree',async()=>fixture(async f=>{
+  const config=readCaptureConfig()!,child=join(f.path.slice(0,-6),'subagents','agent-child.jsonl');mkdirSync(dirname(child),{recursive:true});
+  writeFileSync(child,JSON.stringify({type:'user',uuid:'mismatch',sessionId:'session',agentId:'other',message:{role:'user',content:'must not capture'}})+'\n');
+  await expect(captureTranscript(config,'claude-code',child,{session_id:'session'},false,undefined,undefined,{sessionScoped:true,sessionPath:f.path})).rejects.toMatchObject({code:'CAPTURE_SESSION_MISMATCH'});
+  expect(readdirSync(join(captureDir(),'queue'))).toEqual([]);
+  writeFileSync(child,f.record('legitimate-child','child'));
+  const result=await captureTranscript(config,'claude-code',child,{session_id:'session'},false,undefined,undefined,{sessionScoped:true,sessionPath:f.path});
+  expect(result).toMatchObject({sessionId:'session:child',parentSessionId:'session'});
+  expect(readdirSync(join(captureDir(),'queue')).map(name=>JSON.parse(readFileSync(join(captureDir(),'queue',name),'utf8'))).flatMap(batch=>batch.events).map(event=>event.nativeId)).toEqual(['legitimate-child']);
+}));
+
+isolatedTest('Codex daemon preserves native fork parent headers after validating the leading child identity',async()=>fixture(async f=>{
+  const config=nativeConfig(f,'codex'),path=join(config.roots.codex!,'sessions','2026','11','16','rollout-child.jsonl');mkdirSync(dirname(path),{recursive:true});
+  const header=(id:string,parent?:string)=>JSON.stringify({type:'session_meta',payload:{id,forked_from_id:parent,source:'cli'}})+'\n';
+  writeFileSync(path,header('child','parent')+header('parent')+JSON.stringify({type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'child message'}]}})+'\n');
+  const result=await captureTranscript(config,'codex',path,{session_id:'child'},false,undefined,undefined,{sessionScoped:true,sessionPath:path});
+  expect(result).toMatchObject({sessionId:'child',parentSessionId:'parent'});
+}));
+
+isolatedTest('Cursor forward boundary skips rewritten old prefixes and incomplete pre-consent records',async()=>fixture(async f=>{
+  const root=join(f.dir,'cursor');process.env.CURSOR_CONFIG_DIR=root;
+  const path=join(root,'projects','project','agent-transcripts','rewrite','rewrite.jsonl');mkdirSync(dirname(path),{recursive:true});
+  const line=(text:string)=>JSON.stringify({role:'user',message:{content:[{type:'text',text}]}})+'\n';
+  const partial=line('PRIVATE PARTIAL PREFIX');writeFileSync(path,partial.slice(0,-10));
+  await installCapture(f.api,{home:f.dir,command:[],harnesses:['cursor'],historyHarnesses:[],selectionMode:'replace',hookOwnership:'plugin',daemon:true,daemonService:false});
+  const event=()=>recordNativeDaemonHook('cursor',{conversation_id:'rewrite',transcript_path:path,hook_event_name:'sessionStart'});
+  appendFileSync(path,partial.slice(-10)+line('APPROVED AFTER PARTIAL'));event();await f.start();await until(()=>JSON.stringify(f.batches).includes('APPROVED AFTER PARTIAL'));await f.stop();
+  expect(JSON.stringify(f.batches)).not.toContain('PRIVATE PARTIAL PREFIX');
+  // Native rotation/truncation makes the unknown prefix ambiguous. Rebase at
+  // its current end instead of converting unapproved earlier content.
+  rmSync(path);writeFileSync(path,line('PRIVATE REPLACEMENT'));event();await f.start();await until(()=>existsSync(join(captureDir(),'last-error.json')));await f.stop();
+  expect(JSON.stringify(f.batches)).not.toContain('PRIVATE REPLACEMENT');
+  appendFileSync(path,line('APPROVED AFTER REBASE'));event();await f.start();await until(()=>JSON.stringify(f.batches).includes('APPROVED AFTER REBASE'));await f.stop();
+  writeFileSync(path,line('PRIVATE TRUNCATION'));event();await f.start();await sleep(150);await f.stop();
+  expect(JSON.stringify(f.batches)).not.toContain('PRIVATE TRUNCATION');
+  expect(readCaptureConfig()?.historyHarnesses).toEqual([]);
+}));
+
+isolatedTest('live title enrichment cannot bypass a forward revocation during recording',async()=>fixture(async f=>{
+  const config=nativeConfig(f,'codex'),root=config.roots.codex,path=join(root,'sessions','rollout-title-session.jsonl');mkdirSync(dirname(path),{recursive:true});
+  writeFileSync(path,JSON.stringify({type:'session_meta',payload:{id:'title-session',cwd:f.dir,source:'cli'}})+'\n'+JSON.stringify({type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'approved earlier bytes'}]}})+'\n');
+  const db=new Database(join(root,'state_5.sqlite'));db.exec('CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, title TEXT, name TEXT, updated_at INTEGER, source TEXT)');
+  db.query('INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?)').run('title-session',path,'revoked later title',null,1794800000,'cli');db.close();
+  await expect(captureTranscript(config,'codex',path,{session_id:'title-session'},false,async()=>{
+    writeFileSync(join(captureDir(),'config.json'),JSON.stringify({...config,harnesses:[]}));
+  },undefined,{sessionScoped:true})).rejects.toMatchObject({code:'CAPTURE_CONSENT_CHANGED'});
+  const queue=readdirSync(join(captureDir(),'queue')).map(name=>JSON.parse(readFileSync(join(captureDir(),'queue',name),'utf8')));
+  expect(queue.flatMap(batch=>batch.events).some(event=>event.kind==='session_title')).toBe(false);
+}));
+
+
+isolatedTest('Antigravity daemon accepts an exact full-only transcript without its nominal compact file',async()=>fixture(async f=>{
+  const config=nativeConfig(f,'antigravity'),path=join(config.roots.antigravity!,'antigravity-cli','brain','full-only','.system_generated','logs','transcript.jsonl');mkdirSync(dirname(path),{recursive:true});
+  writeFileSync(join(dirname(path),'transcript_full.jsonl'),JSON.stringify({step_index:0,type:'USER_INPUT',source:'USER_EXPLICIT',status:'DONE',content:'<USER_REQUEST>\nfull-only prompt\n</USER_REQUEST>'})+'\n');
+  recordNativeDaemonHook('antigravity',{conversationId:'full-only',transcriptPath:path,hookEventName:'SessionStart'});
+  await f.start();await until(()=>JSON.stringify(f.batches).includes('full-only prompt'));await f.stop();
+  expect(f.batches.every((batch:any)=>batch.sessionId==='full-only')).toBe(true);
+}));
+
+isolatedTest('native hook main entry skips update migration auth and service startup while daemon is offline',async()=>fixture(async f=>{
+  nativeConfig(f,'cursor');const flag=join(f.dir,'forbidden-side-effect'),configBefore=readFileSync(join(captureDir(),'config.json'),'utf8'),requests=f.requests;
+  const module=(name:string)=>JSON.stringify(resolve(import.meta.dir,'../src/'+name));
+  const code=`import {mock} from 'bun:test';import {writeFileSync} from 'node:fs';
+const forbidden=()=>{writeFileSync(${JSON.stringify(flag)},'unexpected');throw Error('unavailable in native hook');};
+import * as distribution from ${module('distribution.ts')};
+mock.module(${module('distribution.ts')},()=>({...distribution,compiled:()=>true,findLegacyLaunchers:forbidden,migrateLegacyLauncher:forbidden}));
+import * as update from ${module('update.ts')};mock.module(${module('update.ts')},()=>({...update,scheduleCliUpdate:forbidden}));
+import * as session from ${module('session.ts')};mock.module(${module('session.ts')},()=>({...session,accessToken:forbidden}));
+import * as service from ${module('capture/daemon-service.ts')};mock.module(${module('capture/daemon-service.ts')},()=>({...service,ensureCaptureDaemon:forbidden,installCaptureDaemon:forbidden}));
+globalThis.fetch=forbidden;delete process.env.OPENCRAWL_NO_UPDATE;
+const {main}=await import(${module('cli.ts')});await main(['collect','hook','--harness','cursor','--managed']);`;
+  await withSessionLock('capture:configuration',async()=>{
+    const child=Bun.spawn([process.execPath,'-e',code],{env:process.env,stdin:new Blob([JSON.stringify({conversation_id:'offline-fast',hook_event_name:'beforeSubmitPrompt',prompt:'durable while offline'})]),stdout:'pipe',stderr:'pipe'});
+    const [exit,stdout,stderr]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]);
+    expect(exit).toBe(0);expect(stderr).toBe('');expect(JSON.parse(stdout)).toEqual({continue:true});
+  });
+  expect(existsSync(flag)).toBe(false);expect(f.requests).toBe(requests);expect(readFileSync(join(captureDir(),'config.json'),'utf8')).toBe(configBefore);
+  expect(existsSync(join(daemonDir(),'status.json'))).toBe(false);
+  const notices=readdirSync(join(daemonDir(),'inbox')).map(name=>JSON.parse(readFileSync(join(daemonDir(),'inbox',name),'utf8')));
+  expect(notices).toHaveLength(1);expect(notices[0]).toMatchObject({api:f.api,installationId:readCaptureConfig()!.installationId,owner:readCaptureConfig()!.owner,record:{harness:'cursor',event:{prompt:'durable while offline'}}});
+}));
+
+isolatedTest('oversized Cursor tools become bounded evidence without fabricating a call or result',async()=>fixture(async f=>{
+  nativeConfig(f,'cursor');expect(()=>recordNativeDaemonHook('cursor',{conversation_id:'large-metadata',hook_event_name:'postToolUse',tool_name:'x'.repeat(8*1024*1024)})).toThrow('Native hook metadata exceeds');
+  recordNativeDaemonHook('cursor',{conversation_id:'large',hook_event_name:'postToolUse',tool_name:'mcp_verify',tool_use_id:'native-large',tool_input:{payload:'x'.repeat(8*1024*1024)},tool_output:'must not synthesize'});
+  const files=readdirSync(join(daemonDir(),'inbox'));expect(files).toHaveLength(1);expect(readFileSync(join(daemonDir(),'inbox',files[0]!)).length).toBeLessThan(4096);
+  await f.start();await until(()=>f.batches.length>0);await f.stop();
+  const events=f.batches.flatMap((batch:any)=>batch.events);expect(events).toHaveLength(1);expect(events[0]).toMatchObject({kind:'hook',data:{captureStatus:'too_large',tool_use_id:'native-large'}});
+}));
+for(const harness of ['codex','antigravity'] as const)isolatedTest(harness+' oversized hook leaves the native source intact and reports a local error',async()=>fixture(async f=>{
+  const config=nativeConfig(f,harness),path=harness==='codex'?join(config.roots.codex!,'sessions','rollout-large.jsonl'):join(config.roots.antigravity!,'antigravity-cli','brain','large','.system_generated','logs','transcript.jsonl');mkdirSync(dirname(path),{recursive:true});writeFileSync(path,'native source retained');
+  const before=readFileSync(path),requests=f.requests;
+  const event=harness==='codex'?{session_id:'large',transcript_path:path,hook_event_name:'PostToolUse',tool_input:'x'.repeat(8*1024*1024)}:{conversationId:'large',transcriptPath:path,hookEventName:'PostToolUse',toolCall:{args:'x'.repeat(8*1024*1024)}};
+  const child=Bun.spawn([process.execPath,resolve(import.meta.dir,'../src/cli.ts'),'collect','hook','--harness',harness],{env:process.env,stdin:new Blob([JSON.stringify(event)]),stdout:'pipe',stderr:'pipe'});
+  const [exit,,stderr]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]);expect(exit).toBe(0);expect(stderr).toBe('');
+  expect(JSON.parse(readFileSync(join(captureDir(),'last-error.json'),'utf8'))).toMatchObject({code:'CAPTURE_HOOK_TOO_LARGE'});
+  expect(existsSync(join(daemonDir(),'inbox'))?readdirSync(join(daemonDir(),'inbox')):[]).toEqual([]);expect(f.requests).toBe(requests);expect(readFileSync(path)).toEqual(before);
+}));
+
+isolatedTest('Cursor consent stays unpublished until every existing session boundary is durable',async()=>fixture(async f=>{
+  const root=join(f.dir,'cursor');process.env.CURSOR_CONFIG_DIR=root;
+  const file=(id:string)=>join(root,'projects','project','agent-transcripts',id,id+'.jsonl'),line=(text:string)=>JSON.stringify({role:'user',message:{content:[{type:'text',text}]}})+'\n';
+  for(const id of ['a-first','z-later']){mkdirSync(dirname(file(id)),{recursive:true});writeFileSync(file(id),line('PRIVATE PREFIX '+id));}
+  // Keep the existing Claude worker live while enrollment blocks on a later
+  // Cursor session. Its hooks must still see the previous Cursor opt-out.
+  await f.start();let installing!:Promise<unknown>;
+  await withSessionLock('capture:cursor:z-later',async()=>{
+    installing=installCapture(f.api,{home:f.dir,command:[],harnesses:['claude-code','cursor'],historyHarnesses:[],selectionMode:'replace',hookOwnership:'plugin',daemon:true,daemonService:false});
+    await until(()=>existsSync(join(captureDir(),'state','cursor-'+hash('a-first')+'.json')));
+    expect(readCaptureConfig()?.harnesses).toEqual(['claude-code']);
+    expect(recordNativeDaemonHook('cursor',{conversation_id:'z-later',transcript_path:file('z-later'),hook_event_name:'sessionStart'})).toBe(false);
+    f.event();await until(()=>readdirSync(join(captureDir(),'queue')).some(name=>JSON.parse(readFileSync(join(captureDir(),'queue',name),'utf8')).harness==='claude-code'));
+    expect(f.batches.some((batch:any)=>batch.harness==='cursor')).toBe(false);
+  });
+  await installing;appendFileSync(file('z-later'),line('APPROVED AFTER PUBLICATION'));
+  recordNativeDaemonHook('cursor',{conversation_id:'z-later',transcript_path:file('z-later'),hook_event_name:'sessionStart'});
+  await until(()=>JSON.stringify(f.batches).includes('APPROVED AFTER PUBLICATION'));await f.stop();
+  expect(JSON.stringify(f.batches)).not.toContain('PRIVATE PREFIX');expect(readCaptureConfig()?.historyHarnesses).toEqual([]);
+}));
+
+isolatedTest('Cursor same-selection native-root and authenticated-scope changes refresh consent boundaries',async()=>fixture(async f=>{
+  const original=nativeConfig(f,'cursor'),newRoot=join(f.dir,'new-cursor');process.env.CURSOR_CONFIG_DIR=newRoot;
+  const file=join(newRoot,'projects','project','agent-transcripts','same-id','same-id.jsonl'),line=(text:string)=>JSON.stringify({role:'user',message:{content:[{type:'text',text}]}})+'\n';mkdirSync(dirname(file),{recursive:true});writeFileSync(file,line('PRIVATE NEW ROOT PREFIX'));
+  await installCapture(f.api,{home:f.dir,command:[],harnesses:['cursor'],historyHarnesses:[],selectionMode:'replace',hookOwnership:'plugin',daemon:true,daemonService:false});
+  const state=join(captureDir(),'state','cursor-'+hash('same-id')+'.json');expect(JSON.parse(readFileSync(state,'utf8')).offset).toBe(readFileSync(file).length);
+  // An empty old destination can be replaced, but its native prefix is not
+  // historical consent for the newly authenticated owner.
+  atomicJson(join(captureDir(),'config.json'),{...readCaptureConfig()!,owner:{tenantId:'previous',userId:'previous'}});
+  appendFileSync(file,line('PRIVATE PRIOR OWNER PREFIX'));
+  await installCapture(f.api,{home:f.dir,command:[],harnesses:['cursor'],historyHarnesses:[],selectionMode:'replace',hookOwnership:'plugin',daemon:true,daemonService:false});
+  expect(JSON.parse(readFileSync(state,'utf8')).offset).toBe(readFileSync(file).length);
+  appendFileSync(file,line('NEW OWNER APPROVED'));recordNativeDaemonHook('cursor',{conversation_id:'same-id',transcript_path:file,hook_event_name:'sessionStart'});await f.start();await until(()=>JSON.stringify(f.batches).includes('NEW OWNER APPROVED'));await f.stop();
+  expect(JSON.stringify(f.batches)).not.toContain('PRIVATE');expect(readCaptureConfig()).toMatchObject({installationId:original.installationId,owner:original.owner,harnesses:['cursor'],historyHarnesses:[]});
+}));
+
+isolatedTest('a destination switch refuses work that arrived while consent boundaries were being saved',async()=>fixture(async f=>{
+  const old={...readCaptureConfig()!,owner:{tenantId:'previous',userId:'previous'}};atomicJson(join(captureDir(),'config.json'),old);const configBefore=readFileSync(join(captureDir(),'config.json'),'utf8');
+  const root=join(f.dir,'cursor');process.env.CURSOR_CONFIG_DIR=root;
+  for(const id of ['a-first','z-later']){const file=join(root,'projects','project','agent-transcripts',id,id+'.jsonl');mkdirSync(dirname(file),{recursive:true});writeFileSync(file,'private unparsed prefix\n');}
+  f.fail=true;await f.start();let installing!:Promise<unknown>;
+  await withSessionLock('capture:cursor:z-later',async()=>{
+    installing=installCapture(f.api,{home:f.dir,command:[],harnesses:['claude-code','cursor'],historyHarnesses:[],selectionMode:'replace',hookOwnership:'plugin',daemon:true,daemonService:false});
+    await until(()=>existsSync(join(captureDir(),'state','cursor-'+hash('a-first')+'.json')));
+    f.event();await until(()=>readdirSync(join(captureDir(),'queue')).length>0);
+  });
+  await expect(installing).rejects.toMatchObject({code:'CAPTURE_PENDING_DESTINATION'});await f.stop();
+  expect(readFileSync(join(captureDir(),'config.json'),'utf8')).toBe(configBefore);
+  const queue=readdirSync(join(captureDir(),'queue')).map(name=>JSON.parse(readFileSync(join(captureDir(),'queue',name),'utf8')));expect(queue.length).toBeGreaterThan(0);expect(queue.every(batch=>batch.owner.tenantId==='previous'&&batch.owner.userId==='previous'&&batch.installationId===old.installationId)).toBe(true);
 }));

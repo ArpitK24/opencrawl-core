@@ -34,22 +34,40 @@ export function cursorThoughtDuplicate(state: CursorThoughtHooks | undefined, ev
 /** Cursor CLI omits some content hooks. Reconcile only the active native JSONL
  * named by a hook, inside Cursor's own project transcript directory. Never read
  * a referenced project file or follow a link outside that directory. */
-export function* cursorTranscript(root: string, sessionId: string, file: string, offset=0, ino?: number, checkpoint?: string) {
+function openCursorTranscript(root:string,sessionId:string,file:string) {
   const base=realpathSync(root),path=realpathSync(file),parts=relative(base,path).split(sep);
   if(parts.length!==5||parts[0]!=='projects'||parts[2]!=='agent-transcripts'||parts[3]!==sessionId||basename(path)!==sessionId+'.jsonl')
     throw new CliError('CAPTURE_PATH_REJECTED','Cursor transcript outside its native conversation directory');
   const fd=openSync(path,'r');
+  if(!fstatSync(fd).isFile()){closeSync(fd);throw new CliError('CAPTURE_PATH_REJECTED','Cursor transcript is not a regular file');}
+  return fd;
+}
+function cursorFingerprint(fd:number,end:number) {
+  const bytes=Buffer.alloc(Math.min(end,1024)),count=readSync(fd,bytes,0,bytes.length,end-bytes.length);
+  return createHash('sha256').update(bytes.subarray(0,count)).digest('hex');
+}
+/** Enrollment reads only a bounded fingerprint and the final newline, never old messages. */
+export function cursorTranscriptBoundary(root:string,sessionId:string,file:string) {
+  const fd=openCursorTranscript(root,sessionId,file);
+  try{
+    const stat=fstatSync(fd),last=Buffer.alloc(1);if(stat.size)readSync(fd,last,0,1,stat.size-1);
+    return {offset:stat.size,ino:stat.ino,checkpoint:cursorFingerprint(fd,stat.size),skipPartial:Boolean(stat.size&&last[0]!==10)};
+  }finally{closeSync(fd);}
+}
+export function* cursorTranscript(root: string, sessionId: string, file: string, offset=0, ino?: number, checkpoint?: string,{forwardBoundary=false,skipPartial=false}:{forwardBoundary?:boolean;skipPartial?:boolean}={}) {
+  const fd=openCursorTranscript(root,sessionId,file);
   try {
-    const stat=fstatSync(fd);if(!stat.isFile())throw new CliError('CAPTURE_PATH_REJECTED','Cursor transcript is not a regular file');
-    // Cursor rewrites earlier records on resume without replacing the inode,
-    // and the rewritten file may already be larger. Verify the saved boundary
-    // before seeking; replay uses the existing content occurrence deduplication.
-    const fingerprint=(end:number)=>{
-      const bytes=Buffer.alloc(Math.min(end,1024));
-      const count=readSync(fd,bytes,0,bytes.length,end-bytes.length);
-      return createHash('sha256').update(bytes.subarray(0,count)).digest('hex');
-    };
-    if(offset>stat.size||ino!==undefined&&ino!==stat.ino||offset>0&&(!checkpoint||checkpoint!==fingerprint(offset)))offset=0;
+    const stat=fstatSync(fd);
+    const fingerprint=(end:number)=>cursorFingerprint(fd,end);
+    // Replaying a rewritten prefix is safe only when its original messages were
+    // already observed. A consent boundary has deliberately never parsed them.
+    const changed=offset>stat.size||ino!==undefined&&ino!==stat.ino||offset>0&&(!checkpoint||checkpoint!==fingerprint(offset));
+    if(changed&&forwardBoundary){
+      const last=Buffer.alloc(1);if(stat.size)readSync(fd,last,0,1,stat.size-1);
+      yield {start:stat.size,offset:stat.size,ino:stat.ino,checkpoint:fingerprint(stat.size),data:null,forwardRebased:true,skipPartial:Boolean(stat.size&&last[0]!==10)};
+      return;
+    }
+    if(changed)offset=0;
     let position=offset,pending=Buffer.alloc(0);
     const buffer=Buffer.alloc(64*1024);
     while(position<stat.size) {
@@ -59,6 +77,7 @@ export function* cursorTranscript(root: string, sessionId: string, file: string,
       while((end=pending.indexOf(10))>=0) {
         const bytes=pending.subarray(0,end),start=offset;offset+=end+1;pending=pending.subarray(end+1);
         if(bytes.length>8*1024*1024)throw new CliError('CAPTURE_LINE_TOO_LARGE','Cursor transcript record exceeds 8 MiB; cursor retained');
+        if(skipPartial){skipPartial=false;yield {start,offset,ino:stat.ino,checkpoint:fingerprint(offset),data:null,forwardRebased:false,skipPartial:false};continue;}
         let record;try{record=JSON.parse(bytes.toString('utf8'));}catch{throw new CliError('CAPTURE_INVALID_RECORD','Invalid Cursor transcript record; cursor retained');}
         // Tool records have no IDs/results in this transcript; hooks retain them.
         let data=null;
@@ -66,7 +85,7 @@ export function* cursorTranscript(root: string, sessionId: string, file: string,
           const content=record.message.content.filter((b:any)=>b&&['text','image','image_url','input_image'].includes(b.type));
           if(content.length)data={role:record.role,content};
         }
-        yield {start,offset,ino:stat.ino,checkpoint:fingerprint(offset),data};
+        yield {start,offset,ino:stat.ino,checkpoint:fingerprint(offset),data,forwardRebased:false,skipPartial:false};
       }
       if(pending.length>8*1024*1024)throw new CliError('CAPTURE_LINE_TOO_LARGE','Cursor transcript record exceeds 8 MiB; cursor retained');
     }

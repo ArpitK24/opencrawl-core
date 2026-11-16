@@ -5,11 +5,11 @@ import {CliError} from '../oauth.ts';
 import {installCapture,uninstallCapture,upgradeCaptureHooks} from './install.ts';
 import {captureHook,captureAttentionNotice,ownedCaptureWorker,captureStatus,readCaptureConfig,syncCaptures,flushCaptureWork,refreshCapturedTitles,recordError,hookFlush,bindHookIdentity,captureDaemonEnabled} from './runtime.ts';
 import {processSessionStartTask} from '../session-start-task.ts';
-import {recordDaemonHook,runCaptureDaemon} from './daemon.ts';
-import {ensureCaptureDaemon} from './daemon-service.ts';
+import {runCaptureDaemon} from './daemon.ts';
+import {recordNativeDaemonHook} from './daemon-handoff.ts';
 import {exitAfterCredentialRotation} from '../session.ts';
 import {grokBotResponse} from './grok-bot.ts';
-import {normalizeHarness} from './parse.ts';
+import {normalizeHarness,HARNESSES,type Harness} from './parse.ts';
 import {backfill,backfillPreview,selection,setupBackfill,reportBackfillProgress} from './backfill.ts';
 import {approveCapture,excludeCapture,purgeLocalCapture} from './controls.ts';
 import {captureNoticeFor} from './policy.ts';
@@ -138,6 +138,24 @@ export async function collectCommand(action:string,api:string,values:any) {
     case 'hook': {
       if(!hasPluginContext()&&readCaptureConfig()?.hookOwnership==='plugin')return null;
       const plugin=pluginHookContext(api,harness??'');
+      if(captureDaemonEnabled()&&HARNESSES.includes(harness as Harness)){
+        let event:any;
+        try{
+          event=await hookInput(true);
+          if(harness==='antigravity'&&!event.hookEventName&&values.event)event.hookEventName=values.event;
+          if(!((harness==='claude-code'||harness==='codex')&&event?.cursor_version)){
+            recordPluginActivation(plugin,event);
+            if(!plugin||pluginRecordingEnabled(plugin))recordNativeDaemonHook(harness as Harness,event);
+          }
+        }catch(error){try{recordError(error);}catch{}}
+        if(harness==='cursor'||harness==='grok-bot')process.stdout.write(JSON.stringify(grokBotResponse(event))+'\n');
+        if(harness==='antigravity')process.stdout.write(JSON.stringify(antigravityResponse(event,values.event))+'\n');
+        if(['cursor','grok-bot','antigravity'].includes(harness!)){
+          await new Promise<void>(resolve=>process.stdout.write('',()=>resolve()));
+          exitAfterCredentialRotation(0);
+        }
+        return null;
+      }
       if(harness==='grok-bot'||harness==='cursor')return cursorFormatHook(harness,plugin);
       if(harness==='antigravity')return antigravityHook(values.event,plugin);
       // Only harness-managed async hooks may upload. Legacy sync hooks stay local.
@@ -150,10 +168,6 @@ export async function collectCommand(action:string,api:string,values:any) {
         if(typeof event?.cursor_version==='string')return null;
         recordPluginActivation(plugin,event);
         if(plugin&&!pluginRecordingEnabled(plugin))return null;
-        if(harness==='claude-code'&&captureDaemonEnabled()){
-          if(recordDaemonHook(event))await ensureCaptureDaemon();
-          return null;
-        }
         await captureHook(harness as any,event);
         // Async Claude Code hooks deliver this JSON on the next turn, so a
         // paused capture is visible to the person instead of failing silently.

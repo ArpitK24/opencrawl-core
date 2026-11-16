@@ -14,7 +14,7 @@ import type {Harness,TranscriptHarness} from '../capture/parse.ts';
 import {setupInventory} from './inventory.ts';
 import {installSetupPlugins} from './plugins.ts';
 import {retireLegacySetupHooks,prepareLegacyPluginMigration,activatePluginOwnership} from './legacy-hooks.ts';
-import {chosen,defaultSelections,historyBenefit,readSetupState,readStateKey,scopeKey,selectGroup,selectionDigest,updateSetupState,type SetupScope,type SetupState,type SetupHumanTask,type SetupSelections} from './state.ts';
+import {chosen,defaultSelections,historyBenefit,readSetupState,readStateKey,scopeKey,selectGroup,selectionDigest,updateSetupState,type SetupScope,type SetupState,type SetupWorker,type SetupHumanTask,type SetupSelections} from './state.ts';
 import {readServerSetup,serverScope,publishSetup,type SetupServerStatus} from './api.ts';
 import {historyJob,startHistoryWorker,runHistoryWorker} from './history-worker.ts';
 import {chooseSetupItems} from './select.ts';
@@ -55,8 +55,17 @@ export function localSetupStatus(requestedApi?:string){
  if(state.scope.api!==scope.api||state.scope.tenantId!==scope.tenantId||state.scope.userId!==scope.userId||state.installationId!==config.installationId)throw new CliError('SETUP_SCOPE_CHANGED','Saved setup choices do not match the current installation, API and owner. No state was changed.',2);
  const selections=preserveRecordingOff(state.selections,scope,config);
  if(JSON.stringify(readLocalCaptureConfig())!==JSON.stringify(config))throw new CliError('SETUP_SCOPE_CHANGED','The local installation changed while reading status. Retry local status; no state was changed.',2);
- return {status:'local_status',freshness:'local-only',serverChecked:false,scopeSource:'saved-capture-config',scope,installationId:config.installationId,savedSelections:state.selections,selections};
+ return {status:'local_status',freshness:'local-only',serverChecked:false,scopeSource:'saved-capture-config',scope,installationId:config.installationId,savedSelections:state.selections,selections,...(state.worker?{worker:workerObservation(state.worker)}:{})};
 }
+
+/** Saved supervisor facts, never a liveness probe or permission to launch work. */
+function workerObservation(worker:SetupWorker|undefined){
+ if(!worker)return undefined;
+ const readiness=worker.kind==='not-required'?'not_required':worker.supervised&&(!worker.status||worker.status==='installed')?'configured':'pending';
+ const environment=worker.environment?Object.fromEntries(Object.entries(worker.environment).filter(([key,value])=>['OPENCRAWL_CONFIG_HOME','OPENCRAWL_NO_UPDATE','XDG_CACHE_HOME','XDG_DATA_HOME'].includes(key)&&typeof value==='string')):undefined;
+ return {kind:worker.kind,...(worker.status?{status:worker.status}:{}),supervised:worker.supervised,harnesses:worker.harnesses,startup:worker.startup,readiness,freshness:'last-setup-observation',...(worker.command?{command:worker.command}:{}),...(environment?{environment}:{}),...(worker.reason?{reason:worker.reason}:{})};
+}
+const pendingWorkerGuidance='Background worker supervision is pending. A host-owned service must run the exact bound worker.command and any reported environment from local status. Starting it once in the foreground is not supervision. Keep this conversation and the saved choices; report the host-service prerequisite and retry setup only after it changes. Do not claim automatic setup is complete or loop through start, resume, and verification.';
 
 const planDigest=(scope:SetupScope,selections:SetupSelections,files:HistoryFile[])=>createHash('sha256').update(selectionDigest(scope,selections)+JSON.stringify(files)).digest('hex');
 /** Explicit native inspection, separate from the zero-process local status contract. */
@@ -122,8 +131,9 @@ async function applyHistory(scope:SetupScope,selections:SetupSelections,files:Hi
 }
 async function result(state:SetupState,launchHistory:typeof startHistoryWorker,inspectHooks:typeof inspectCodexHooks,command:string[],start=true){
  const history=start?launchHistory(state):{state:state.historyJob?.state??'not_started'};
+ const worker=workerObservation(state.worker),workerPending=worker?.readiness==='pending';
  const server=await readServerSetup(state.scope.api),statusCommand=formatSetupCommand(['setup','status','--local','--api',state.scope.api,'--json'],command);
- return {status:state.pluginResults?.some(row=>['error','pending','prepared'].includes(row.status))?'needs_attention':'configured',scope:state.scope,installationId:state.installationId,selections:state.selections,plugins:state.pluginResults,worker:state.worker,history,humanTasks:await tasks(server,state,inspectHooks),historyBenefit,agentPrompt:`Continue OpenCrawl setup in this conversation. Use \`${formatSetupCommand([],command)}\` for every OpenCrawl command${process.platform==='win32'?' in PowerShell':''}. Start with \`${statusCommand}\` to read this machine's saved choices without network access. Then use the installed plugin's native installation_status tool for each selected client and follow its returned human tasks. Use its verify_installation tool for the returned proof. Reuse my saved choices. For clients with recording off (forward=false), complete the MCP connection without requiring a new session capture.`,nextStep:`Use \`${statusCommand}\` for saved local choices; server status comes from the native plugin. Installation is not proof that a session is searchable.`};
+ return {status:workerPending||state.pluginResults?.some(row=>['error','pending','prepared'].includes(row.status))?'needs_attention':'configured',scope:state.scope,installationId:state.installationId,selections:state.selections,plugins:state.pluginResults,worker,history,humanTasks:await tasks(server,state,inspectHooks),historyBenefit,agentPrompt:`Continue OpenCrawl setup in this conversation. Use \`${formatSetupCommand([],command)}\` for every OpenCrawl command${process.platform==='win32'?' in PowerShell':''}. Start with \`${statusCommand}\` to read this machine's saved choices without network access. ${workerPending?pendingWorkerGuidance+' Once supervision is configured, use':"Then use"} the installed plugin's native installation_status tool for each selected client and follow its returned human tasks. Use its verify_installation tool for the returned proof. Reuse my saved choices. For clients with recording off (forward=false), complete the MCP connection without requiring a new session capture.`,nextStep:workerPending?pendingWorkerGuidance:`Use \`${statusCommand}\` for saved local choices; server status comes from the native plugin. Installation is not proof that a session is searchable.`};
 }
 export async function setupCommand(action:string,api:string,values:Values,{command=setupCommandForSelf(),login,installPlugins=installSetupPlugins,launchHistory=startHistoryWorker,choose=chooseSetupItems,inspectHooks=inspectCodexHooks,installDaemon=installCaptureDaemon,interactive=Boolean(process.stdin.isTTY&&process.stderr.isTTY&&!values.json)}:Dependencies={}){
  if(values.local!==undefined){if(values.local!==true||action!=='status')throw new CliError('INVALID_USAGE','Use --local only with setup status.',64);return localSetupStatus(api);}
@@ -138,7 +148,7 @@ export async function setupCommand(action:string,api:string,values:Values,{comma
   }else throw error;
  }
  const scope=serverScope(api,server),previous=readSetupState(scope);
- if(action==='status')return {status:'status',scope,selections:previous?.selections??null,history:previous?.historyJob??null,server,humanTasks:await tasks(server,previous,inspectHooks)};
+ if(action==='status')return {status:'status',scope,selections:previous?.selections??null,history:previous?.historyJob??null,...(previous?.worker?{worker:workerObservation(previous.worker)}:{}),server,humanTasks:await tasks(server,previous,inspectHooks)};
  if(action==='verify'){
   const client=Array.isArray(values.client)?values.client[0]:values.client;
   if(!previous?.installationId||typeof client!=='string')throw new CliError('INVALID_USAGE',`Run \`${formatSetupCommand(['setup','--api',api],command)}\` first, then \`${formatSetupCommand(['setup','verify','--api',api,'--client','CLIENT'],command)}\`.`,64);
@@ -180,9 +190,9 @@ export async function setupCommand(action:string,api:string,values:Values,{comma
  return result(await applyHistory(scope,selections,files),launchHistory,inspectHooks,command);
 }
 export function formatSetupOutput(data:unknown):string{
- const value=data as {status?:string;humanTasks?:SetupHumanTask[];applyCommand?:string;agentPrompt?:string;history?:{state?:string}};
- if(value.status==='local_status')return 'Setup: local-only saved state. The server and current authentication were not checked.\nUse --json for the installation binding and saved/effective choices.';
- if(value.agentPrompt)return `OpenCrawl setup saved.${value.history?.state==='queued'||value.history?.state==='running'?' History is importing in the background.':''}\nIn your primary coding agent, send:\n${value.agentPrompt}`;
+ const value=data as {status?:string;humanTasks?:SetupHumanTask[];applyCommand?:string;agentPrompt?:string;history?:{state?:string};worker?:{readiness?:string}};
+ if(value.status==='local_status')return 'Setup: local-only saved state. The server, current authentication, and worker liveness were not checked.'+(value.worker?.readiness==='pending'?'\nBackground worker supervision is pending; --json preserves its bound command and environment.':'')+'\nUse --json for the installation binding and saved/effective choices.';
+ if(value.agentPrompt)return `OpenCrawl setup saved.${value.worker?.readiness==='pending'?' Background worker supervision is pending.':''}${value.history?.state==='queued'||value.history?.state==='running'?' History is importing in the background.':''}\nIn your primary coding agent, send:\n${value.agentPrompt}`;
  if(value.applyCommand)return 'Review the JSON setup plan, then run its applyCommand after confirming the choices.';
  if(value.status==='action_required')return value.humanTasks?.[0]?.instruction??'Complete CLI sign-in before continuing setup.';
  return `Setup: ${value.status??'status'}${value.history?.state?'\nHistory: '+value.history.state:''}\nUse --json for the agent-readable details.`;

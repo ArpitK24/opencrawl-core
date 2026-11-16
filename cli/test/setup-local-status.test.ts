@@ -95,3 +95,11 @@ test('explicit hook status keeps unknown trust distinct from successful native r
  expect(await invoke(['setup','hooks'])).toMatchObject({code:0,data:{data:{review:{state:'unknown',total:8,pending:null,disabled:null}}}});
  expect(await invoke(['setup','hooks','--api','https://another.example'])).toMatchObject({code:2,data:{error:{code:'SETUP_SCOPE_CHANGED'}}});
 }, {state:'unknown',total:8,pending:null,disabled:null}));
+
+test('local worker observation preserves external prerequisites without credentials processes or readiness claims',()=>fixture(async({state,save,invoke})=>{
+ const command=['/owned/worker','collect','daemon','--worker-environment','{"OPENCRAWL_CONFIG_HOME":"/owned/profile","OPENCRAWL_NO_UPDATE":"1"}'],environment={OPENCRAWL_CONFIG_HOME:'/owned/profile',OPENCRAWL_NO_UPDATE:'1'};
+ state.worker={kind:'external',status:'required',supervised:false,harnesses:['codex'],startup:true,command,environment};save();
+ expect(await invoke()).toMatchObject({code:0,data:{data:{serverChecked:false,worker:{kind:'external',status:'required',readiness:'pending',freshness:'last-setup-observation',command,environment}}}});
+ state.worker={kind:'systemd',status:'installed',supervised:true,harnesses:['codex'],startup:true};save();expect(await invoke()).toMatchObject({data:{data:{worker:{readiness:'configured',freshness:'last-setup-observation'}}}});
+ state.worker={kind:'not-required',supervised:false,harnesses:[],startup:false};save();expect(await invoke()).toMatchObject({data:{data:{worker:{readiness:'not_required'}}}});
+}));

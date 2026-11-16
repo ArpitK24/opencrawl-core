@@ -12,7 +12,7 @@ import {installCapture,uninstallCapture} from '../src/capture/install.ts';
 import {hookRunner} from '../src/hook-runner.ts';
 import {applySelectionKey,type SelectionCursor} from '../src/setup/select.ts';
 import type {SelectionScreen} from '../src/setup/select.ts';
-const setupCommand=(action:string,api:string,values:Parameters<typeof realSetupCommand>[2],dependencies:NonNullable<Parameters<typeof realSetupCommand>[3]>={})=>realSetupCommand(action,api,values,{installDaemon:async()=>({kind:'process',status:'requested',supervised:false,command:[]}),...dependencies});
+const setupCommand=(action:string,api:string,values:Parameters<typeof realSetupCommand>[2],dependencies:NonNullable<Parameters<typeof realSetupCommand>[3]>={})=>realSetupCommand(action,api,values,{installDaemon:async()=>({kind:'launchd',status:'installed',supervised:true,label:'fixture',path:'fixture'}),...dependencies});
 type ClientStatus=SetupServerStatus['installations'][number]['clients'][number];
 async function fixture(run:(api:string,dir:string,observations:unknown[],setCodex:(patch:Partial<ClientStatus>)=>void)=>Promise<void>,pluginStateSupported=false){
  const dir=mkdtempSync(join(tmpdir(),'opencrawl-setup-flow-')),saved={...process.env},observations:unknown[]=[];let installations:SetupServerStatus['installations']=[],codexPatch:Partial<ClientStatus>={};
@@ -159,7 +159,8 @@ test('setup plans, handoffs and sign-in keep the selected launcher and saved sea
  expect(plan.applyCommand).toBe(formatSetupCommand(['setup','apply','--api',api,'--plugins','codex','--forward','none','--history','none','--plan-id',plan.planId,'--yes','--json'],command));
  const applied=await setupCommand('apply',api,{yes:true,plugins:'codex',forward:'none',history:'none'},dependencies);
  for(const result of [applied,await setupCommand('resume',api,{json:true},dependencies)]){
-  const handoff=result as {agentPrompt:string;nextStep:string};
+  if(!result||!('agentPrompt' in result)||!('nextStep' in result))throw Error('Expected an agent handoff');
+  const handoff=result;
   expect(handoff.agentPrompt).toContain('in this conversation');
   expect(handoff.agentPrompt).toContain('Use `'+formatSetupCommand([],command)+'` for every OpenCrawl command');
   expect(handoff.agentPrompt).toContain('Start with `'+formatSetupCommand(['setup','status','--local','--api',api,'--json'],command)+'`');
@@ -252,7 +253,7 @@ test('setup starts only the implemented worker after plugin files are ready and 
   installPlugins:async()=>{order.push('plugins');expect(readCaptureConfig()).toMatchObject({captureWorker:'daemon-v1',hookOwnership:'plugin',harnesses:['claude-code','codex']});return {results:[{client:'claude-code',status:'prepared'},{client:'codex',status:'prepared'}],humanTasks:[]};},
   installDaemon:async config=>{order.push('daemon');expect(config.harnesses).toEqual(['claude-code','codex']);return {kind:'process',status:'requested',supervised:false,command:[]};}
  });
- expect(order).toEqual(['plugins','daemon']);expect(result).toMatchObject({worker:{kind:'process',supervised:false,harnesses:['claude-code']}});
+ expect(order).toEqual(['plugins','daemon']);expect(result).toMatchObject({worker:{kind:'process',supervised:false,harnesses:['claude-code','codex']}});
  expect(observations).toHaveLength(2);expect(readCaptureConfig()?.historyHarnesses).toEqual([]);
 }));
 
@@ -263,7 +264,7 @@ test('pending plugins defer the service while selected search plugins enable onl
  expect(launches).toBe(0);
  for(const choice of [{plugins:'codex',forward:'codex'}, {plugins:'claude-code',forward:'none'}] as const){
   const result=await setupCommand('apply',api,{yes:true,plugins:choice.plugins,forward:choice.forward,history:'none'},{...dependencies,installPlugins:async()=>({results:[{client:choice.plugins,status:'prepared'}],humanTasks:[]})});
-  expect(result).toMatchObject({worker:{startup:true,harnesses:[]}});
+  expect(result).toMatchObject({worker:{startup:true,harnesses:choice.forward==='codex'?['codex']:[]}});
  }
  expect(launches).toBe(2);
 }));
@@ -288,4 +289,27 @@ test('service installation failure does not publish successful setup or broaden 
  })).rejects.toThrow('synthetic supervisor refusal');
  expect(observations).toHaveLength(0);expect(readCaptureConfig()).toMatchObject({harnesses:['claude-code'],historyHarnesses:[],captureWorker:'daemon-v1'});
  const saved=readSetupState({api,tenantId:'tenant',userId:'user'});expect(saved?.selections.history.codex).toBe(false);expect(saved?.worker).toBeUndefined();
+}));
+
+test('external required supervision stays pending without new choices or a start-resume loop',async()=>fixture(async(api)=>{
+ const command=['/private/owned/worker','collect','daemon','--worker-environment','{"OPENCRAWL_CONFIG_HOME":"/private/owned/profile","OPENCRAWL_NO_UPDATE":"1"}'];
+ const environment={OPENCRAWL_CONFIG_HOME:'/private/owned/profile',OPENCRAWL_NO_UPDATE:'1'};
+ const dependencies={inspectHooks:async()=>({state:'observed',total:8,pending:0,disabled:0} as CodexHookReview),launchHistory:()=>({state:'not_started'}),installPlugins:async()=>({results:[{client:'codex' as const,status:'installed' as const}],humanTasks:[]}),installDaemon:async()=>({kind:'external',status:'required',supervised:false,command,environment,reason:'No systemd user manager'})};
+ const applied=await setupCommand('apply',api,{yes:true,plugins:'codex',forward:'codex',history:'none'},dependencies);
+ expect(applied).toMatchObject({status:'needs_attention',worker:{kind:'external',status:'required',readiness:'pending',supervised:false,command,environment},humanTasks:[]});
+ const saved=readSetupState({api,tenantId:'tenant',userId:'user'})!;
+ const local=await setupCommand('status',api,{local:true});expect(local).toMatchObject({serverChecked:false,worker:{readiness:'pending',freshness:'last-setup-observation',command,environment}});
+ const resumed=await setupCommand('resume',api,{json:true},dependencies);expect(resumed).toMatchObject({status:'needs_attention',selections:saved.selections,humanTasks:[],worker:{command,environment}});
+ expect(readSetupState(saved.scope)?.selections).toEqual(saved.selections);expect(readSetupState(saved.scope)?.historyJob).toEqual(saved.historyJob);
+ expect(formatSetupOutput(resumed)).toContain('Background worker supervision is pending');
+ expect((resumed as {agentPrompt:string}).agentPrompt).toContain('host-owned service');expect((resumed as {agentPrompt:string}).agentPrompt).toContain('Starting it once in the foreground is not supervision');
+}));
+
+test('supervised and not-required workers allow configured setup without invented operator tasks',async()=>fixture(async(api)=>{
+ for(const worker of [{kind:'systemd',status:'installed',supervised:true,label:'fixture',path:'fixture'},{kind:'not-required',supervised:false,queuedDataPreserved:true}] as const){
+  const active=worker.kind!=='not-required';
+  const result=await setupCommand('apply',api,{yes:true,plugins:active?'codex':'none',forward:active?'codex':'none',history:'none'},{inspectHooks:async()=>({state:'observed',total:8,pending:0,disabled:0} as CodexHookReview),launchHistory:()=>({state:'not_started'}),installPlugins:async()=>({results:active?[{client:'codex',status:'installed'}]:[],humanTasks:[]}),installDaemon:async()=>worker});
+  expect(result).toMatchObject({status:'configured',humanTasks:[],worker:{kind:worker.kind,readiness:active?'configured':'not_required'}});
+  expect(formatSetupOutput(result)).not.toContain('supervision is pending');expect((result as {agentPrompt:string}).agentPrompt).not.toContain('host-owned service');
+ }
 }));
