@@ -65,7 +65,7 @@ Create referenced Secrets in the installation namespace before applying:
 | --- | --- | --- |
 | App PostgreSQL | `databases.app.existingSecret` | `OPENCRAWL_DATABASE_URL` (complete URL, including TLS options) |
 | Bundled Temporal using external PostgreSQL | `databases.temporal.host`, `port`, `user`, `name`, `visibilityName`, `existingSecret` | `TEMPORAL_DATABASE_PASSWORD` |
-| Bundled Airbyte using external PostgreSQL | `databases.airbyte.host`, `port`, `user`, `name`, `temporalName`, `visibilityName`, `existingSecret` | `DATABASE_PASSWORD` |
+| Bundled Airbyte using external PostgreSQL | `databases.airbyte.host`, `port`, `user`, `name`, `temporalName`, `visibilityName`, `existingSecret` | `DATABASE_USER` (same as `user`), `DATABASE_PASSWORD` |
 | External Temporal | `temporal.address`, `namespace`, optional `existingSecret` | `TEMPORAL_API_KEY` when using API-key authentication |
 | External OpenSearch | `opensearch.url`, optional `index`, `existingSecret` | `OPENCRAWL_OPENSEARCH_USERNAME`, `OPENCRAWL_OPENSEARCH_PASSWORD` |
 | External S3 | `objectStorage.endpoint`, `bucket`, `region`, `prefix`, `existingSecret` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
