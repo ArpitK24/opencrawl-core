@@ -30,7 +30,7 @@ test('all four native plugin formats include synchronous startup and supported c
   if(client==='codex'){
    expect(hooks.SessionEnd[0].async).toBeUndefined();expect(hooks.SessionEnd[0].timeout).toBe(3);expect(hooks.SessionEnd[0].command).not.toContain('--managed');
    expect(hooks.PostToolUse[0].async).toBe(true);expect(hooks.PostToolUse[0].command).toContain('--managed');
-  }else if(client==='claude-code'){expect(hooks.PostToolUseFailure).toHaveLength(1);expect(hooks.SessionEnd[0].async).toBe(true);}
+  }else if(client==='claude-code'){expect(Object.keys(hooks).sort()).toEqual(['SessionEnd','SessionStart']);expect(hooks.SessionEnd[0]).toMatchObject({async:true,timeout:10});expect(start[1].command).not.toContain('--managed');}
   else if(client==='cursor'){
    expect(JSON.parse(files['hooks/hooks.json']).version).toBe(1);
    expect(hooks.stop[0].command).toContain('$CURSOR_PLUGIN_ROOT/');expect(hooks.postToolUseFailure).toHaveLength(1);expect(hooks.preCompact).toHaveLength(1);
@@ -45,7 +45,7 @@ test('bundled runners retain stdin, argv and profile binding after a cache move 
  const temporary=mkdtempSync(join(tmpdir(),'opencrawl-plugin-hooks-')),home=realpathSync(temporary),windows=process.platform==='win32';
  try{
   const root=join(home,windows?'cache space & %value%':'cache space \' $value $(false)'),profile=join(home,windows?'selected profile & %value%':'selected profile \' $value $(false)'),stub=join(home,'CLI source with spaces.ts');
-  writeFileSync(stub,"console.log(JSON.stringify({args:process.argv.slice(2),input:await Bun.stdin.text(),profile:process.env.OPENCRAWL_CONFIG_HOME,api:process.env.OPENCRAWL_PLUGIN_API,name:process.env.OPENCRAWL_PLUGIN_NAME,client:process.env.OPENCRAWL_PLUGIN_CLIENT,root:process.env.OPENCRAWL_PLUGIN_ROOT,token:process.env.OPENCRAWL_TOKEN??null,sessionsToken:process.env.OPENCRAWL_SESSIONS_TOKEN??null,authMode:process.env.OPENCRAWL_AUTH??null,ambientApi:process.env.OPENCRAWL_API_URL??null}));\n");
+  writeFileSync(stub,"console.log(JSON.stringify({pid:process.pid,args:process.argv.slice(2),input:await Bun.stdin.text(),profile:process.env.OPENCRAWL_CONFIG_HOME,api:process.env.OPENCRAWL_PLUGIN_API,name:process.env.OPENCRAWL_PLUGIN_NAME,client:process.env.OPENCRAWL_PLUGIN_CLIENT,root:process.env.OPENCRAWL_PLUGIN_ROOT,token:process.env.OPENCRAWL_TOKEN??null,sessionsToken:process.env.OPENCRAWL_SESSIONS_TOKEN??null,authMode:process.env.OPENCRAWL_AUTH??null,ambientApi:process.env.OPENCRAWL_API_URL??null}));\n");
   const payload=JSON.stringify({hook_event_name:'SessionStart',session_id:'fixture',cwd:'/not-the-plugin'});
   for(const client of clients){
    const files=pluginHookFiles(client,{...binding,command:[process.execPath,stub,'pinned launcher argument'],configHome:profile});
@@ -60,6 +60,10 @@ test('bundled runners retain stdin, argv and profile binding after a cache move 
     const result=spawnSync(executable,args,{cwd:client==='antigravity'?root:home,env,input:payload,encoding:'utf8',timeout:10_000,windowsVerbatimArguments:windows&&client!=='codex'&&hook.shell!=='powershell'});
     expect({error:result.error?.message,stderr:result.stderr,status:result.status}).toEqual({error:undefined,stderr:'',status:0});
     const observed=JSON.parse(result.stdout);
+    if(!windows&&client==='claude-code'&&hook===start[1]){
+     const direct=spawnSync('/bin/sh',[join(root,'scripts/opencrawl-hook.sh'),'collect','hook','--harness',client],{cwd:root,env,input:payload,encoding:'utf8',timeout:10_000});
+     expect(direct.status).toBe(0);expect(JSON.parse(direct.stdout).pid).toBe(direct.pid);
+    }
     expect(observed).toMatchObject({input:payload,profile,api:binding.api,name:binding.pluginName,client,root,token:null,sessionsToken:null,authMode:null,ambientApi:null});
     expect(env.OPENCRAWL_TOKEN).toBe('fixture-ambient-user-token');expect(env.OPENCRAWL_SESSIONS_TOKEN).toBe('fixture-ambient-capture-token');expect(env.OPENCRAWL_AUTH).toBe('replicas-workspace');
     expect(observed.args[0]).toBe('pinned launcher argument');expect(observed.args.slice(1,3)).toEqual(hook===start[1]?['collect','hook']:['session','start']);

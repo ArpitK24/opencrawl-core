@@ -41,9 +41,10 @@ export function pluginHookFiles(client:PluginClient,binding:PluginHookBinding,pl
  const args=(values:string[])=>values.map(value=>/^[a-zA-Z0-9_:/.-]+$/.test(value)?value:literal(value,windows)).join(' ');
  const startup={type:'command',...invocation,command:invocation.command+' '+args(['session','start','--harness',client,'--api',api]),timeout:7,statusMessage:startupMarker};
  const capture=(event:string)=>{
-  const managed=(client==='codex'||client==='claude-code')&&!(client==='codex'&&event==='SessionEnd');
+  const daemon=client==='claude-code';
+  const managed=client==='codex'&&event!=='SessionEnd';
   return {type:'command',...invocation,command:invocation.command+' '+args(['collect','hook',...(managed?['--managed']:[]),'--harness',client,'--api',api,...(client==='antigravity'?['--event',event]:[])]),
-   timeout:managed?120:client==='codex'?3:30,statusMessage:captureMarker,...(managed?{async:true}:{})};
+   timeout:daemon?10:managed?120:client==='codex'?3:30,statusMessage:captureMarker,...(managed||daemon?{async:true}:{})};
  };
  if(client==='cursor'){
   const hooks:Record<string,unknown[]>=Object.fromEntries(GROK_BOT_HOOK_EVENTS.map(event=>{const entry=capture(event);return [event,[{command:entry.command,timeout:entry.timeout}]];}));
@@ -56,7 +57,7 @@ export function pluginHookFiles(client:PluginClient,binding:PluginHookBinding,pl
   return {[runner]:script,'hooks.json':json({[pluginName+'-startup']:{SessionStart:[{type:startup.type,command:startup.command,timeout:startup.timeout}]},
    [pluginName+'-capture']:{SessionStart:[entry('SessionStart')],PostToolUse:[{matcher:'*',hooks:[entry('PostToolUse')]}],PostInvocation:[entry('PostInvocation')],Stop:[entry('Stop')]}})};
  }
- const events=client==='claude-code'?['SessionStart','UserPromptSubmit','PreToolUse','PostToolUse','PostToolUseFailure','Stop','SubagentStop','SessionEnd']
+ const events=client==='claude-code'?['SessionStart','SessionEnd']
   :['SessionStart','UserPromptSubmit','PreToolUse','PostToolUse','Stop','SubagentStop','SessionEnd'];
  return {[runner]:script,'hooks/hooks.json':json({hooks:Object.fromEntries(events.map(event=>[event,[{hooks:event==='SessionStart'?[startup,capture(event)]:[capture(event)]}]]))})};
 }

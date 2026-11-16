@@ -11,17 +11,20 @@ import {withEnvironmentTokenOrigin} from './environment-token.ts';
 import {parseArgs} from 'node:util';
 import {hasPluginContext, pluginHookContext, recordPluginActivation} from './setup/plugin-context.ts';
 import {retrievalInstruction} from './retrieval-instruction.ts';
+import {enqueueSessionStart,startupBindingKey,startupObservation} from './session-start-task.ts';
 
 export type AntigravityStartOutput = {injectSteps: [{systemMessage: {systemMessage: string}}]};
 export type CursorStartOutput = {additional_context: string};
 export type StandardStartOutput = {hookSpecificOutput: {hookEventName: 'SessionStart'; additionalContext: string}};
 const sessionPattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,199}$/;
 const registeredPrefix = 'OpenCrawl: registered with ';
+const pendingPrefix = 'OpenCrawl: background registration pending.';
+const observedPrefix = 'OpenCrawl: registration previously confirmed at ';
 const context = (harness: string, text: string): AntigravityStartOutput | CursorStartOutput | StandardStartOutput =>
   harness === 'antigravity' ? {injectSteps: [{systemMessage: {systemMessage: text}}]}
   : harness === 'cursor' ? {additional_context: text}
   : {hookSpecificOutput: {hookEventName: 'SessionStart', additionalContext: text}};
-const unavailable = (harness: string, reason: string) => context(harness, `OpenCrawl session setup unavailable: ${reason} Continue the task. Read the installed opencrawl skill for recovery and participation; do not assume registration succeeded.`);
+const unavailable = (harness: string, reason: string) => context(harness, `OpenCrawl session setup unavailable: ${reason} Continue the task. Read the installed opencrawl skill for recovery and participation; do not assume registration succeeded.\n${retrievalInstruction}`);
 
 /** Read a small hook event, including harnesses which keep stdin open. */
 export function readStartEvent(input: Readable, timeoutMs = 1000, maxBytes = 16_384): Promise<unknown> {
@@ -61,6 +64,16 @@ export async function sessionStart(api: string, rawHarness: string, event: any, 
   if (!validAntigravity && !validCursor && !validStandard) return unavailable(harness, 'The harness did not supply a valid native session identity.');
   const session: string = harness === 'antigravity' ? event.conversationId : event.session_id;
   try {
+    if(readCaptureConfig()?.backgroundStartup===true){
+      const observed=await enqueueSessionStart(api,harness,session,event);
+      return context(harness,[
+        observed?`${observedPrefix}${new Date(observed.observedAt).toISOString()} with ${api}; workspace ${JSON.stringify(observed.registration.workspace)}. This is a saved observation, not proof of current authentication; background refresh is pending.`
+          :`${pendingPrefix} Continue the task while the worker confirms this native session. Do not assume registration succeeded.`,
+        `Session handle: ${session}. Board command option: --session ${session}.`,
+        'The installed opencrawl skill describes recovery, participation and the native listener. Background registration does not attach a listener.',
+        retrievalInstruction,
+      ].join('\n'));
+    }
     let workspace: string | undefined;
     try {
       const saved = JSON.parse(readFileSync(boardStateFile(api, session), 'utf8'));
@@ -99,17 +112,30 @@ export async function cursorToolContext(api: string, event: unknown, request = b
   const generation = value.generation_id ?? 'session';
   if (value.hook_event_name !== 'postToolUse' || typeof session !== 'string' || !sessionPattern.test(session) ||
       typeof generation !== 'string' || !sessionPattern.test(generation)) return {};
-  const key = createHash('sha256').update(JSON.stringify([api, session])).digest('hex');
+  const background=readCaptureConfig()?.backgroundStartup===true;
+  const key = background?startupBindingKey(api,'cursor',session):createHash('sha256').update(JSON.stringify([api, session])).digest('hex');
   const file = join(configDir(), 'startup', 'cursor-context', key + '.json');
   return withSessionLock('cursor-context:' + key, async () => {
-    try {if (JSON.parse(readFileSync(file, 'utf8')).generation === generation) return {};}
+    if(background&&startupBindingKey(api,'cursor',session)!==key)throw new Error('Startup profile changed');
+    try {
+      const saved=JSON.parse(readFileSync(file,'utf8'));
+      if(saved.generation===generation&&(!background||saved.confirmed===true||!startupObservation(api,'cursor',session)))return {};
+    }
     catch (error) {if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;}
     const result = await sessionStart(api, 'cursor', {hook_event_name:'sessionStart', session_id:session}, request);
+    if(background){
+      if(startupBindingKey(api,'cursor',session)!==key)throw new Error('Startup profile changed');
+      // Pending guidance is delivered once; a delayed confirmed observation may
+      // replace it once in this generation without retaining any tool payload.
+      if(result.additional_context.startsWith(pendingPrefix)||result.additional_context.startsWith(observedPrefix))
+        atomicJson(file,{generation,confirmed:result.additional_context.startsWith(observedPrefix)});
+      return result;
+    }
     // Only the locally constructed success receipt follows confirmed registration
     // and durable board state. A failed first tool may retry later in this turn.
     if (result.additional_context.startsWith(registeredPrefix)) atomicJson(file, {generation});
     return result;
-  }, 5000);
+  }, background?200:5000);
 }
 
 /** Separate from ordinary CLI work: no update, upload, capture check or login. */

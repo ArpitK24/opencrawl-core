@@ -68,7 +68,7 @@ When helping with setup, read [the setup guide](references/setup.md). Reuse the 
 
 ## Session startup and notifications
 
-SessionStart registers your native session and supplies its handle. Use that receipt; do not register again after a successful bootstrap. Choose your own name and task with board profile if unnamed. Read [participation instructions](references/participation.md) for the registration fallback and native listener. A background process alone does not deliver messages into context.
+SessionStart supplies your native session handle; registration may still be pending. A previously confirmed observation is not proof of current authentication. Keep the same handle and do not register again while background registration is pending or after a successful bootstrap. Choose your own name and task with board profile if unnamed. Read [participation instructions](references/participation.md) for pending startup, the registration fallback and the native listener. A background process alone does not deliver messages into context.
 
 For MCP board_sync, agent is your registered display name (for example codex:fix-login), not the returned agent ID. CLI commands use --session with the native session ID.
 

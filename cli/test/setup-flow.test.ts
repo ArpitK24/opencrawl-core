@@ -5,13 +5,14 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {publishSetup,type SetupServerStatus} from '../src/setup/api.ts';
 import {type CodexHookReview} from '../src/capture/codex-hooks.ts';
-import {setupCommand,formatSetupOutput,formatSetupCommand} from '../src/setup/command.ts';
+import {setupCommand as realSetupCommand,formatSetupOutput,formatSetupCommand} from '../src/setup/command.ts';
 import {readSetupState,historyBenefit,type SetupState} from '../src/setup/state.ts';
 import {readCaptureConfig,captureDir} from '../src/capture/runtime.ts';
-import {installCapture} from '../src/capture/install.ts';
+import {installCapture,uninstallCapture} from '../src/capture/install.ts';
 import {hookRunner} from '../src/hook-runner.ts';
 import {applySelectionKey,type SelectionCursor} from '../src/setup/select.ts';
 import type {SelectionScreen} from '../src/setup/select.ts';
+const setupCommand=(action:string,api:string,values:Parameters<typeof realSetupCommand>[2],dependencies:NonNullable<Parameters<typeof realSetupCommand>[3]>={})=>realSetupCommand(action,api,values,{installDaemon:async()=>({kind:'process',status:'requested',supervised:false,command:[]}),...dependencies});
 type ClientStatus=SetupServerStatus['installations'][number]['clients'][number];
 async function fixture(run:(api:string,dir:string,observations:unknown[],setCodex:(patch:Partial<ClientStatus>)=>void)=>Promise<void>,pluginStateSupported=false){
  const dir=mkdtempSync(join(tmpdir(),'opencrawl-setup-flow-')),saved={...process.env},observations:unknown[]=[];let installations:SetupServerStatus['installations']=[],codexPatch:Partial<ClientStatus>={};
@@ -241,4 +242,50 @@ test('native setup inspection cannot inherit trusted legacy global hooks for a p
  const config=readCaptureConfig()!,file=join(process.env.OPENCRAWL_CONFIG_HOME!,'opencrawl','capture','config.json');
  writeFileSync(file,JSON.stringify({...config,hookOwnership:'global'}));
  expect(await setupCommand('hooks',api,{json:true},{inspectHooks:async()=>{throw new Error('Legacy global trust is not plugin trust');}})).toMatchObject({recordingSelected:true,review:{state:'unknown',total:0,pending:null,disabled:null}});
+}));
+
+
+test('setup starts only the implemented worker after plugin files are ready and reports its real supervision',async()=>fixture(async(api,_dir,observations)=>{
+ const order:string[]=[];
+ const result=await setupCommand('apply',api,{yes:true,plugins:'claude-code,codex',forward:'claude-code,codex',history:'none'},{
+  inspectHooks:nativeUnknown,launchHistory:()=>({state:'not_started'}),
+  installPlugins:async()=>{order.push('plugins');expect(readCaptureConfig()).toMatchObject({captureWorker:'daemon-v1',hookOwnership:'plugin',harnesses:['claude-code','codex']});return {results:[{client:'claude-code',status:'prepared'},{client:'codex',status:'prepared'}],humanTasks:[]};},
+  installDaemon:async config=>{order.push('daemon');expect(config.harnesses).toEqual(['claude-code','codex']);return {kind:'process',status:'requested',supervised:false,command:[]};}
+ });
+ expect(order).toEqual(['plugins','daemon']);expect(result).toMatchObject({worker:{kind:'process',supervised:false,harnesses:['claude-code']}});
+ expect(observations).toHaveLength(2);expect(readCaptureConfig()?.historyHarnesses).toEqual([]);
+}));
+
+test('pending plugins defer the service while selected search plugins enable only their supported lanes',async()=>fixture(async api=>{
+ let launches=0;
+ const dependencies={inspectHooks:nativeUnknown,launchHistory:()=>({state:'not_started'}),installDaemon:async()=>{launches++;return {kind:'process',status:'requested',supervised:false,command:[]};}};
+ await setupCommand('apply',api,{yes:true,plugins:'claude-code',forward:'claude-code',history:'none'},{...dependencies,installPlugins:async()=>({results:[{client:'claude-code',status:'pending'}],humanTasks:[]})});
+ expect(launches).toBe(0);
+ for(const choice of [{plugins:'codex',forward:'codex'}, {plugins:'claude-code',forward:'none'}] as const){
+  const result=await setupCommand('apply',api,{yes:true,plugins:choice.plugins,forward:choice.forward,history:'none'},{...dependencies,installPlugins:async()=>({results:[{client:choice.plugins,status:'prepared'}],humanTasks:[]})});
+  expect(result).toMatchObject({worker:{startup:true,harnesses:[]}});
+ }
+ expect(launches).toBe(2);
+}));
+
+test('explicit uninstall stops both lanes and resume restores only selected startup while preserving queues',async()=>fixture(async(api,dir)=>{
+ const dependencies={inspectHooks:nativeUnknown,installPlugins:async()=>({results:[{client:'claude-code' as const,status:'prepared' as const}],humanTasks:[]}),launchHistory:()=>({state:'not_started'})};
+ await setupCommand('apply',api,{yes:true,plugins:'claude-code',forward:'claude-code',history:'none'},dependencies);
+ const scope={api,tenantId:'tenant',userId:'user'},before=readSetupState(scope)!;
+ const queue=join(captureDir(),'queue','retained.json'),task=join(captureDir(),'daemon','inbox','startup-retained.json');mkdirSync(join(task,'..'),{recursive:true});writeFileSync(queue,'retained queue');writeFileSync(task,'retained task');
+ const stopped=await uninstallCapture(dir);expect(stopped).toMatchObject({backgroundStartupStopped:true,queuedDataPreserved:true});
+ expect(readCaptureConfig()).toMatchObject({disabled:true,backgroundStartup:false});expect(readSetupState(scope)?.selections).toEqual(before.selections);
+ let launches=0;const result=await setupCommand('resume',api,{json:true},{...dependencies,installDaemon:async config=>{launches++;expect(config).toMatchObject({disabled:true,backgroundStartup:true,harnesses:[]});return {kind:'process',status:'requested',supervised:false,command:[]};}});
+ expect(launches).toBe(1);expect(result).toMatchObject({worker:{startup:true,harnesses:[]}});
+ expect(readSetupState(scope)?.selections.plugins).toEqual(before.selections.plugins);expect(readSetupState(scope)?.selections.history).toEqual(before.selections.history);
+ expect(readFileSync(queue,'utf8')).toBe('retained queue');expect(readFileSync(task,'utf8')).toBe('retained task');
+}));
+
+test('service installation failure does not publish successful setup or broaden saved choices',async()=>fixture(async(api,_dir,observations)=>{
+ await expect(setupCommand('apply',api,{yes:true,plugins:'claude-code',forward:'claude-code',history:'none'},{
+  installPlugins:async()=>({results:[{client:'claude-code',status:'prepared'}],humanTasks:[]}),
+  installDaemon:async()=>{throw Error('synthetic supervisor refusal');},launchHistory:()=>{throw Error('must not launch history');}
+ })).rejects.toThrow('synthetic supervisor refusal');
+ expect(observations).toHaveLength(0);expect(readCaptureConfig()).toMatchObject({harnesses:['claude-code'],historyHarnesses:[],captureWorker:'daemon-v1'});
+ const saved=readSetupState({api,tenantId:'tenant',userId:'user'});expect(saved?.selections.history.codex).toBe(false);expect(saved?.worker).toBeUndefined();
 }));

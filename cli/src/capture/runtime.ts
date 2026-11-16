@@ -31,8 +31,12 @@ export const captureDir = () => join(configDir(),'capture');
 const read = (p:string, fallback:any=null) => {try{return JSON.parse(readFileSync(p,'utf8'));}catch(e:any){if(e.code==='ENOENT')return fallback;throw e;}};
 /** Bump when installed hook entries change so the next hook rewrites existing installs. */
 export const HOOK_MODE='native-v4';
-export type CaptureConfig = {disabled?:boolean,authPending?:boolean,exclusions?:CaptureExclusions,schemaVersion:1,hookOwnership?:'global'|'plugin',hookMode?:typeof HOOK_MODE|'managed-v3'|'managed-v2'|'managed',harnesses?:Harness[],historyHarnesses?:TranscriptHarness[],api:string,installationId:string,owner:{tenantId:string,userId:string,name?:string,email?:string},installedAt:string,roots:{'claude-code':string,codex:string,'grok-bot'?:string,cursor?:string,antigravity?:string},claudeDesktopSessionsRoot?:string,command:string[]};
+export type CaptureConfig = {disabled?:boolean,authPending?:boolean,captureWorker?:'daemon-v1',backgroundStartup?:boolean,claudeCapture?:'daemon-v1',exclusions?:CaptureExclusions,schemaVersion:1,hookOwnership?:'global'|'plugin',hookMode?:typeof HOOK_MODE|'managed-v3'|'managed-v2'|'managed',harnesses?:Harness[],historyHarnesses?:TranscriptHarness[],api:string,installationId:string,owner:{tenantId:string,userId:string,name?:string,email?:string},installedAt:string,roots:{'claude-code':string,codex:string,'grok-bot'?:string,cursor?:string,antigravity?:string},claudeDesktopSessionsRoot?:string,command:string[]};
 export const readCaptureConfig = ():CaptureConfig|null => read(join(captureDir(),'config.json'));
+/** claudeCapture is accepted only for the first opt-in daemon pilot. */
+export const captureDaemonEnabled=(config:CaptureConfig|null=readCaptureConfig())=>config?.captureWorker==='daemon-v1'||config?.claudeCapture==='daemon-v1';
+/** Intermediate integration: only Claude has a daemon adapter today. */
+export const captureDaemonHarnesses=(config:CaptureConfig|null=readCaptureConfig())=>(config?.harnesses??[]).filter(harness=>harness==='claude-code');
 /** Installations made before a harness existed have no directory for it. */
 export function harnessRoot(config:CaptureConfig,harness:Harness) {
   const root=config.roots[harness];
@@ -243,9 +247,10 @@ function attachmentTransform(value:any, attachments:any[], cwd:string, localFile
 function enqueue(config:CaptureConfig,meta:any,events:any[],attachments:any[]) {
   if(!events.length)return;
   const current=readCaptureConfig();
-  if(current && (current.api!==config.api || current.installationId!==config.installationId || current.owner.tenantId!==config.owner.tenantId || current.owner.userId!==config.owner.userId))throw new CliError('CAPTURE_CONFIG_CHANGED','Capture enrollment changed; retry with its current configuration.');
-  if(captureExcluded(current??config,meta))return;
-  if(config.authPending)throw new CliError('CAPTURE_AUTH_PENDING','Capture identity has not been authenticated yet');
+  if(!current || current.api!==config.api || current.installationId!==config.installationId || current.owner.tenantId!==config.owner.tenantId || current.owner.userId!==config.owner.userId)throw new CliError('CAPTURE_CONFIG_CHANGED','Capture enrollment changed; retry with its current configuration.');
+  if(current.disabled||meta.captureMode!=='history'&&current.harnesses&&!current.harnesses.includes(meta.harness))throw new CliError('CAPTURE_CONSENT_CHANGED','Forward recording is no longer enabled for this client; new bytes were not queued.');
+  if(captureExcluded(current,meta))return;
+  if(current.authPending||config.authPending)throw new CliError('CAPTURE_AUTH_PENDING','Capture identity has not been authenticated yet');
   if(!meta.sessionId)throw new CliError('CAPTURE_SESSION_UNKNOWN','Transcript has no session identity');
   const batch=redactValue({schemaVersion:1,owner:config.owner,installationId:config.installationId,host:hostname(),...meta,events,attachments});
   // Keep the original local scope for exclusions added after enqueue. Masking a
@@ -1113,6 +1118,7 @@ export function captureStatus(nativeReview?:CodexHookReview) {
   const codexReview=nativeReview??(config?localCodexHookReview(config.roots.codex):{state:'not_applicable' as const,total:0,pending:0,disabled:0});
   const review=codexHookReviewMessage(codexReview);
   return {installed:Boolean(config&&!config.disabled),api:config?.api,owner:config?.authPending?null:config?.owner,authenticationPending:Boolean(config?.authPending),installationId:config?.installationId,
+    worker:captureDaemonEnabled(config)?{supervision:read(join(captureDir(),'daemon/service.json')),lastObserved:read(join(captureDir(),'daemon/status.json')),uploadRetry:read(join(captureDir(),'daemon/retry.json')),startupRetry:read(join(captureDir(),'daemon/startup-retry.json'))}:null,
     exclusions:config?.exclusions??{projects:[],sessions:[]},
     queued:existsSync(join(captureDir(),'queue'))?readdirSync(join(captureDir(),'queue')).filter(n=>n.endsWith('.json')).length:0,
     rejected:rejectedNames().length,

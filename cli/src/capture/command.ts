@@ -3,7 +3,10 @@ import {join} from 'node:path';
 import {inspectCodexHooks} from './codex-hooks.ts';
 import {CliError} from '../oauth.ts';
 import {installCapture,uninstallCapture,upgradeCaptureHooks} from './install.ts';
-import {captureHook,captureAttentionNotice,ownedCaptureWorker,captureStatus,readCaptureConfig,syncCaptures,flushCaptureWork,refreshCapturedTitles,recordError,hookFlush,bindHookIdentity} from './runtime.ts';
+import {captureHook,captureAttentionNotice,ownedCaptureWorker,captureStatus,readCaptureConfig,syncCaptures,flushCaptureWork,refreshCapturedTitles,recordError,hookFlush,bindHookIdentity,captureDaemonEnabled} from './runtime.ts';
+import {processSessionStartTask} from '../session-start-task.ts';
+import {recordDaemonHook,runCaptureDaemon} from './daemon.ts';
+import {ensureCaptureDaemon} from './daemon-service.ts';
 import {exitAfterCredentialRotation} from '../session.ts';
 import {grokBotResponse} from './grok-bot.ts';
 import {normalizeHarness} from './parse.ts';
@@ -104,7 +107,7 @@ export async function collectCommand(action:string,api:string,values:any) {
       if(!['ask','skip','all','claude-code','codex','antigravity'].includes(mode))throw new CliError('INVALID_USAGE','Use --backfill ask, skip, all, claude-code, codex, or antigravity.',64);
       const notice=captureNoticeFor(api,harness);
       if(!await approveCapture(values.yes===true,values.json,notice))return {status:'consent_required',notice,nextStep:'Confirm the destination and recording scope with the user, then run collect install --yes. This does not approve history import.'};
-      const installed=await installCapture(api,{deferAuth:values['defer-auth']===true,...(harness?{harnesses:[harness as any]}:{})});
+      const installed=await installCapture(api,{deferAuth:values['defer-auth']===true,daemon:values.daemon===true,...(harness?{harnesses:[harness as any]}:{})});
       // Detection is not consent to configure other clients. Grok Bot has no
       // supported skill directory; do not install another client's integration.
       const clients=(harness?[harness]:installed.harnesses??[]).filter(client=>client!=='grok-bot');
@@ -130,6 +133,7 @@ export async function collectCommand(action:string,api:string,values:any) {
     case 'sync': try{return await syncCaptures();}catch(e){recordError(e);throw e;}
     case 'titles': try{return await refreshCapturedTitles();}catch(e){recordError(e);throw e;}
     case 'flush': try{return await flushCaptureWork({retryRejected:values['retry-rejected']===true});}catch(e){recordError(e);throw e;}
+    case 'daemon': {await runCaptureDaemon({processStartupTask:processSessionStartTask});return null;}
     case 'worker': {try{await ownedCaptureWorker();}catch(e){try{recordError(e);}catch{}}return null;}
     case 'hook': {
       if(!hasPluginContext()&&readCaptureConfig()?.hookOwnership==='plugin')return null;
@@ -146,6 +150,10 @@ export async function collectCommand(action:string,api:string,values:any) {
         if(typeof event?.cursor_version==='string')return null;
         recordPluginActivation(plugin,event);
         if(plugin&&!pluginRecordingEnabled(plugin))return null;
+        if(harness==='claude-code'&&captureDaemonEnabled()){
+          if(recordDaemonHook(event))await ensureCaptureDaemon();
+          return null;
+        }
         await captureHook(harness as any,event);
         // Async Claude Code hooks deliver this JSON on the next turn, so a
         // paused capture is visible to the person instead of failing silently.

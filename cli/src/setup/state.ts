@@ -10,7 +10,7 @@ export type SetupHumanTask={id:string;kind:'mcp_auth'|'hook_trust'|'restart'|'lo
 export type SetupSelections={plugins:Record<string,boolean>;forward:Record<string,boolean>;history:Record<string,boolean>};
 export type SetupClient={id:string;label:string;detected:boolean;plugin:boolean;forward:boolean;history:boolean;historyFiles:number;historyBytes:number};
 export type HistoryJob={id:string;clients:string[];files:HistoryFile[];state:'queued'|'running'|'complete'|'failed'|'paused';completedClients:string[];createdAt:string;updatedAt:string;progress?:{client:string;completed:number;total:number;uploaded:number};error?:string;pid?:number};
-export type SetupState={schemaVersion:1;scope:SetupScope;selections:SetupSelections;acceptedAt:string;installationId?:string;machine?:{id:string;label:string};historyJob?:HistoryJob;pluginResults?:{client:string;status:string;message?:string}[];humanTasks?:SetupHumanTask[]};
+export type SetupState={schemaVersion:1;scope:SetupScope;selections:SetupSelections;acceptedAt:string;installationId?:string;machine?:{id:string;label:string};historyJob?:HistoryJob;worker?:{kind:string;supervised:boolean;harnesses:string[];startup:boolean};pluginResults?:{client:string;status:string;message?:string}[];humanTasks?:SetupHumanTask[]};
 export const historyBenefit='Import past sessions so your agents can find previous decisions, fixes, and context.';
 export const scopeKey=(scope:SetupScope)=>createHash('sha256').update(JSON.stringify([scope.api,scope.tenantId,scope.userId])).digest('hex');
 export const setupRoot=()=>join(configDir(),'setup');
