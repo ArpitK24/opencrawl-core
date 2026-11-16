@@ -14,7 +14,7 @@ const {parseArgs} = require('node:util');
 const ROOT = path.resolve(__dirname, '..');
 const PACKAGE = '@getopencrawl/cli';
 const REGISTRY = 'https://registry.npmjs.org';
-const CHANNEL = 'next';
+const CHANNEL = 'latest';
 const HOUR = 60 * 60 * 1000;
 const RETRY = 15 * 60 * 1000;
 const cacheRoot = () => path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache'), 'opencrawl');
@@ -42,7 +42,7 @@ function binary(root) {
   const localRequire = createRequire(path.join(root, 'package.json'));
   let manifest;
   try { manifest = localRequire.resolve(`${PACKAGE}-${key}/package.json`); }
-  catch { throw new Error('Missing platform package. Reinstall with npm install -g @getopencrawl/cli@next --include=optional.'); }
+  catch { throw new Error('Missing platform package. Reinstall with npm install -g @getopencrawl/cli --include=optional.'); }
   const pkg = read(manifest);
   if (pkg?.name !== `${PACKAGE}-${key}` || pkg.version !== read(path.join(root, 'package.json'))?.version) throw new Error('The platform package version does not match the CLI.');
   const file = path.join(path.dirname(manifest), 'bin', process.platform === 'win32' ? 'opencrawl.exe' : 'opencrawl');
@@ -238,7 +238,7 @@ function reportFailure(error, args) {
   const code = denied ? 'PERMISSION_DENIED' : 'LAUNCHER_ERROR';
   const message = denied
     ? `Permission denied (${error.code}) while updating OpenCrawl. Allow write access to the OpenCrawl cache directory, or run opencrawl update outside the sandbox.`
-    : 'Could not run or update OpenCrawl. Retry, or reinstall with npm install -g @getopencrawl/cli@next --include=optional.';
+    : 'Could not run or update OpenCrawl. Retry, or reinstall with npm install -g @getopencrawl/cli --include=optional.';
   if (args.includes('--json')) process.stdout.write(JSON.stringify({schemaVersion: 1, error: {code, message}}) + '\n');
   else process.stderr.write(`opencrawl: ${message}\n`);
   return 1;

@@ -43,7 +43,7 @@ test('a custom command is preserved; an interrupted installation cannot become s
 }));
 test('native update selection keeps a newer installation and persists its check without npm',()=>fixture(async dir=>{
   await installBinary(executable(join(dir,'download')),'1.2.0');let installs=0;
-  const result=await update({force:true,current:'1.0.0',fetcher:Object.assign(async()=>Response.json({name:'@getopencrawl/cli',version:'1.1.0'}),{preconnect:()=>{}}),install:async()=>{installs++;}});
+  const result=await update({force:true,current:'1.0.0',fetcher:Object.assign(async(url:string|URL|Request)=>{expect(String(url)).toBe('https://registry.npmjs.org/@getopencrawl%2fcli/latest');return Response.json({name:'@getopencrawl/cli',version:'1.1.0'});},{preconnect:()=>{}}),install:async()=>{installs++;}});
   expect(result).toEqual({updated:false,version:'1.2.0'});expect(installs).toBe(0);
   expect(JSON.parse(readFileSync(join(cacheRoot(),'update.json'),'utf8')).nextCheckAt).toBeGreaterThan(Date.now());
 }));
