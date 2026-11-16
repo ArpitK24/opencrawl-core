@@ -121,6 +121,9 @@ their own authentication, authorization and network boundaries.
 
 ## Conformance and diagnosis
 
+`helm test RELEASE --namespace NAMESPACE --kube-context CONTEXT --logs` verifies
+app-state readiness, the application health endpoint and anonymous access denial.
+
 `verify.mts` runs a Job using the deployed image, identity, mounted trust and network
 configuration. Default probes check restricted PostgreSQL credentials, S3 access,
 Temporal namespace, tenant-bound OpenSearch mapping, app health, anonymous denial

@@ -38,8 +38,8 @@ await check('opensearch-index','Grant access to the configured index and check a
 await check('application-health','Inspect application readiness and migration logs.',async()=>assert.equal((await request('/health')).status,200));
 await check('anonymous-denied','The application must reject unauthenticated CLI identity requests.',async()=>assert.equal((await request('/api/cli/me')).status,401));
 if(env.OPENCRAWL_AIRBYTE_ENABLED!=='false')await check('airbyte-workspace','Check the Airbyte API client credentials and configured workspace.',async()=>{
-  const r=await fetch(required('AIRBYTE_URL')+'/api/public/v1/applications/token',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({client_id:required('AIRBYTE_CLIENT_ID'),client_secret:required('AIRBYTE_CLIENT_SECRET'),'grant-type':'client_credentials'}),signal:AbortSignal.timeout(30000)});assert.equal(r.status,200);
-  const {access_token}=await r.json();const workspace=await fetch(required('AIRBYTE_URL')+'/api/public/v1/workspaces/'+required('AIRBYTE_WORKSPACE_ID'),{headers:{authorization:'Bearer '+access_token},signal:AbortSignal.timeout(30000)});assert.equal(workspace.status,200);
+  const r=await fetch(required('AIRBYTE_URL')+'/api/public/v1/applications/token',{redirect:'error',method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({client_id:required('AIRBYTE_CLIENT_ID'),client_secret:required('AIRBYTE_CLIENT_SECRET'),'grant-type':'client_credentials'}),signal:AbortSignal.timeout(30000)});assert.equal(r.status,200);
+  const {access_token}=await r.json();const workspace=await fetch(required('AIRBYTE_URL')+'/api/public/v1/workspaces/'+required('AIRBYTE_WORKSPACE_ID'),{redirect:'error',headers:{authorization:'Bearer '+access_token},signal:AbortSignal.timeout(30000)});assert.equal(workspace.status,200);
 });
 if(exercise){
   const cookies=new Map<string,string>();
