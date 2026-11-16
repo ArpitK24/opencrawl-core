@@ -60,6 +60,12 @@ export function windowsTaskScript(config:CaptureConfig){
   return `$ErrorActionPreference='Stop'\n$task=${task}\n$description=${description}\n$previous=Get-ScheduledTask -TaskPath '\\' -ErrorAction Stop | Where-Object {$_.TaskName -eq $task}\nif($previous -and $previous.Description -ne $description){throw 'Capture task name is already owned by another program'}\nif($previous){Stop-ScheduledTask -TaskName $task}\n$user=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value\n$action=New-ScheduledTaskAction -Execute ${powershellQuote(executable)} -Argument ${powershellQuote(args)}\n$principal=New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited\n$triggers=@(New-ScheduledTaskTrigger -AtLogOn -User $user)\n${recovery}$settings=New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -Priority 7\nRegister-ScheduledTask -TaskName $task -Description $description -Action $action -Principal $principal -Trigger $triggers -Settings $settings -Force | Out-Null\nStart-ScheduledTask -TaskName $task\n`;
 }
 const powershell=(script:string,run:typeof spawnSync=spawnSync)=>run('powershell.exe',['-NoProfile','-NonInteractive','-Command',script],{stdio:'pipe',timeout:15_000,windowsHide:true});
+function launchdOperation(operation:'bootout'|'bootstrap',result:Pick<ReturnType<typeof spawnSync>,'status'|'signal'|'error'>){
+  const errorCode=(result.error as NodeJS.ErrnoException|undefined)?.code;
+  return {operation,exitStatus:Number.isInteger(result.status)?result.status:null,
+    signal:result.signal?(/^SIG[A-Z0-9]{1,16}$/.test(result.signal)?result.signal:'UNKNOWN'):null,
+    errorCode:errorCode?(/^[A-Z][A-Z0-9_]{0,31}$/.test(errorCode)?errorCode:'UNKNOWN'):null};
+}
 export function launchAgent(config:CaptureConfig) {
   const args=captureDaemonCommand(config);
   const environment=serviceEnvironment(config);
@@ -142,14 +148,19 @@ export async function installCaptureDaemon(config:CaptureConfig,{home=homedir(),
   if(platform==='darwin'&&service){
     const path=join(home,'Library','LaunchAgents',label()+'.plist');mkdirSync(dirname(path),{recursive:true});
     const domain='gui/'+process.getuid!();
-    run('launchctl',['bootout',domain+'/'+label()],{stdio:'ignore',timeout:5000});
+    const bootout=run('launchctl',['bootout',domain+'/'+label()],{stdio:'ignore',timeout:5000});
     // LaunchAgents belongs to the user, not to our config store. Preserve its
     // permissions while atomically replacing only our own service file.
     writeServiceFile(path,launchAgent(config));
     const service={kind:'launchd',status:'installed',supervised:true,label:label(),path},serviceFile=join(directory(),'service.json');
     atomicJson(serviceFile,service);
     const result=run('launchctl',['bootstrap',domain,path],{stdio:'pipe',timeout:5000});
-    if(result.status!==0){const error=Error('Could not install the capture LaunchAgent; rerun setup to repair supervision');atomicJson(serviceFile,{...service,status:'failed',supervised:false});recordError(error);throw error;}
+    if(result.status!==0){
+      // Persist only OS outcome fields, never command output or error messages.
+      const failure=launchdOperation('bootstrap',result),operations=[launchdOperation('bootout',bootout),failure];
+      const error=new CliError('CAPTURE_SUPERVISION_FAILED',`Could not install the capture LaunchAgent: launchctl bootstrap failed (exit=${failure.exitStatus??'none'}, signal=${failure.signal??'none'}, error=${failure.errorCode??'none'}). Check this user's LaunchAgent registration, then rerun setup resume.`);
+      atomicJson(serviceFile,{...service,status:'failed',supervised:false,operations});recordError(error);throw error;
+    }
     return service;
   }
   if(platform==='linux'&&service){

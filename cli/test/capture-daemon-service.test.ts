@@ -1,13 +1,14 @@
 import {test,expect} from 'bun:test';
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync,existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {join,dirname} from 'node:path';
+import {join,dirname,resolve} from 'node:path';
 import {ChildProcess,type spawnSync,type spawn,type SpawnSyncReturns} from 'node:child_process';
 import {launchAgent,systemdUnit,windowsTaskScript,installCaptureDaemon,uninstallCaptureDaemon,ensureCaptureDaemon} from '../src/capture/daemon-service.ts';
 import {applyDaemonEnvironment} from '../src/capture/daemon-environment.ts';
 import {captureDir,type CaptureConfig} from '../src/capture/runtime.ts';
 import {atomicJson,configDir} from '../src/session.ts';
 import {hash} from '../src/capture/parse.ts';
+import {CliError} from '../src/oauth.ts';
 
 const outcome=(status=0,stdout='',stderr=''):SpawnSyncReturns<Buffer>=>({pid:0,output:[null,Buffer.from(stdout),Buffer.from(stderr)],stdout:Buffer.from(stdout),stderr:Buffer.from(stderr),status,signal:null});
 const runner=(fn:(command:string,args:string[])=>SpawnSyncReturns<Buffer>)=>((command:string,args?:readonly string[])=>fn(command,[...(args??[])])) as typeof spawnSync;
@@ -166,6 +167,51 @@ test('Windows uncertain removal retains receipt and command has explicit ownersh
   expect(script).toContain('Capture task ownership changed');expect(script).toContain('-ErrorAction Stop');
   expect(JSON.parse(readFileSync(f.receipt,'utf8')).status).toBe('stop-failed');
   uninstallCaptureDaemon(f.root,{platform:'win32',run:runner(()=>outcome())});expect(existsSync(f.receipt)).toBe(false);
+}));
+
+for(const timeout of [false,true])test(`Mac bootstrap ${timeout?'timeout':'exit'} reports safe supervision diagnostics and retains failed enrollment`,()=>fixture(async f=>{
+  const uid=Object.getOwnPropertyDescriptor(process,'getuid');Object.defineProperty(process,'getuid',{configurable:true,value:()=>501});
+  try{
+    const before=readFileSync(join(captureDir(),'config.json'),'utf8');
+    const queued=join(captureDir(),'queue','retained.json');mkdirSync(dirname(queued));writeFileSync(queued,'retained');
+    const secret='private-service-stderr-and-error-message';
+    const failure:SpawnSyncReturns<Buffer>=timeout?{...outcome(),status:null,signal:'SIGTERM',error:Object.assign(Error(secret),{code:'ETIMEDOUT'})}:outcome(5,secret,secret);
+    const calls:string[]=[];let caught:unknown;
+    try{await installCaptureDaemon(f.config,{home:f.root,platform:'darwin',run:runner((command,args)=>{expect(command).toBe('launchctl');calls.push(args[0]!);return args[0]==='bootstrap'?failure:outcome(3,secret,secret);})});}catch(error){caught=error;}
+    expect(caught).toBeInstanceOf(CliError);expect(caught).toMatchObject({code:'CAPTURE_SUPERVISION_FAILED',exitCode:1});
+    const expected={operation:'bootstrap',exitStatus:timeout?null:5,signal:timeout?'SIGTERM':null,errorCode:timeout?'ETIMEDOUT':null};
+    const receipt=JSON.parse(readFileSync(f.receipt,'utf8'));
+    expect(receipt).toMatchObject({kind:'launchd',status:'failed',supervised:false,operations:[{operation:'bootout',exitStatus:3,signal:null,errorCode:null},expected]});
+    expect(JSON.parse(readFileSync(join(captureDir(),'last-error.json'),'utf8')).code).toBe('CAPTURE_SUPERVISION_FAILED');
+    expect((caught as Error).message).toContain('launchctl bootstrap');
+    expect((caught as Error).message).toContain(`exit=${expected.exitStatus??'none'}, signal=${expected.signal??'none'}, error=${expected.errorCode??'none'}`);
+    for(const text of [JSON.stringify(receipt),(caught as Error).message]){expect(text).not.toContain(secret);expect(text).not.toContain('login');}
+    expect(calls).toEqual(['bootout','bootstrap']);
+    expect(readFileSync(join(captureDir(),'config.json'),'utf8')).toBe(before);expect(readFileSync(queued,'utf8')).toBe('retained');
+  }finally{if(uid)Object.defineProperty(process,'getuid',uid);else delete process.getuid;}
+}));
+
+test('main JSON preserves a real launchd supervision failure without login guidance or raw output',()=>fixture(async f=>{
+  const module=(name:string)=>JSON.stringify(resolve(import.meta.dir,'../src/'+name));
+  const code=`import {mock} from 'bun:test';
+import * as setup from ${module('setup/command.ts')};
+import {installCaptureDaemon} from ${module('capture/daemon-service.ts')};
+Object.defineProperty(process,'getuid',{configurable:true,value:()=>501});
+const config=${JSON.stringify(f.config)},secret='private-launchctl-output';
+const run=(_command,args)=>({pid:0,output:[null,Buffer.from(secret),Buffer.from(secret)],stdout:Buffer.from(secret),stderr:Buffer.from(secret),status:args[0]==='bootstrap'?5:3,signal:null});
+mock.module(${module('setup/command.ts')},()=>({...setup,setupCommand:async()=>installCaptureDaemon(config,{home:${JSON.stringify(f.root)},platform:'darwin',run})}));
+globalThis.fetch=()=>{throw Error('Unexpected network');};
+const {main}=await import(${module('cli.ts')});process.exitCode=await main(['setup','resume','--api',config.api,'--json']);`;
+  const child=Bun.spawn([process.execPath,'-e',code],{env:{...process.env,OPENCRAWL_TOKEN:'',OPENCRAWL_SESSIONS_TOKEN:'',OPENCRAWL_AUTH:''},stdout:'pipe',stderr:'pipe'});
+  const timer=setTimeout(()=>child.kill(),5000);
+  try{
+    const [exit,stdout,stderr]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]);
+    expect(exit).toBe(1);expect(stderr).toBe('');
+    const json=JSON.parse(stdout);expect(json).toMatchObject({schemaVersion:1,error:{code:'CAPTURE_SUPERVISION_FAILED'}});
+    expect(json.error.message).toContain('launchctl bootstrap');expect(json.error.message).toContain('exit=5, signal=none, error=none');
+    expect(stdout).not.toContain('private-launchctl-output');expect(stdout).not.toContain('login');
+    expect(JSON.parse(readFileSync(f.receipt,'utf8'))).toMatchObject({status:'failed',supervised:false});
+  }finally{clearTimeout(timer);child.kill();await child.exited;}
 }));
 
 test('Mac stop uncertainty preserves state; verified service absence permits cleanup',()=>fixture(f=>{
