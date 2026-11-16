@@ -8,7 +8,7 @@ import {captureDir,captureTranscript,type CaptureConfig} from '../src/capture/ru
 import {establishForwardBoundaries} from '../src/setup/watermarks.ts';
 import {hash,type TranscriptHarness} from '../src/capture/parse.ts';
 
-type Checkpoint={offset:number;ino:number;parserVersion?:number;forwardBoundary?:boolean;skipPartial?:boolean;checkpoint?:string};
+type Checkpoint={offset:number;ino:number;identity?:string;parserVersion?:number;forwardBoundary?:boolean;skipPartial?:boolean;checkpoint?:string};
 async function fixture(harness:TranscriptHarness,run:(f:{config:CaptureConfig;path:string;line:(text:string)=>string;header:string;capture:(history?:boolean)=>Promise<unknown>;state:()=>Checkpoint;events:()=>unknown[]})=>Promise<void>){
  const saved={...process.env},dir=mkdtempSync(join(tmpdir(),'opencrawl-forward-boundary-'));
  Object.assign(process.env,{OPENCRAWL_CONFIG_HOME:join(dir,'config'),OPENCRAWL_AUTH:'',REPLICAS_WORKSPACE_ID:'',OPENCRAWL_TOKEN:'',OPENCRAWL_SESSIONS_TOKEN:''});
@@ -32,10 +32,10 @@ test(`${harness} forward consent survives ${reset} ${afterAppend?'after':'before
  writeFileSync(f.path,f.header+f.line('PRIVATE ORIGINAL '+'.'.repeat(2000)));
  establishForwardBoundaries(f.config,[harness]);
  if(afterAppend){appendFileSync(f.path,f.line('APPROVED BEFORE RESET'));await f.capture();}
- const originalInode=statSync(f.path).ino;
+ const originalInode=statSync(f.path,{bigint:true}).ino;
  if(reset==='replace')renameSync(f.path,f.path+'.retained');
  writeFileSync(f.path,f.header+f.line('PRIVATE RESET'));
- expect(statSync(f.path).ino===originalInode).toBe(reset==='truncate');
+ expect(statSync(f.path,{bigint:true}).ino===originalInode).toBe(reset==='truncate');
  await f.capture();
  // The parser must not turn ambiguous rewritten contents into a history import.
  expect(JSON.stringify(f.events())).not.toContain('PRIVATE');
@@ -136,4 +136,12 @@ test('enrollment snapshots the opened transcript instead of stale path metadata'
  expect(f.state()).toMatchObject({offset:statSync(f.path).size,ino:statSync(f.path).ino,forwardBoundary:true});
  const checkpoint=f.state().checkpoint;await f.capture();expect(f.events()).toEqual([]);expect(f.state().checkpoint).toBe(checkpoint);
  appendFileSync(f.path,f.line('APPROVED AFTER ENROLLMENT'));await f.capture();expect(JSON.stringify(f.events())).toContain('APPROVED AFTER ENROLLMENT');expect(JSON.stringify(f.events())).not.toContain('NEW PRECONSENT');
+}));
+
+
+test('explicit history still resets a replaced source after an empty forward boundary reached parser version two',()=>fixture('antigravity',async f=>{
+ writeFileSync(f.path,'');establishForwardBoundaries(f.config,['antigravity']);
+ appendFileSync(f.path,f.line('APPROVED LIVE'));await f.capture();expect(f.state().parserVersion).toBe(2);
+ renameSync(f.path,f.path+'.retained');writeFileSync(f.path,f.line('EXPLICITLY APPROVED REPLACEMENT HISTORY '+'.'.repeat(200)));
+ await f.capture(true);expect(JSON.stringify(f.events())).toContain('EXPLICITLY APPROVED REPLACEMENT HISTORY');expect(f.state().forwardBoundary).toBeUndefined();
 }));

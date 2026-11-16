@@ -1,5 +1,5 @@
 import {CliError} from '../oauth.ts';
-import {transcriptCheckpoint} from './transcript-checkpoint.ts';
+import {transcriptCheckpoint,transcriptIdentity,transcriptIdentityMatches} from './transcript-checkpoint.ts';
 import {createHash} from 'node:crypto';
 import {grokBotEvents, GROK_BOT_HOOK_EVENTS} from './grok-bot.ts';
 import {realpathSync, openSync, closeSync, readSync, fstatSync, lstatSync} from 'node:fs';
@@ -50,21 +50,22 @@ function openCursorTranscript(root:string,sessionId:string,file:string) {
 export function cursorTranscriptBoundary(root:string,sessionId:string,file:string) {
   const fd=openCursorTranscript(root,sessionId,file);
   try{
-    const stat=fstatSync(fd),last=Buffer.alloc(1);if(stat.size)readSync(fd,last,0,1,stat.size-1);
-    return {offset:stat.size,ino:stat.ino,checkpoint:transcriptCheckpoint(fd,stat.size),skipPartial:Boolean(stat.size&&last[0]!==10)};
+    const stat=fstatSync(fd),identity=transcriptIdentity(fd),last=Buffer.alloc(1);if(stat.size)readSync(fd,last,0,1,stat.size-1);
+    return {offset:stat.size,ino:stat.ino,identity,checkpoint:transcriptCheckpoint(fd,stat.size),skipPartial:Boolean(stat.size&&last[0]!==10)};
   }finally{closeSync(fd);}
 }
-export function* cursorTranscript(root: string, sessionId: string, file: string, offset=0, ino?: number, checkpoint?: string,{forwardBoundary=false,skipPartial=false}:{forwardBoundary?:boolean;skipPartial?:boolean}={}) {
+export function* cursorTranscript(root: string, sessionId: string, file: string, offset=0, ino?: number, checkpoint?: string,{forwardBoundary=false,skipPartial=false,identity:savedIdentity}:{forwardBoundary?:boolean;skipPartial?:boolean;identity?:string}={}) {
   const fd=openCursorTranscript(root,sessionId,file);
   try {
-    const stat=fstatSync(fd);
+    const stat=fstatSync(fd),identity=transcriptIdentity(fd);
     const fingerprint=(end:number)=>transcriptCheckpoint(fd,end);
     // Replaying a rewritten prefix is safe only when its original messages were
     // already observed. A consent boundary has deliberately never parsed them.
-    const changed=offset>stat.size||ino!==undefined&&ino!==stat.ino||offset>0&&(!checkpoint||checkpoint!==fingerprint(offset));
+    const identityChanged=forwardBoundary?!transcriptIdentityMatches(savedIdentity,identity):savedIdentity!==undefined?savedIdentity!==identity:ino!==undefined&&ino!==stat.ino;
+    const changed=identityChanged||offset>stat.size||offset>0&&(!checkpoint||checkpoint!==fingerprint(offset));
     if(changed&&forwardBoundary){
       const last=Buffer.alloc(1);if(stat.size)readSync(fd,last,0,1,stat.size-1);
-      yield {start:stat.size,offset:stat.size,ino:stat.ino,checkpoint:fingerprint(stat.size),data:null,forwardRebased:true,skipPartial:Boolean(stat.size&&last[0]!==10)};
+      yield {start:stat.size,offset:stat.size,ino:stat.ino,identity,checkpoint:fingerprint(stat.size),data:null,forwardRebased:true,skipPartial:Boolean(stat.size&&last[0]!==10)};
       return;
     }
     if(changed)offset=0;
@@ -77,7 +78,7 @@ export function* cursorTranscript(root: string, sessionId: string, file: string,
       while((end=pending.indexOf(10))>=0) {
         const bytes=pending.subarray(0,end),start=offset;offset+=end+1;pending=pending.subarray(end+1);
         if(bytes.length>8*1024*1024)throw new CliError('CAPTURE_LINE_TOO_LARGE','Cursor transcript record exceeds 8 MiB; cursor retained');
-        if(skipPartial){skipPartial=false;yield {start,offset,ino:stat.ino,checkpoint:fingerprint(offset),data:null,forwardRebased:false,skipPartial:false};continue;}
+        if(skipPartial){skipPartial=false;yield {start,offset,ino:stat.ino,identity,checkpoint:fingerprint(offset),data:null,forwardRebased:false,skipPartial:false};continue;}
         let record;try{record=JSON.parse(bytes.toString('utf8'));}catch{throw new CliError('CAPTURE_INVALID_RECORD','Invalid Cursor transcript record; cursor retained');}
         // Tool records have no IDs/results in this transcript; hooks retain them.
         let data=null;
@@ -85,7 +86,7 @@ export function* cursorTranscript(root: string, sessionId: string, file: string,
           const content=record.message.content.filter((b:any)=>b&&['text','image','image_url','input_image'].includes(b.type));
           if(content.length)data={role:record.role,content};
         }
-        yield {start,offset,ino:stat.ino,checkpoint:fingerprint(offset),data,forwardRebased:false,skipPartial:false};
+        yield {start,offset,ino:stat.ino,identity,checkpoint:fingerprint(offset),data,forwardRebased:false,skipPartial:false};
       }
       if(pending.length>8*1024*1024)throw new CliError('CAPTURE_LINE_TOO_LARGE','Cursor transcript record exceeds 8 MiB; cursor retained');
     }
