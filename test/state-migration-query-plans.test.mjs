@@ -6,14 +6,14 @@ import {createApplicationDatabase} from '../dist/src/state/postgres.mjs';
 import {migrateApplicationSources,migrationHash} from '../dist/src/state/migration-engine.mjs';
 import {canonical,targetDigest,orderedMigrationRows} from '../dist/src/state/sqlite-import.mjs';
 import {ensureDeletionRequestSchema} from '../dist/src/state/deletion-requests.mjs';
-import {postgresUrl} from './fixtures/application-database.mjs';
+import {postgresUrl,dropTestSchemas} from './fixtures/application-database.mjs';
 
 const live=(name,fn)=>test(name,{skip:!postgresUrl},fn);
 async function fixture(t){
  const admin=new Pool({connectionString:postgresUrl,max:1}),schema='oc_query_'+randomUUID().replaceAll('-','');
  await admin.query(`CREATE SCHEMA ${schema}`);
  const database=createApplicationDatabase({connectionString:postgresUrl,namespace:'query-fixture',options:'-c search_path='+schema,max:2});
- t.after(async()=>{await database.close();try{await admin.query(`DROP SCHEMA ${schema} CASCADE; DROP SCHEMA IF EXISTS ${database.identitySchema} CASCADE`);}finally{await admin.end();}});
+ t.after(async()=>{await database.close();try{await dropTestSchemas(admin,[schema,database.identitySchema]);}finally{await admin.end();}});
  return {database,schema};
 }
 function nodes(plan){return [plan,...(plan.Plans??[]).flatMap(nodes)];}

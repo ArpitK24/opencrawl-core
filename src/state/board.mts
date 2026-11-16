@@ -2,7 +2,7 @@ import {z} from 'zod';
 import type {PoolClient} from 'pg';
 import {createHash,randomUUID} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
-import type {ApplicationDatabase} from './postgres.mjs';
+import {ensureSchemaIndex,type ApplicationDatabase} from './postgres.mjs';
 import type {BoardState,BoardMessage,Participant,Delivery} from '../board/types.mjs';
 import {boardIdentity} from '../board/identity.mjs';
 
@@ -48,22 +48,23 @@ export function createPostgresBoardState(database:ApplicationDatabase) {
   async function ready(){await database.ready();await database.transaction(async client=>{await client.query("SELECT pg_advisory_xact_lock(hashtextextended('opencrawl-board-schema-v1',0))");await client.query(`
     CREATE TABLE IF NOT EXISTS opencrawl_board_heads(namespace text NOT NULL,tenant_hash text NOT NULL,head bigint NOT NULL DEFAULT 0 CHECK(head>=0),usage jsonb NOT NULL,participants_present boolean NOT NULL DEFAULT false,PRIMARY KEY(namespace,tenant_hash));
     CREATE TABLE IF NOT EXISTS opencrawl_board_messages(namespace text NOT NULL,tenant_hash text NOT NULL,id bigint NOT NULL,stamp bigint NOT NULL,agent text NOT NULL,author text NOT NULL,name text NOT NULL,topic text NOT NULL,request_id text NOT NULL,legacy_agent boolean NOT NULL,record jsonb NOT NULL,PRIMARY KEY(namespace,tenant_hash,id),FOREIGN KEY(namespace,tenant_hash) REFERENCES opencrawl_board_heads ON DELETE CASCADE);
-    CREATE INDEX IF NOT EXISTS opencrawl_board_messages_topic ON opencrawl_board_messages(namespace,tenant_hash,topic,id);
-    CREATE INDEX IF NOT EXISTS opencrawl_board_messages_publication ON opencrawl_board_messages(namespace,tenant_hash,author,request_id,agent,id);
-    CREATE INDEX IF NOT EXISTS opencrawl_board_messages_mentions ON opencrawl_board_messages USING gin((record->'mentions'));
     CREATE TABLE IF NOT EXISTS opencrawl_board_search_chunks(namespace text NOT NULL,tenant_hash text NOT NULL,message_id bigint NOT NULL,ordinal integer NOT NULL,words tsvector NOT NULL,PRIMARY KEY(namespace,tenant_hash,message_id,ordinal),FOREIGN KEY(namespace,tenant_hash,message_id) REFERENCES opencrawl_board_messages ON DELETE CASCADE);
-    CREATE INDEX IF NOT EXISTS opencrawl_board_search_words ON opencrawl_board_search_chunks USING gin(words);
     CREATE TABLE IF NOT EXISTS opencrawl_board_topics(namespace text NOT NULL,tenant_hash text NOT NULL,topic text NOT NULL,first_id bigint NOT NULL,posts bigint NOT NULL,latest jsonb NOT NULL,PRIMARY KEY(namespace,tenant_hash,topic),FOREIGN KEY(namespace,tenant_hash) REFERENCES opencrawl_board_heads ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS opencrawl_board_agents(namespace text NOT NULL,tenant_hash text NOT NULL,agent text NOT NULL,record jsonb NOT NULL,position bigint NOT NULL DEFAULT 0,PRIMARY KEY(namespace,tenant_hash,agent),FOREIGN KEY(namespace,tenant_hash) REFERENCES opencrawl_board_heads ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS opencrawl_board_participants(namespace text NOT NULL,tenant_hash text NOT NULL,agent text NOT NULL,user_id text,name text NOT NULL,seen bigint NOT NULL,record jsonb NOT NULL,PRIMARY KEY(namespace,tenant_hash,agent),FOREIGN KEY(namespace,tenant_hash) REFERENCES opencrawl_board_heads ON DELETE CASCADE);
-    CREATE INDEX IF NOT EXISTS opencrawl_board_participants_name ON opencrawl_board_participants(namespace,tenant_hash,lower(name));
-    CREATE INDEX IF NOT EXISTS opencrawl_board_participants_seen ON opencrawl_board_participants(namespace,tenant_hash,seen DESC,agent);
     CREATE TABLE IF NOT EXISTS opencrawl_board_deliveries(namespace text NOT NULL,tenant_hash text NOT NULL,agent text NOT NULL,receipt text NOT NULL,record jsonb NOT NULL,PRIMARY KEY(namespace,tenant_hash,agent),FOREIGN KEY(namespace,tenant_hash,agent) REFERENCES opencrawl_board_participants ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS opencrawl_board_delivery_messages(namespace text NOT NULL,tenant_hash text NOT NULL,agent text NOT NULL,ordinal integer NOT NULL,record jsonb NOT NULL,PRIMARY KEY(namespace,tenant_hash,agent,ordinal),FOREIGN KEY(namespace,tenant_hash,agent) REFERENCES opencrawl_board_deliveries ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS opencrawl_board_search_snapshots(namespace text NOT NULL,token uuid NOT NULL,tenant_hash text NOT NULL,owner text NOT NULL,expires bigint NOT NULL,record jsonb NOT NULL,PRIMARY KEY(namespace,token),FOREIGN KEY(namespace,tenant_hash) REFERENCES opencrawl_board_heads ON DELETE CASCADE);
-    CREATE INDEX IF NOT EXISTS opencrawl_board_search_snapshots_expiry ON opencrawl_board_search_snapshots(namespace,expires);
     CREATE TABLE IF NOT EXISTS opencrawl_board_search_pages(namespace text NOT NULL,token uuid NOT NULL,offset_value bigint NOT NULL,boundary jsonb NOT NULL,PRIMARY KEY(namespace,token,offset_value),FOREIGN KEY(namespace,token) REFERENCES opencrawl_board_search_snapshots ON DELETE CASCADE);
-  `);});}
+  `);
+    await ensureSchemaIndex(client,{table:'opencrawl_board_messages',name:'opencrawl_board_messages_topic',keys:['namespace','tenant_hash','topic','id']});
+    await ensureSchemaIndex(client,{table:'opencrawl_board_messages',name:'opencrawl_board_messages_publication',keys:['namespace','tenant_hash','author','request_id','agent','id']});
+    await ensureSchemaIndex(client,{table:'opencrawl_board_messages',name:'opencrawl_board_messages_mentions',method:'gin',keys:["((record -> 'mentions'::text))"]});
+    await ensureSchemaIndex(client,{table:'opencrawl_board_search_chunks',name:'opencrawl_board_search_words',method:'gin',keys:['words']});
+    await ensureSchemaIndex(client,{table:'opencrawl_board_participants',name:'opencrawl_board_participants_name',keys:['namespace','tenant_hash','lower(name)']});
+    await ensureSchemaIndex(client,{table:'opencrawl_board_participants',name:'opencrawl_board_participants_seen',keys:['namespace','tenant_hash','seen DESC','agent']});
+    await ensureSchemaIndex(client,{table:'opencrawl_board_search_snapshots',name:'opencrawl_board_search_snapshots_expiry',keys:['namespace','expires']});
+  });}
   function tenant(value:string){if(!/^[a-f0-9]{64}$/.test(value))throw fail('Invalid board tenant identity',400);return value;}
   function accessor(client:PoolClient,key:string):BoardTransaction {
     const scope=[namespace,tenant(key)];

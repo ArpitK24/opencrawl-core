@@ -13,16 +13,25 @@ export async function migrateEventIdentitySource({store,prefix,eventIdentities,o
 }){
  if(!prefix||prefix.split('/').some(p=>!p||p==='.'||p==='..'))throw new Error('Invalid session source prefix');
  await eventIdentities.ready();
- const root=prefix+'/tenants/',cursors=new Set<string>();let cursor:string|null|undefined,objects=0,sessionVisits=0;
+ const root=prefix+'/tenants/',cursors=new Set<string>();let cursor:string|null|undefined,objects=0,sessionVisits=0,previousSource='';
  do{
-  const page=await store.listPage(root,{continuationToken:cursor,maxKeys:1000}),sources=new Set<string>();
+  const page=await store.listPage(root,{continuationToken:cursor,maxKeys:1000}),sources:string[]=[];
   for(const key of page.keys){
    if(!key.startsWith(root))throw new Error('Identity migration inventory outside source');
    objects++;
    const candidate=key.endsWith('/event-identities-v1.json')?key.replace(/event-identities-v1\.json$/,'0'.repeat(64)+'.json.gz'):key;
-   if(sourceBatchIdentity(prefix,candidate))sources.add(key.slice(0,key.lastIndexOf('/')+1));
+   if(sourceBatchIdentity(prefix,candidate)){
+    const source=key.slice(0,key.lastIndexOf('/')+1);
+    if(source<previousSource)throw new Error('Identity migration source inventory is not ordered');
+    if(source!==previousSource){sources.push(source);previousSource=source;}
+   }
   }
-  for(const source of sources){await eventIdentities.migrateSession({store,prefix,source});sessionVisits++;}
+  for(let offset=0;offset<sources.length;offset+=4){
+   const settled=await Promise.allSettled(sources.slice(offset,offset+4).map(source=>eventIdentities.migrateSession({store,prefix,source})));
+   // Successful per-session commits survive failure, but every admitted visit
+   // must settle before another group or caller cleanup can begin.
+   for(const result of settled){if(result.status==='rejected')throw result.reason;sessionVisits++;}
+  }
   onProgress({objects,sessionVisits});
   cursor=page.nextToken;if(cursor){if(cursors.has(cursor))throw new Error('Identity migration inventory cursor did not advance');cursors.add(cursor);}
  }while(cursor);

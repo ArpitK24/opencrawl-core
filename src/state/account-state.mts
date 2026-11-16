@@ -1,7 +1,8 @@
 import {randomBytes,randomUUID} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {z} from 'zod';
-import type {ApplicationDatabase} from './postgres.mjs';
+import {ensureSchemaIndex,type ApplicationDatabase} from './postgres.mjs';
+import type {PoolClient} from 'pg';
 import type {OnboardingKind,OnboardingReceipt} from '../onboarding-status.mjs';
 import type {Principal} from '../sessions/types.mjs';
 import {sessionScope} from '../sessions/event-identity.mjs';
@@ -39,6 +40,23 @@ export interface AccountState {
   roles:{acquire(organizationId:string,actorId:string,userId:string,role:'admin'|'member'|'remove'):Promise<{release():Promise<void>}>};
 }
 
+// Inspect first: even ADD COLUMN IF NOT EXISTS takes ACCESS EXCLUSIVE on
+// current tables and can invert a credential writer's generation -> record locks.
+async function credentialUpgrade(client:PoolClient,table:string,key:string){
+  const primary=await client.query<{name:string;definition:string;validated:boolean;deferrable:boolean;deferred:boolean}>(`SELECT conname AS name,pg_get_constraintdef(oid) AS definition,convalidated AS validated,condeferrable AS deferrable,condeferred AS deferred FROM pg_constraint WHERE conrelid=to_regclass($1) AND contype='p'`,[table]);
+  const pk=primary.rows[0],compact=(value:string)=>value.replace(/\s+/g,'');
+  if(primary.rows.length!==1||!pk||pk.name!==table+'_pkey'||!pk.validated||pk.deferrable||pk.deferred)throw new Error('Incompatible credential primary key');
+  const legacy=compact(pk.definition)===`PRIMARYKEY(namespace,${key})`;
+  if(!legacy&&compact(pk.definition)!==`PRIMARYKEY(namespace,purpose,${key})`)throw new Error('Incompatible credential primary key');
+  const columns=await client.query<{text_type:boolean;not_null:boolean;generated:string;identity:string;default_value:string|null;default_collation:boolean;number:number}>(`SELECT a.atttypid='pg_catalog.text'::regtype AS text_type,a.attnotnull AS not_null,a.attgenerated AS generated,a.attidentity AS identity,pg_get_expr(d.adbin,d.adrelid) AS default_value,a.attcollation='pg_catalog."default"'::regcollation AS default_collation,a.attnum AS number FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum WHERE a.attrelid=to_regclass($1) AND a.attname='purpose' AND NOT a.attisdropped`,[table]);
+  const column=columns.rows[0];
+  if(!column){if(!legacy)throw new Error('Credential purpose column missing from current schema');return {table,key,addPurpose:true,legacy};}
+  const checks=await client.query<{definition:string;validated:boolean;no_inherit:boolean}>(`SELECT pg_get_constraintdef(oid) AS definition,convalidated AS validated,connoinherit AS no_inherit FROM pg_constraint WHERE conrelid=to_regclass($1) AND contype='c' AND conkey=ARRAY[$2]::smallint[]`,[table,column.number]);
+  const check=checks.rows[0];
+  if(columns.rows.length!==1||!column.text_type||!column.not_null||column.generated!==''||column.identity!==''||column.default_value!=="'capture'::text"||!column.default_collation||checks.rows.length!==1||!check?.validated||check.no_inherit||compact(check.definition)!=="CHECK((purpose=ANY(ARRAY['capture'::text,'agent'::text])))")throw new Error('Incompatible credential purpose column');
+  return {table,key,addPurpose:false,legacy};
+}
+
 /** Small independent account records. Credential issuance and revocation serialize
  * on the owner, so a concurrent issue cannot escape a revocation accidentally. */
 export function createAccountState(database:ApplicationDatabase):AccountState&{
@@ -73,18 +91,20 @@ export function createAccountState(database:ApplicationDatabase):AccountState&{
         CREATE TABLE IF NOT EXISTS opencrawl_capture_generations(namespace text NOT NULL,purpose text NOT NULL DEFAULT 'capture' CHECK(purpose IN ('capture','agent')),owner_scope text NOT NULL,generation text NOT NULL,PRIMARY KEY(namespace,purpose,owner_scope));
         CREATE TABLE IF NOT EXISTS opencrawl_onboarding_receipts(namespace text NOT NULL,owner_scope text NOT NULL,kind text NOT NULL CHECK(kind IN ('cli','mcp','mcpTest','session','history','completed')),receipt jsonb NOT NULL,PRIMARY KEY(namespace,owner_scope,kind));
         CREATE TABLE IF NOT EXISTS opencrawl_role_writes(namespace text NOT NULL,organization_id text NOT NULL,record jsonb NOT NULL,PRIMARY KEY(namespace,organization_id))`);
-      await client.query(`ALTER TABLE opencrawl_capture_credentials ADD COLUMN IF NOT EXISTS purpose text NOT NULL DEFAULT 'capture' CHECK(purpose IN ('capture','agent'));
-        ALTER TABLE opencrawl_capture_generations ADD COLUMN IF NOT EXISTS purpose text NOT NULL DEFAULT 'capture' CHECK(purpose IN ('capture','agent'));
-        DO $$ BEGIN
-          IF EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='opencrawl_capture_credentials'::regclass AND contype='p' AND pg_get_constraintdef(oid)='PRIMARY KEY (namespace, credential_id)') THEN
-            ALTER TABLE opencrawl_capture_credentials DROP CONSTRAINT opencrawl_capture_credentials_pkey;
-            ALTER TABLE opencrawl_capture_credentials ADD PRIMARY KEY(namespace,purpose,credential_id);
-          END IF;
-          IF EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='opencrawl_capture_generations'::regclass AND contype='p' AND pg_get_constraintdef(oid)='PRIMARY KEY (namespace, owner_scope)') THEN
-            ALTER TABLE opencrawl_capture_generations DROP CONSTRAINT opencrawl_capture_generations_pkey;
-            ALTER TABLE opencrawl_capture_generations ADD PRIMARY KEY(namespace,purpose,owner_scope);
-          END IF;
-        END $$; DROP INDEX IF EXISTS opencrawl_capture_credentials_owner; CREATE INDEX IF NOT EXISTS opencrawl_credentials_purpose_owner ON opencrawl_capture_credentials(namespace,purpose,owner_scope)`);
+      const upgrades=await Promise.all([
+        credentialUpgrade(client,'opencrawl_capture_credentials','credential_id'),
+        credentialUpgrade(client,'opencrawl_capture_generations','owner_scope'),
+      ]);
+      for(const upgrade of upgrades){
+        if(upgrade.addPurpose)await client.query(`ALTER TABLE ${upgrade.table} ADD COLUMN purpose text NOT NULL DEFAULT 'capture' CHECK(purpose IN ('capture','agent'))`);
+        if(upgrade.legacy)await client.query(`ALTER TABLE ${upgrade.table} DROP CONSTRAINT ${upgrade.table}_pkey, ADD PRIMARY KEY(namespace,purpose,${upgrade.key})`);
+      }
+      const legacyIndex=await client.query<{qualified_name:string}>(`SELECT format('%I.%I',n.nspname,idx.relname) AS qualified_name FROM pg_class idx JOIN pg_namespace n ON n.oid=idx.relnamespace JOIN pg_class t ON t.relnamespace=idx.relnamespace WHERE t.oid=to_regclass('opencrawl_capture_credentials') AND idx.relname='opencrawl_capture_credentials_owner'`);
+      if(legacyIndex.rowCount){
+        await ensureSchemaIndex(client,{table:'opencrawl_capture_credentials',name:'opencrawl_capture_credentials_owner',keys:['namespace','owner_scope']});
+        await client.query('DROP INDEX '+legacyIndex.rows[0]!.qualified_name);
+      }
+      await ensureSchemaIndex(client,{table:'opencrawl_capture_credentials',name:'opencrawl_credentials_purpose_owner',keys:['namespace','purpose','owner_scope']});
     });})().catch(error=>{prepared=undefined;throw error;});await prepared;},
     credentials:{
       async create(input,purpose='capture'){purposeSchema.parse(purpose);const value=captureCredentialSchema.parse(input),owner=sessionScope(value.principal);await database.transaction(async client=>{

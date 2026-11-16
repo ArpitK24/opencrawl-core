@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {applicationDatabaseFixture,postgresUrl} from './fixtures/application-database.mjs';
+import {applicationDatabaseFixture,postgresUrl,dropTestSchemas} from './fixtures/application-database.mjs';
 import {createBoundObjectMigration} from '../dist/src/state/object-migration.mjs';
 import {createRetiredSessionReceipts,retiredSessionLocations} from '../dist/src/state/retired-session-receipts.mjs';
 import {createPostgresIndexingReceipts} from '../dist/src/state/indexing-receipts.mjs';
@@ -56,7 +56,7 @@ test('fresh retirement schema rejects NULL conditional fields and retains exact 
     assert.deepEqual(await audit.exportRetirement(bucket,key),source,'Rejected NULL update must preserve the original row');
    }
   }
- }finally{try{await client.query('RESET search_path');await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);}finally{client.release();}}
+ }finally{try{await client.query('RESET search_path');}finally{client.release();await dropTestSchemas(f.database.pool,[schema]);}}
 });
 test('readback rejects NULL numeric fields instead of normalizing them to zero',{skip:!postgresUrl},async t=>{
  const f=await fixture(t);

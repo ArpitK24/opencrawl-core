@@ -28,3 +28,17 @@ export async function applicationDatabaseFixture(t,{namespace='test-'+randomUUID
   });
   return database;
 }
+
+/** Only generated schemas owned by the isolated fixtures below. Better Auth
+ * introspects every visible schema, so deletion shares its maintenance lock. */
+export async function dropTestSchemas(pool,names){
+ const generated=/^(?:oc_auth_[a-f0-9]{24}|(?:oc_account_|oc_query_|oc_ready_|oc_shadow_|slack_upgrade_|test_legacy_counts_|retired_null_test)[a-f0-9]{32})$/;
+ if(!Array.isArray(names)||names.length<1||names.length>4||new Set(names).size!==names.length||names.some(name=>typeof name!=='string'||!generated.test(name)))throw new Error('Explicit generated test schemas required');
+ const client=await pool.connect();
+ try{
+  await client.query('BEGIN');await client.query("SET LOCAL lock_timeout='0'");
+  await client.query("SELECT pg_advisory_xact_lock(hashtextextended('opencrawl:identity-schema:maintenance',0))");
+  for(const name of names)await client.query(`DROP SCHEMA IF EXISTS "${name}" CASCADE`);
+  await client.query('COMMIT');
+ }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+}
