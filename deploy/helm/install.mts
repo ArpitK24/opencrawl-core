@@ -53,6 +53,13 @@ export function plan(c:Values){return {schemaVersion:1,release:c.release,namespa
   ...(c.airbyte.mode==='bundled'?[{release:c.release+'-airbyte',chart:`airbyte@${c.airbyte.chartVersion}`}]:[]),
   {release:c.release,chart:'opencrawl',components:{app:1,worker:1},image:c.image}],databases:Object.fromEntries(Object.entries(c.databases).map(([k,v])=>[k,(v as Values).mode])),automaticUpgrade:false};}
 
+export function airbyteValues(c:Values,secretName:string,dbHost:string,storagePassword:string):Values {
+  const d=c.databases.airbyte,dbSecret=d.mode==='bundled'?secretName:d.existingSecret;
+  return merge({global:{airbyteUrl:`http://${c.release}-airbyte-server-svc:8001`,auth:{enabled:true,secretName:secretName,security:{cookieSecureSetting:false}},database:{type:d.tls?'external':'internal',host:d.mode==='bundled'?dbHost:d.host,port:d.port||5432,name:d.name,user:d.user,secretName:dbSecret,passwordSecretKey:'DATABASE_PASSWORD',replica:{userSecretKey:'DATABASE_USER',passwordSecretKey:'DATABASE_PASSWORD'}},tracking:{enabled:false,strategy:'logging'},workloads:{resources:{useConnectorResourceDefaults:false,mainContainer:{cpu:{request:'100m',limit:'2'},memory:{request:'256Mi',limit:'2Gi'}},check:{cpu:{request:'100m'},memory:{request:'256Mi'}},discover:{cpu:{request:'100m'},memory:{request:'256Mi'}},sidecar:{cpu:{request:'100m'},memory:{request:'128Mi'}}}}},
+      postgresql:{enabled:false},temporal:{secretName:dbSecret,database:{host:d.mode==='bundled'?dbHost:d.host,port:d.port||5432,user:d.user,passwordSecretKey:'DATABASE_PASSWORD'},env_vars:{DBNAME:d.temporalName,VISIBILITY_DBNAME:d.visibilityName,SKIP_DB_CREATE:'true',POSTGRES_TLS_DISABLE_HOST_VERIFICATION:'false',SQL_TLS_DISABLE_HOST_VERIFICATION:'false',SQL_HOST_VERIFICATION:'true',SQL_HOST_NAME:d.mode==='bundled'?dbHost:d.host}},
+      connectorBuilderServer:{enabled:false},server:{env_vars:{JOB_RESOURCE_VARIANT_OVERRIDE:'lowresource'}},minio:{rootUser:'opencrawl',rootPassword:storagePassword,storage:{volumeClaimValue:'5Gi'},resources:{requests:{cpu:'100m',memory:'256Mi'},limits:{memory:'1Gi'}}}},c.airbyte.values);
+}
+
 async function install(c:Values,stateDir:string,through='application'){
   const chart=join(dirname(fileURLToPath(import.meta.url)),'opencrawl');mkdirSync(stateDir,{recursive:true,mode:0o700});chmodSync(stateDir,0o700);
   const kube=(args:string[],input?:string,optional=false)=>execute(process.env.KUBECTL||'kubectl',['--context',c.context,'--namespace',c.namespace,...args],input,optional);
@@ -82,16 +89,14 @@ async function install(c:Values,stateDir:string,through='application'){
   if(c.airbyte.mode==='bundled'&&c.databases.airbyte.mode==='bundled')for(const n of [c.databases.airbyte.name,c.databases.airbyte.temporalName,c.databases.airbyte.visibilityName])dbs.push({name:n,user:c.databases.airbyte.user,passwordKey:'DATABASE_PASSWORD'});
   const infra=merge({runtime:{enabled:false},storageClass:c.storageClass,postgresql:{enabled:c.postgresql.enabled,existingSecret:secretName,databases:dbs.map(({name,user,passwordKey})=>({name,user,passwordKey}))},
     opensearch:{enabled:c.opensearch.mode==='bundled'},objectStorage:{enabled:c.objectStorage.mode==='bundled',existingSecret:secretName,bucket:c.objectStorage.bucket},
-    temporal:{enabled:c.temporal.mode==='bundled',namespace:c.temporal.namespace,existingSecret:c.databases.temporal.mode==='bundled'?secretName:c.databases.temporal.existingSecret,database:{host:c.databases.temporal.mode==='bundled'?dbHost:c.databases.temporal.host,port:c.databases.temporal.port||5432,user:c.databases.temporal.user,name:c.databases.temporal.name,visibilityName:c.databases.temporal.visibilityName,tls:c.databases.temporal.tls??false}}},c.infrastructure);
+    temporal:{enabled:c.temporal.mode==='bundled',namespace:c.temporal.namespace,existingSecret:c.databases.temporal.mode==='bundled'?secretName:c.databases.temporal.existingSecret,database:{host:c.databases.temporal.mode==='bundled'?dbHost:c.databases.temporal.host,port:c.databases.temporal.port||5432,user:c.databases.temporal.user,name:c.databases.temporal.name,visibilityName:c.databases.temporal.visibilityName,tls:c.databases.temporal.tls??false,caPath:c.databases.temporal.caPath||''}}},c.infrastructure);
   progress('infrastructure');helm(['upgrade','--install',c.release+'-infra',chart,'-n',c.namespace,'-f',values('infrastructure.json',infra),'--wait','--timeout','15m']);
   if(through==='infrastructure')return;
   let workspaceId=c.airbyte.workspaceId;
   const airbyteUrl=c.airbyte.mode==='bundled'?`http://${c.release}-airbyte-server-svc:8001`:c.airbyte.url;
   if(c.airbyte.mode==='bundled'){
     const d=c.databases.airbyte,dbSecret=d.mode==='bundled'?secretName:d.existingSecret;
-    const airbyte=merge({global:{airbyteUrl:`http://${c.release}-airbyte-server-svc:8001`,auth:{enabled:true,secretName:secretName,security:{cookieSecureSetting:false}},database:{type:d.tls?'external':'internal',host:d.mode==='bundled'?dbHost:d.host,port:d.port||5432,name:d.name,user:d.user,secretName:dbSecret,passwordSecretKey:'DATABASE_PASSWORD',replica:{userSecretKey:'DATABASE_USER',passwordSecretKey:'DATABASE_PASSWORD'}},tracking:{enabled:false,strategy:'logging'},workloads:{resources:{useConnectorResourceDefaults:false,mainContainer:{cpu:{request:'100m',limit:'2'},memory:{request:'256Mi',limit:'2Gi'}},check:{cpu:{request:'100m'},memory:{request:'256Mi'}},discover:{cpu:{request:'100m'},memory:{request:'256Mi'}},sidecar:{cpu:{request:'100m'},memory:{request:'128Mi'}}}}},
-      postgresql:{enabled:false},temporal:{secretName:dbSecret,database:{host:d.mode==='bundled'?dbHost:d.host,port:d.port||5432,user:d.user,passwordSecretKey:'DATABASE_PASSWORD'},env_vars:{DBNAME:d.temporalName,VISIBILITY_DBNAME:d.visibilityName,SKIP_DB_CREATE:'true',POSTGRES_TLS_DISABLE_HOST_VERIFICATION:'false',SQL_TLS_DISABLE_HOST_VERIFICATION:'false'}},
-      connectorBuilderServer:{enabled:false},server:{env_vars:{JOB_RESOURCE_VARIANT_OVERRIDE:'lowresource'}},minio:{rootUser:'opencrawl',rootPassword:secrets.AWS_SECRET_ACCESS_KEY,storage:{volumeClaimValue:'5Gi'},resources:{requests:{cpu:'100m',memory:'256Mi'},limits:{memory:'1Gi'}}}},c.airbyte.values);
+    const airbyte=airbyteValues(c,secretName,dbHost,secrets.AWS_SECRET_ACCESS_KEY);
     // Upstream MinIO requires a value; this generated file is private and never emitted.
     progress('airbyte');const privateValues=values('airbyte.private.json',airbyte);
     const airbyteChart=join(stateDir,'airbyte-2.4.0.tgz');

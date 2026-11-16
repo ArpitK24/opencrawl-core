@@ -140,8 +140,12 @@ spec:
             {{- if .Values.temporal.database.tls }}
             - {name: POSTGRES_TLS_ENABLED, value: "true"}
             - {name: POSTGRES_TLS_DISABLE_HOST_VERIFICATION, value: "false"}
+            - {name: SQL_TLS_ENABLED, value: "true"}
+            - {name: SQL_HOST_VERIFICATION, value: "true"}
+            - {name: SQL_HOST_NAME, value: {{ .Values.temporal.database.host | quote }}}
             {{- if .Values.temporal.database.caPath }}
             - {name: POSTGRES_TLS_CA_FILE, value: {{ .Values.temporal.database.caPath | quote }}}
+            - {name: SQL_CA, value: {{ .Values.temporal.database.caPath | quote }}}
             {{- end }}
             {{- end }}
             {{- with .Values.temporal.extraEnv }}

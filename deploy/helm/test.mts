@@ -1,19 +1,43 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
-import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
+import {mkdtempSync,writeFileSync,readFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {configuration,plan} from './install.mts';
+import {configuration,plan,airbyteValues} from './install.mts';
 const root=dirname(fileURLToPath(import.meta.url));
 const input={context:'test',url:'https://opencrawl.example.com',image:{tag:'sha-test'}};
+test('all shipped agent tools parse without installing dependencies',()=>{
+  for(const file of ['install.mts','verify.mts','runtime/probe.mts']){const r=spawnSync(process.execPath,['--check',join(root,file)],{encoding:'utf8'});assert.equal(r.status,0,r.stderr);}
+});
 test('installation plan bundles all resources and preserves independent external choices',()=>{
   const all=configuration(input);assert.equal(plan(all).steps.length,3);
   const mixed=configuration({...input,databases:{app:{mode:'external',existingSecret:'app-db'}},opensearch:{mode:'external',url:'https://search.test'}});
   assert.equal(mixed.databases.temporal.mode,'bundled');assert.equal(mixed.databases.airbyte.mode,'bundled');assert.equal(mixed.opensearch.mode,'external');
   const external=configuration({...input,postgresql:{enabled:false},databases:{app:{mode:'external',existingSecret:'app-db'}},temporal:{mode:'external',address:'temporal.test:7233'},opensearch:{mode:'external',url:'https://search.test'},objectStorage:{mode:'external',endpoint:'https://s3.test',bucket:'existing',existingSecret:'s3'},airbyte:{mode:'disabled'}});
   assert.equal(plan(external).steps.length,2);assert.equal(plan(external).steps[0].components?.postgresql,false);
+});
+test('upstream Airbyte references only supplied credentials in bundled and external DB modes',{skip:!process.env.AIRBYTE_CHART},()=>{
+  const dir=mkdtempSync(join(tmpdir(),'opencrawl-airbyte-contract-'));
+  try{
+    const capture=join(dir,'keys.json'),stub=join(dir,'stub.mjs');
+    writeFileSync(stub,`#!/usr/bin/env node\nimport fs from 'node:fs';if(process.argv.includes('apply')){const x=JSON.parse(fs.readFileSync(0,'utf8'));if(x.kind==='Secret')fs.writeFileSync(${JSON.stringify(capture)},JSON.stringify(Object.keys(x.stringData)));}\n`,{mode:0o700});
+    const config=join(dir,'instance.json');writeFileSync(config,JSON.stringify(input));
+    const run=spawnSync(process.execPath,[join(root,'install.mts'),'--config',config,'--state-dir',join(dir,'state'),'--apply','--through','infrastructure'],{encoding:'utf8',env:{...process.env,KUBECTL:stub,HELM:stub}});assert.equal(run.status,0,run.stderr);
+    const generated=new Set(JSON.parse(readFileSync(capture,'utf8')));
+    for(const external of [false,true])for(const tls of [false,true]){
+      const c=configuration({...input,databases:{airbyte:{...(external?{mode:'external',host:'pg.example',user:'airbyte',name:'airbyte',existingSecret:'external-db'}:{}),tls}}});
+      const values=airbyteValues(c,'opencrawl-credentials','postgres','synthetic-test-only'),path=join(dir,'airbyte.json');writeFileSync(path,JSON.stringify(values));
+      const render=spawnSync(process.env.HELM||'helm',['template','sample',process.env.AIRBYTE_CHART!,'-f',path],{encoding:'utf8',maxBuffer:16*1024*1024});assert.equal(render.status,0,render.stderr);
+      let checked=0;for(const match of render.stdout.matchAll(/secretKeyRef:\s*\n\s+name: ([^\n]+)\n\s+key: ([^\n]+)/g)){
+        const name=match[1].replaceAll('"','').trim(),key=match[2].replaceAll('"','').trim();
+        if(name==='opencrawl-credentials'){assert.ok(generated.has(key),`Generated credentials lack upstream key ${key}`);checked++;}
+        if(name==='external-db'){assert.ok(['DATABASE_USER','DATABASE_PASSWORD'].includes(key),`Undocumented external key ${key}`);checked++;}
+      }
+      assert.ok(checked>=8);assert.match(render.stdout,new RegExp('POSTGRES_TLS_ENABLED: "'+String(tls)+'"'));assert.equal(values.temporal.env_vars.POSTGRES_TLS_DISABLE_HOST_VERIFICATION,'false');
+    }
+  }finally{rmSync(dir,{recursive:true});}
 });
 test('invalid external modes, unsafe identifiers, incomplete credentials and wrong context fail before mutation',()=>{
   for(const patch of [{context:''},{temporal:{mode:'typo'}},{postgresql:{enabled:false}},{databases:{app:{name:'db;DROP DATABASE postgres'}}},{databases:{app:{mode:'external'}}},{opensearch:{mode:'external'}},{objectStorage:{mode:'external'}},{airbyte:{mode:'external'}},{unknown:true}])assert.throws(()=>configuration({...input,...patch}));
