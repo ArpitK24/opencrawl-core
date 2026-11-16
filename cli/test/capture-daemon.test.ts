@@ -108,6 +108,8 @@ isolatedTest('Antigravity watches the native full transcript and retains live to
   event('PostToolUse',{stepIdx:1,toolCall:{name:'mcp_opencrawl_search_v1',args:{query:'fixture'}}});event('Stop',{fullyIdle:true});
   writeFileSync(join(dirname(path),'transcript_full.jsonl'),user+JSON.stringify({step_index:2,type:'PLANNER_RESPONSE',source:'MODEL',status:'DONE',content:'full AGY answer'})+'\n');
   await until(()=>JSON.stringify(f.batches).includes('full AGY answer'));await until(()=>readdirSync(join(daemonDir(),'sessions')).length===0);
+  // Session retirement settles local reads; the independent upload lane may still have queued hooks.
+  await until(()=>f.batches.some((batch:any)=>batch.events.some((event:any)=>event.kind==='hook'&&event.data.hookEventName==='PostToolUse')));
   const tools=f.batches.filter((batch:any)=>batch.events.some((event:any)=>event.kind==='hook'&&event.data.hookEventName==='PostToolUse'));
   expect(tools.length).toBeGreaterThan(0);expect(tools.every((batch:any)=>batch.captureMode==='live')).toBe(true);
 }));
