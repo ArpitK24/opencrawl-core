@@ -42,6 +42,8 @@ storageClass: ""
 postgresql:
   enabled: true
   image: postgres:16.6-bookworm
+  # One server hosts the app, Airbyte and two independent Temporal servers.
+  maxConnections: 200
   existingSecret: ""
   size: 20Gi
   resources:

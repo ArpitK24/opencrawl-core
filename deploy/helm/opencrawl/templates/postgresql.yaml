@@ -47,6 +47,7 @@ spec:
       containers:
         - name: postgres
           image: {{ .Values.postgresql.image | quote }}
+          args: ["-c", {{ printf "max_connections=%v" .Values.postgresql.maxConnections | quote }}]
           securityContext: {runAsUser: 999, runAsGroup: 999, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
           env:
             - {name: POSTGRES_USER, value: postgres}

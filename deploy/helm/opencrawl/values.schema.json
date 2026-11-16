@@ -95,6 +95,11 @@
               }
             }
           }
+        },
+        "maxConnections": {
+          "type": "integer",
+          "minimum": 20,
+          "maximum": 10000
         }
       }
     },

@@ -85,7 +85,10 @@ For Temporal TLS use `temporal.tls.enabled: true`. For custom trust or mTLS set
 `serverName` optionally specifies the expected server name. API keys require TLS.
 For an external PostgreSQL TLS connection used by bundled Temporal, set
 `databases.temporal.tls: true`; mount a private CA using the infrastructure overrides.
-Airbyte's upstream `airbyte.values` provides its PostgreSQL TLS settings.
+For Airbyte's external PostgreSQL use `databases.airbyte.tls: true`; Java clients
+and its Temporal server verify certificates and hostnames. `databases.airbyte.caPath`
+optionally points to a private CA mounted into the Airbyte components using upstream
+`airbyte.values` volume hooks. Without a custom CA, Java uses its default trust store.
 
 External Airbyte must have network access to both `objectStorage.airbyteEndpoint`
 (defaults to the S3 endpoint) and `airbyte.appUrl` for connector credential proxying.
