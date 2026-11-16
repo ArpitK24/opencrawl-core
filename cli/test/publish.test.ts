@@ -24,6 +24,7 @@ function registry(dist: string) {
     published: new Set<string>(), downloaded: new Set<string>(),
     publishCalls: [] as string[], promotions: [] as string[],
     blocked: new Set<string>(), clock: 0, onSleep: () => {}, failPromotion: false, failAfterPromotions: Infinity,
+    stalePackumentTags: false, invalidTagResponse: false,
     metadata: new Map<string,Record<string,unknown>>(),
   };
   for (const folder of names) state.packageTags.set(folder === 'cli' ? cli : `${cli}-${folder}`, folder === 'cli' ? state.tags : {latest: '0.9.0', next: '0.9.0'});
@@ -34,7 +35,7 @@ function registry(dist: string) {
     expect(args).toContain('--registry=https://registry.npmjs.org');
     expect(args).toContain('--@getopencrawl:registry=https://registry.npmjs.org');
     if (args[1] === 'view') {
-      if (args[3] === 'dist-tags') return result(0, JSON.stringify(state.packageTags.get(args[2])));
+      if (args[3] === 'dist-tags') return result(0, JSON.stringify(state.stalePackumentTags ? {latest: '0.9.0', next: '0.9.0'} : state.packageTags.get(args[2])));
       const name = args[2].slice(0, args[2].lastIndexOf('@'));
       return state.published.has(name) ? result(0, JSON.stringify(state.metadata.get(name)??{version:'1.0.0',opencrawlRevision:revision,dist:{integrity}})) : result(1, '', 'E404');
     }
@@ -51,6 +52,7 @@ function registry(dist: string) {
       return result(0);
     }
     if (args[1] === 'dist-tag') {
+      if (args[2] === 'ls') return result(0, state.invalidTagResponse ? 'unrecognized response' : Object.entries(state.packageTags.get(args[3])!).map(([tag, version]) => `${tag}: ${version}`).join('\n'));
       expect(state.downloaded.size).toBe(6); // metadata alone is insufficient
       if (args[2] === 'rm') { delete state.packageTags.get(args[3])![args[4]]; return result(0); }
       if (state.failPromotion || state.promotions.length === state.failAfterPromotions) return result(1, '', 'temporary registry failure');
@@ -87,6 +89,18 @@ test('launcher remains staged until its own tarball is downloadable', () => regi
   expect(state.promotions.length).toBe(12);
   for (const tags of state.packageTags.values()) expect(tags).toEqual({latest: '1.0.0', next: '1.0.0'});
   expect(state.tags.next).toBe('1.0.0');
+}));
+
+test('staging tags are removed even when package metadata lags behind tag writes', () => registryFixture(async ({state, execute}) => {
+  state.stalePackumentTags = true;
+  await execute();
+  for (const tags of state.packageTags.values()) expect(tags).toEqual({latest: '1.0.0', next: '1.0.0'});
+}));
+
+test('unrecognized tag output fails before publishing', () => registryFixture(async ({state, execute}) => {
+  state.invalidTagResponse = true;
+  await expect(execute()).rejects.toThrow('Invalid CLI release tag response');
+  expect(state.publishCalls).toEqual([]);
 }));
 
 test('availability timeout leaves channel unchanged and a rerun resumes immutable packages', () => registryFixture(async ({state, execute, cli}) => {
