@@ -273,7 +273,8 @@ export function createBoundObjectMigration({database,prefix,tenantIds,store,regi
       }
       case 'event-identities':{
         tenantDigest(parts[0]);source=eventSchema.parse(json(bytes));const session=key.slice(0,-'event-identities-v1.json'.length);
-        if(write)await eventIdentities.migrateSession({store,prefix,source:session});target=await eventIdentities.exportLegacyLedger({store,prefix,source:session});
+        const observedMarker={source:session,bytes};
+        if(write)await eventIdentities.migrateSession({store,prefix,source:session,observedMarker});target=await eventIdentities.exportLegacyLedger({store,prefix,source:session,observedMarker});
         if(target&&typeof target==='object'&&'deleted' in target){source=target;rows=0;}else rows='events' in (source as z.infer<typeof eventSchema>)?Object.keys((source as {events:Record<string,string>}).events).length:1;break;
       }
       case 'session-scheduler-retirement':{
