@@ -44,6 +44,7 @@ test('an interrupted draft reserves its version and source until that original p
   assert.throws(()=>selectRelease([...baseline,draft],c,undefined,ancestor),/reserved/);
   assert.throws(()=>selectRelease([...baseline,draft],b,'0.2.0',ancestor),/unfinished/);
   assert.throws(()=>selectRelease([...baseline,{...draft,body:'unowned draft'}],b,undefined,ancestor),/reserved/);
+  assert.throws(()=>selectRelease([...baseline,{...draft,prerelease:true}],b,undefined,ancestor),/reserved/);
 });
 test('staged chart version changes preserve the runtime version and reject malformed versions',()=>{
   const chart='apiVersion: v2\nversion: 0.1.0\nappVersion: "0.4.1"\n';

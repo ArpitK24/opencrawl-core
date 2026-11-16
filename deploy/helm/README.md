@@ -7,7 +7,8 @@ It operates independently of OpenCrawl Cloud.
 
 ## Agent installation
 
-Use the published self-host kit with Node 24+, Helm 3 and kubectl. No image build,
+Use the latest stable `helm-v*` [release](https://github.com/getopencrawl/opencrawl-core/releases)
+and its self-host kit with Node 24+, Helm 3 and kubectl. No image build,
 application checkout or npm install is needed. A Kubernetes cluster, a default
 dynamic StorageClass, DNS and (for remote use) an HTTPS ingress are operator inputs.
 Use a network-policy-capable CNI. Start with `examples/bundled.json`, choose the
