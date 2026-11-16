@@ -25,7 +25,7 @@ export function scheduleDaemonUpgrade({native=compiled(),platform=process.platfo
   if(!config||config.disabled||config.authPending||config.hookOwnership==='plugin'||config.harnesses?.length===0||captureDaemonEnabled(config)||!owned(config))return;
   const directory=join(captureDir(),'daemon'),receipt=join(directory,'upgrade-attempt.json');
   mkdirSync(directory,{recursive:true,mode:0o700});
-  if(existsSync(receipt)){const prior=JSON.parse(readFileSync(receipt,'utf8'));if(prior.version===version&&prior.nextAttemptAt>now&&prior.nextAttemptAt<=now+15*60_000)return;}
+  if(existsSync(receipt)){try{const prior=JSON.parse(readFileSync(receipt,'utf8'));if(prior.version===version&&prior.nextAttemptAt>now&&prior.nextAttemptAt<=now+15*60_000)return;}catch{/* A damaged cooldown cannot permanently suppress migration. */}}
   // Publish the cooldown before spawning. Racing processes can both launch,
   // but the migration's nonblocking kernel lock admits only one installer.
   // No PID/claim file can strand future attempts if this process is killed.

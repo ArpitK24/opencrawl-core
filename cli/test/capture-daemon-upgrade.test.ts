@@ -115,6 +115,7 @@ test('macOS and Linux hooks schedule only a bounded detached migration for owned
       const before=launches;scheduleDaemonUpgrade(options);scheduleDaemonUpgrade(options);
       expect(launches).toBe(before+1);
       scheduleDaemonUpgrade({...options,now:1000+15*60_000});expect(launches).toBe(before+2);
+      writeFileSync(receipt,'damaged cooldown');scheduleDaemonUpgrade(options);expect(launches).toBe(before+3);
     }
   }finally{if(prior===undefined)delete process.env.OPENCRAWL_NO_UPDATE;else process.env.OPENCRAWL_NO_UPDATE=prior;}
 }));
@@ -132,4 +133,13 @@ test('a cancelled staged worker exits without consuming legacy notices or changi
   },ready:async()=>{controller.abort();return false;},cleanup:()=>{}});
   expect(result).toEqual({state:'fallback',reason:'readiness-unconfirmed'});
   expect(await worker).toBe(false);expect(readCaptureConfig()).toEqual(config);expect(existsSync(bootstrapFile())).toBe(false);
+}));
+
+test('a damaged migration binding preserves old notices without breaking the current daemon',()=>fixture(async()=>{
+  await upgradeCaptureDaemon({install:async()=>({supervised:true})});
+  const marker=join(captureDir(),'daemon','legacy-handoff.json');writeFileSync(marker,'damaged binding');
+  const directory=join(captureDir(),'notices');mkdirSync(directory,{recursive:true});writeFileSync(join(directory,'retained.json'),'retained bytes');
+  expect(importLegacyDaemonNotices(readCaptureConfig()!)).toBe(false);
+  expect(existsSync(marker+'.held')).toBe(true);expect(readFileSync(join(directory,'retained.json'),'utf8')).toBe('retained bytes');
+  expect(importLegacyDaemonNotices(readCaptureConfig()!)).toBe(false);
 }));

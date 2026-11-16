@@ -62,7 +62,9 @@ custom launchers are preserved; plugin setup manages its own activation.
 
 Migration retains the destination, installation identity, queued batches and
 transcript cursors. The daemon watches enrolled sessions and recovers pending
-hook notices; it does not scan the historical transcript catalogue. Hosts without
+hook notices; it does not scan the historical transcript catalogue. Claude uses
+three async capture notices: session start, user prompt, and session end. The
+per-turn notice repairs a missed initial enrollment without scanning history. Hosts without
 a usable supervisor retain fallback capture rather than reporting an installed
 daemon. `opencrawl collect status --json` reports the selected capture worker.
 

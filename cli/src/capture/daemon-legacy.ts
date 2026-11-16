@@ -12,7 +12,9 @@ import {HARNESSES} from './parse.ts';
 export function importLegacyDaemonNotices(config:CaptureConfig,limit=64){
   const bindingFile=join(captureDir(),'daemon','legacy-handoff.json');
   if(!existsSync(bindingFile)||config.disabled)return false;
-  const binding:CaptureConfig=JSON.parse(readFileSync(bindingFile,'utf8'));
+  let binding:CaptureConfig;
+  try{binding=JSON.parse(readFileSync(bindingFile,'utf8'));if(!binding||!binding.roots)throw Error('Invalid migration binding');}
+  catch(error){recordError(error);renameSync(bindingFile,bindingFile+'.held');syncDirectory(dirname(bindingFile));return false;}
   if(!sameDaemonBinding(binding,config)||!isDeepStrictEqual(binding.roots,config.roots))return false;
   const directory=join(captureDir(),'notices');if(!existsSync(directory))return false;
   const names=orderedNoticeNames();

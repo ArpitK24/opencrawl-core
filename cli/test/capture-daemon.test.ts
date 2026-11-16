@@ -238,9 +238,9 @@ isolatedTest('idle native session watches retire and the next hook resumes the s
   expect(f.batches.flatMap((batch:any)=>batch.events).filter((event:any)=>event.kind==='message'&&event.data.content[0].text==='before idle')).toHaveLength(1);
 }));
 
-isolatedTest('Claude installs two async capture hooks and preserves unrelated hooks',async()=>fixture(async f=>{
+isolatedTest('Claude installs three async capture hooks and preserves unrelated hooks',async()=>fixture(async f=>{
   const hooks=JSON.parse(readFileSync(join(f.dir,'claude','settings.json'),'utf8')).hooks;
-  expect(Object.keys(hooks).sort()).toEqual(['SessionEnd','SessionStart']);
+  expect(Object.keys(hooks).sort()).toEqual(['SessionEnd','SessionStart','UserPromptSubmit']);
   for(const group of Object.values(hooks) as any[])expect(group[0].hooks[0]).toMatchObject({async:true,timeout:10});
   hooks.SessionStart.push({hooks:[{type:'command',command:'echo unrelated',timeout:10}]});
   writeFileSync(join(f.dir,'claude','settings.json'),JSON.stringify({hooks}));
@@ -966,5 +966,14 @@ isolatedTest('migrated Cursor daemon uploads late legacy hook notices while excl
   atomicJson(join(captureDir(),'notices',notice.id+'.json'),notice);
   await until(()=>JSON.stringify(f.batches).includes('late migration capture survives'));
   expect(existsSync(join(captureDir(),'notices',notice.id+'.json'))).toBe(false);
+  await f.stop();
+}));
+
+isolatedTest('Claude user prompt repairs a missed initial session notice without scanning history',async()=>fixture(async f=>{
+  await f.start();
+  appendFileSync(f.path,f.record('recovered-after-missed-start'));
+  f.event('UserPromptSubmit');
+  await until(()=>JSON.stringify(f.batches).includes('recovered-after-missed-start'));
+  expect(JSON.stringify(f.batches)).toContain('synthetic one');
   await f.stop();
 }));

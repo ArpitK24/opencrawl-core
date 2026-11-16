@@ -44,7 +44,7 @@ export function recordNativeDaemonHook(harness:Harness,event:any,pid=process.ppi
   const config=readCaptureConfig();if(!config||config.disabled||config.authPending||!captureDaemonEnabled(config)||!config.harnesses?.includes(harness))return false;
   if(!event||typeof event!=='object'||Array.isArray(event))throw Error('Hook payload is not an object');
   if((harness==='claude-code'||harness==='codex')&&event.cursor_version)return false;
-  if(harness==='claude-code'&&!['SessionStart','SessionEnd'].includes(event.hook_event_name))return false;
+  if(harness==='claude-code'&&!['SessionStart','UserPromptSubmit','SessionEnd'].includes(event.hook_event_name))return false;
   const id=randomUUID(),at=Date.now(),time=new Date(at).toISOString(),session=daemonSession(harness,event,time);
   if(captureExcluded(config,{sessionId:session.sessionId,cwd:session.cwd??undefined}))return false;
   if(harness==='claude-code'&&(typeof event.transcript_path!=='string'||!daemonPathAllowed(config,harness,session.sessionId,event.transcript_path)))throw Error('Claude transcript outside configured session');

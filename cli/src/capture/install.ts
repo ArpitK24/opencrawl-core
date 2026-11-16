@@ -126,7 +126,7 @@ function configureHooks(config:CaptureConfig,harnesses:Harness[]) {
   const hook=(harness:Harness,...args:string[])=>{const invocation=runner.invocation(harness);return {...invocation,command:invocation.command+' collect hook '+args.map(quote).join(' ')};};
   const managed=(harness:Harness)=>()=>({...hook(harness,'--managed','--harness',harness),async:true,timeout:120});
   if(harnesses.includes('claude-code')&&captureDaemonEnabled(config))modifyHooks(join(config.roots['claude-code'],'settings.json'),
-    ['SessionStart','SessionEnd'],()=>({...hook('claude-code','--harness','claude-code'),async:true,timeout:10}));
+    ['SessionStart','UserPromptSubmit','SessionEnd'],()=>({...hook('claude-code','--harness','claude-code'),async:true,timeout:10}));
   else if(harnesses.includes('claude-code'))modifyHooks(join(config.roots['claude-code'],'settings.json'),
     ['SessionStart','UserPromptSubmit','PreToolUse','PostToolUse','PostToolUseFailure','Stop','SubagentStop','SessionEnd'],managed('claude-code'));
   // Codex runs SessionEnd synchronously within 3s. Record its notice locally;

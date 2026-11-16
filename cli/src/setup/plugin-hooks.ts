@@ -71,7 +71,7 @@ export function pluginHookFiles(client:PluginClient,binding:PluginHookBinding,pl
   return {[runner]:script,'hooks.json':json({[pluginName+'-startup']:{SessionStart:[{type:startup.type,command:startup.command,timeout:startup.timeout}],PreToolUse:[{matcher:searchMatcher,hooks:[{type:search.type,command:search.command,timeout:search.timeout}]}]},
    [pluginName+'-capture']:{SessionStart:[entry('SessionStart')],PostToolUse:[{matcher:'*',hooks:[entry('PostToolUse')]}],PostInvocation:[entry('PostInvocation')],Stop:[entry('Stop')]}})};
  }
- const events=client==='claude-code'?['SessionStart','SessionEnd']
+ const events=client==='claude-code'?['SessionStart','UserPromptSubmit','SessionEnd']
   :['SessionStart','UserPromptSubmit','PreToolUse','PostToolUse','Stop','SubagentStop','SessionEnd'];
  const hooks:Record<string,unknown[]>=Object.fromEntries(events.map(event=>[event,[{hooks:event==='SessionStart'?[startup,capture(event)]:[capture(event)]}]]));
  (hooks.PreToolUse??=[]).push({matcher:searchMatcher,hooks:[search]});
