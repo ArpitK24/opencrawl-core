@@ -95,6 +95,7 @@ optionally points to a private CA mounted into the Airbyte components using upst
 
 External Airbyte must have network access to both `objectStorage.airbyteEndpoint`
 (defaults to the S3 endpoint) and `airbyte.appUrl` for connector credential proxying.
+The default app URL is namespace-qualified for an in-cluster Airbyte service.
 Set these explicitly when Airbyte runs outside the cluster. Provision its own
 dedicated workspace and credentials. The installer never patches an external
 Airbyte catalog or changes its database.
