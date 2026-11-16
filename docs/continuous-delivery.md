@@ -22,10 +22,11 @@ together, runs its own protected-branch checks and deploys its checked immutable
 image with drain, rollback and public verification. Core has no dependency on
 that consumer or its infrastructure.
 
-CLI changes on main automatically allocate a stable version greater than the
-published `next` channel unless the committed version is already newer. The same
-version is used for the build and all Linux, macOS and Windows checks. Publication
-promotes `next` only after every platform and the launcher are downloadable.
+CLI changes on main allocate a version above all published CLI artifacts unless
+the committed version is already newer. The same version is used for the build
+and all Linux, macOS and Windows checks. All six packages advance `latest` only
+after their archives are downloadable. The `next` alias stays synchronized for
+installed clients, and staging tags are removed after promotion.
 Source provenance is included in the launcher package. No manual publish dispatch
 or version-reservation queue is needed after automation is enabled.
 Core delivery waits until the published CLI includes the latest client-source

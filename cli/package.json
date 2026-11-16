@@ -2,6 +2,11 @@
   "name": "@getopencrawl/cli",
   "version": "0.4.63",
   "description": "Capture coding-agent sessions and search workspace knowledge with OpenCrawl",
+  "homepage": "https://getopencrawl.com",
+  "bugs": {
+    "url": "https://github.com/getopencrawl/opencrawl-core/issues"
+  },
+  "keywords": ["opencrawl", "cli", "mcp", "coding-agents"],
   "type": "module",
   "license": "Apache-2.0",
   "bin": {
