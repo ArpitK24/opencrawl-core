@@ -48,7 +48,7 @@ export function setupPluginFiles(client:PluginClient,api:string,options:BundleOp
   const base={name:identity.name,version,description:'Search knowledge and finish OpenCrawl setup at '+origin+'.',author:{name:'OpenCrawl'},license:'MIT'};
   const guideCommand=client==='devin'?['/usr/bin/env','OPENCRAWL_AUTH=devin-cloud','OPENCRAWL_CONFIG_HOME='+configHome,'OPENCRAWL_API_URL='+origin,'PATH=/usr/local/bin:/usr/bin:/bin',...command]:command;
   const guide=setupAgentGuide(client,origin,guideCommand,client==='devin'?'linux':process.platform,['codex','devin'].includes(client)?{name:identity.name,url}:undefined)+`\nThis plugin is \`${identity.name}\`, bound to ${origin}. Use this plugin's native MCP namespace for setup and search; preserve other OpenCrawl deployments.\n`;
-  const files:Record<string,string>={...Object.fromEntries(Object.entries(skillFiles(guide)).map(([name,content])=>['skills/opencrawl/'+name,content])),'skills/opencrawl-setup/SKILL.md':guide,'README.md':'# OpenCrawl\n\nContinue setup at '+origin+' with this plugin. The CLI owns saved choices and history workers; this native plugin delivers startup and capture hooks.\n'};
+  const files:Record<string,string>={...Object.fromEntries(Object.entries(skillFiles()).map(([name,content])=>['skills/opencrawl/'+name,content])),'skills/opencrawl-setup/SKILL.md':guide,'README.md':'# OpenCrawl\n\nContinue setup at '+origin+' with this plugin. The CLI owns saved choices and history workers; this native plugin delivers startup and capture hooks.\n'};
   if(client==='codex') {
     // Codex 0.166 discovers both MCP and hooks through its supported compatibility layout.
     // A portable root without its schema silently loads skills but drops MCP.
