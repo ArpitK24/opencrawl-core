@@ -6,23 +6,27 @@ import {configuredToken, workspaceIdentityEnabled} from './workspace-identity.ts
 import {accessToken} from './session.ts';
 import {withEnvironmentTokenOrigin} from './environment-token.ts';
 import {readCaptureConfig} from './capture/runtime.ts';
+import {hasPluginContext,pluginHookContext} from './setup/plugin-context.ts';
 
 /** Authentication is renewed per HTTP exchange, not copied into a long-lived
  * MCP configuration. Redirects never receive credentials or request bodies. */
-export function authenticatedMcpFetch(api:string,{fetcher=fetch,credential=async(rejected?:string,signal?:AbortSignal)=>{
+export function authenticatedMcpFetch(api:string,{fetcher=fetch,validateBinding=()=>{},credential=async(rejected?:string,signal?:AbortSignal)=>{
   const configured=await configuredToken('OPENCRAWL_TOKEN',api,rejected,signal);
   return {token:configured||await accessToken(api,rejected,fetcher),refreshable:!configured||workspaceIdentityEnabled()};
-}}:{fetcher?:typeof fetch;credential?:(rejected?:string,signal?:AbortSignal)=>Promise<{token:string;refreshable:boolean}>}={}):FetchLike {
+}}:{fetcher?:typeof fetch;validateBinding?:()=>void;credential?:(rejected?:string,signal?:AbortSignal)=>Promise<{token:string;refreshable:boolean}>}={}):FetchLike {
   const endpoint=apiOrigin(api)+'/mcp';
   return async(url,init={})=>{
     if(String(url)!==endpoint)throw new CliError('TOKEN_DESTINATION_MISMATCH','MCP attempted to use a different endpoint.',64);
+    validateBinding();
     const signal=init.signal??undefined;
     signal?.throwIfAborted();
     let auth=await credential(undefined,signal);
     const send=async()=>{
       signal?.throwIfAborted();
+      validateBinding();
       const headers=new Headers(init.headers);headers.set('authorization','Bearer '+auth.token);
       const response=await fetcher(endpoint,{...init,headers,redirect:'error'});
+      try{validateBinding();}catch(error){await response.body?.cancel();throw error;}
       if(response.status>=300&&response.status<400){await response.body?.cancel();throw new Error('MCP redirect refused');}
       return response;
     };
@@ -110,12 +114,20 @@ export async function mcpCommand(args:string[]):Promise<number>{
     if(positionals.length)throw Error('Unexpected MCP argument');
     if(values.help){process.stderr.write('Usage: opencrawl mcp [--api <origin>]\nServes the configured OpenCrawl MCP over stdio, renewing existing credentials.\n');return 0;}
     const explicit=values.api??process.env.OPENCRAWL_API_URL,api=apiOrigin(explicit??readCaptureConfig()?.api??DEFAULT_API_ORIGIN);
+    let validateBinding=()=>{};
+    if(hasPluginContext()){
+      if(process.env.OPENCRAWL_PLUGIN_CLIENT==='devin'){
+        const {readDevinPlugin}=await import('./setup/devin-plugin.ts'),initial=readDevinPlugin(api);
+        validateBinding=()=>{const current=readDevinPlugin(api);if(current.digest!==initial.digest||current.root!==initial.root)throw new CliError('PLUGIN_BINDING_CHANGED','The native plugin changed. Reconnect this plugin.');};
+      }else validateBinding=()=>{pluginHookContext(api,process.env.OPENCRAWL_PLUGIN_CLIENT??'');};
+      validateBinding();
+    }
     return await withEnvironmentTokenOrigin(explicit,async()=>{
       const stop=new AbortController(),abort=()=>stop.abort();
       process.once('SIGINT',abort);process.once('SIGTERM',abort);
       try{
         await bridgeMcp({input:new StdioServerTransport(process.stdin,process.stdout,{maxBufferSize:65536}),
-          remote:new StreamableHTTPClientTransport(new URL(api+'/mcp'),{fetch:authenticatedMcpFetch(api),requestInit:{redirect:'error'},onInsufficientScope:'throw'}),signal:stop.signal});
+          remote:new StreamableHTTPClientTransport(new URL(api+'/mcp'),{fetch:authenticatedMcpFetch(api,{validateBinding}),requestInit:{redirect:'error'},onInsufficientScope:'throw'}),signal:stop.signal});
         return 0;
       }finally{process.removeListener('SIGINT',abort);process.removeListener('SIGTERM',abort);}
     });

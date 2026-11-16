@@ -9,6 +9,7 @@ import type {SetupClient} from './state.ts';
 import {pluginInventory} from './plugins.ts';
 
 export function setupInventory({home=homedir(),env=process.env,which=Bun.which,api}:{home?:string;env?:NodeJS.ProcessEnv;which?:(name:string)=>string|null;api:string}):SetupClient[]{
+  if(env.OPENCRAWL_AUTH==='devin-cloud')return [{id:'devin',label:'Devin Cloud',detected:true,plugin:true,forward:true,history:false,historyFiles:0,historyBytes:0}];
   const previous=readCaptureConfig();
   const roots=previous?.api===api?previous.roots:{'claude-code':env.CLAUDE_CONFIG_DIR||join(home,'.claude'),codex:env.CODEX_HOME||join(home,'.codex'),cursor:env.CURSOR_CONFIG_DIR||join(home,'.cursor'),antigravity:env.ANTIGRAVITY_HOME||join(home,'.gemini')};
   const histories=inventory({roots,claudeDesktopSessionsRoot:previous?.api===api?previous.claudeDesktopSessionsRoot:defaultClaudeDesktopSessionsRoot(home)},'all').sources;

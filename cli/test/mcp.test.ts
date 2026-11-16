@@ -19,6 +19,19 @@ async function listen(server:Server){await new Promise<void>((resolve,reject)=>{
 async function stop(server:Server){server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
 const bounded=<T>(p:Promise<T>)=>Promise.race([p,new Promise<never>((_,reject)=>{const timer=setTimeout(()=>reject(Error('Timed out')),3000);timer.unref();})]);
 
+test('MCP rechecks plugin binding before credentials, after renewal and before releasing a response',async()=>{
+ for(const changed of ['before','credential','response']){
+  let valid=changed!=='before',mints=0,sent=0,cancelled=false;
+  const request=authenticatedMcpFetch('https://mcp.example',{
+   validateBinding:()=>{if(!valid)throw Error('binding changed');},
+   credential:async()=>{mints++;if(changed==='credential')valid=false;return {token:'synthetic',refreshable:true};},
+   fetcher:(async()=>{sent++;valid=false;return new Response(new ReadableStream({cancel(){cancelled=true;}}));}) as unknown as typeof fetch,
+  });
+  await expect(request('https://mcp.example/mcp')).rejects.toThrow('binding changed');
+  expect(mints).toBe(changed==='before'?0:1);expect(sent).toBe(changed==='response'?1:0);expect(cancelled).toBe(changed==='response');
+ }
+});
+
 test('MCP credentials renew once per rejected exchange, keep static tokens static and never follow redirects',async()=>{
  const api='https://mcp.example',seen:string[]=[],minted:(string|undefined)[]=[];
  const request=authenticatedMcpFetch(api,{credential:async rejected=>{minted.push(rejected);return {token:rejected?'new':'old',refreshable:true};},fetcher:(async(url,init)=>{

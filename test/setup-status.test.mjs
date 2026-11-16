@@ -46,6 +46,28 @@ test('setup records independent choices and fails closed on scope, capture-only 
   assert.equal((await restarted.read(owner)).installations[0].installationId,selection.installationId);
 });
 
+test('Devin setup uses scoped core proof and workload guidance without inventing native MCP evidence',async()=>{
+  const f=await fixture(),selected={...selection,client:'devin'};
+  await f.setup.installation(owner,registration([observation('devin',{hookTrust:'not_required'})]));
+  const proof=(await f.setup.verify(owner,selected)).proof;
+  const row=(await f.setup.read(owner)).installations[0].clients.find(client=>client.client==='devin');
+  assert.match(row.humanTasks.find(task=>task.kind==='mcp_auth').instruction,/renewable workload identity/);
+  await assert.rejects(f.setup.verify({...owner,tenantId:'other'},selected),{status:404});
+  await assert.rejects(f.setup.installation({...owner,captureAccess:'write'},registration([observation('devin')])),{status:403});
+  const receipt=await f.setup.mcp(owner,{...selected,proofId:proof.id});
+  const batch=f.batch({harness:'devin',sessionId:'devin-native-session'});
+  batch.events[0].data.content=proof.marker;
+  await f.setup.session(owner,batch);
+  const hit=f.hit({text:proof.marker,provenance:{userId:owner.userId,installationId:selection.installationId,harness:'devin',sessionId:batch.sessionId,eventId:'native-message'}});
+  f.setHits([hit]);f.setFetched(hit);
+  assert.equal((await f.setup.verify(owner,selected)).proof.state,'verified');
+  assert.equal((await f.setup.verify(owner,selected)).mcp.state,'observed','searchable marker alone is not native MCP correlation');
+  await f.setup.session(owner,{...batch,events:[{id:'terminal-result',kind:'tool_result',timestamp:batch.events[0].timestamp,data:{call_id:'terminal',output:JSON.stringify(receipt)}}]});
+  assert.equal((await f.setup.verify(owner,selected)).mcp.state,'observed','an unpaired receipt in tool output does not prove a native invocation');
+  await f.setup.installation(owner,registration([observation('devin',{forward:false,hookTrust:'not_required'})]));
+  assert.equal((await f.setup.verify(owner,selected)).proof.state,'not_selected');
+});
+
 test('history, old events, unrelated clients, other installations, hooks and forged ownership never prove capture',async()=>{
   const f=await fixture();
   for(const changed of [

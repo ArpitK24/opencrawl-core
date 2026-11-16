@@ -1,5 +1,5 @@
 /** Local observations describe configuration; only server evidence verifies a client. */
-export const SETUP_CLIENTS = ['claude-code','codex','cursor','grok-bot','antigravity','claude-desktop','chatgpt'] as const;
+export const SETUP_CLIENTS = ['claude-code','codex','cursor','grok-bot','antigravity','devin','claude-desktop','chatgpt'] as const;
 export type SetupClient = typeof SETUP_CLIENTS[number];
 export const SETUP_PLUGIN_STATES = ['not_selected','pending','prepared','installed','error'] as const;
 export type SetupPluginState = typeof SETUP_PLUGIN_STATES[number];
