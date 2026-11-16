@@ -8,6 +8,7 @@ import {reconcileHookEntries,reconcileHookGroups} from '../hook-config.ts';
 import {retryWindowsSharing} from '../filesystem.ts';
 import {CliError} from '../oauth.ts';
 import {hookRunner,quote} from '../hook-runner.ts';
+import {searchContextMarker} from '../search-context.ts';
 import type {SetupScope} from './state.ts';
 
 type RecordValue=Record<string,unknown>;
@@ -18,12 +19,12 @@ function runnerCommand(command:unknown,area:'capture'|'startup',client:string):b
  const runner=hookRunner(area,[]),file=runner.file;
  const prefixes=new Set([runner.invocation(client).command,(process.platform==='win32'?'':'/bin/sh ')+quote(file)]);
  if(/^[\w@%+=:,./-]+$/.test(file))prefixes.add((process.platform==='win32'?'':'/bin/sh ')+file);
- const arguments_:string[][]=area==='startup'?[['session','start','--harness',client],['session','start','--harness',client,'--after-tool']]
+ const arguments_:string[][]=area==='startup'?[['session','start','--harness',client],['session','start','--harness',client,'--after-tool'],['search-context','--harness',client]]
   :[['collect','hook','--harness',client],['collect','hook','--managed','--harness',client],...['SessionStart','PostToolUse','PostInvocation','Stop'].map(event=>['collect','hook','--harness',client,'--event',event])];
  const suffixes=arguments_.flatMap(args=>[args.join(' '),args.slice(0,2).join(' ')+' '+args.slice(2).map(quote).join(' ')]);
  return [...prefixes].some(prefix=>suffixes.some(suffix=>command===prefix+' '+suffix));
 }
-function ownedHook(value:unknown,client:string):boolean{return record(value)&&(['capture','startup'] as const).some(area=>(client==='cursor'||value.statusMessage==='OpenCrawl session '+area)&&runnerCommand(value.command,area,client));}
+function ownedHook(value:unknown,client:string):boolean{return record(value)&&(['capture','startup'] as const).some(area=>(client==='cursor'||value.statusMessage==='OpenCrawl session '+area||area==='startup'&&value.statusMessage===searchContextMarker)&&runnerCommand(value.command,area,client));}
 function foreignCodexKeysUnchanged(before:Record<string,unknown[]>,after:Record<string,unknown[]>):boolean{
  return Object.entries(before).every(([event,groups])=>groups.every((group,g)=>{
   if(!record(group)||!Array.isArray(group.hooks))return isDeepStrictEqual(group,after[event]?.[g]);

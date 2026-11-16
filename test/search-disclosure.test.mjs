@@ -1,3 +1,4 @@
+import {withTestState} from './fixtures/memory-application-state.mjs';
 import {memorySessionStore as deletionTestStore} from './session-store-fixture.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
@@ -97,12 +98,12 @@ test('fetch is scoped, paged, version checked and freshly authorized; grouped or
 });
 
 test('session ID fetch constrains both the corpus and tenant in the realm', async () => {
-  const sessions=createSessionSearch({store:deletionTestStore(),prefix:"capture-v1",endpoint:'http://example.test',tenantId:'team',fetch:async(url,init)=>{
+  const sessions=createSessionSearch(withTestState({store:deletionTestStore(),prefix:"capture-v1",endpoint:'http://example.test',tenantId:'team',fetch:async(url,init)=>{
     const body=JSON.parse(init.body);assert.ok(body.query.bool.filter.some(f=>f.term?.tenantId==='team'));
     assert.ok(body.query.bool.filter.some(f=>f.term?.corpus==='session'));
     assert.ok(body.query.bool.must[0].bool.filter.some(f=>f.term?.id==='specific'));
     return realmResponse('session',{hits:{total:{value:1},hits:[{_id:'specific',_source:{tenantId:'team',userId:'author',harness:'codex',sessionId:'s',text:'source'}}]}});
-  }});
+  }}));
   const result=await createWorkspaceSearch({sessions}).fetch(principal,{id:'sessions:specific'});assert.equal(result.text,'source');
   await assert.rejects(sessions.search({...principal,tenantId:'other'},{id:'specific'}),/scope/);
 });
@@ -118,9 +119,9 @@ test('connector fetch still requires public channel and current available parent
       assert.ok(body.query.bool.must[0].bool.filter.some(f=>f.term?.id===id));
       return realmResponse('connector',{hits:{hits:[{_id:id,_source:{...base,kind:'file_chunk',sourceId:'chunk',text:'private full text',channelId:'C',parentId:'F',parentKind:'file',resourceVersion:'v1'}}]}});
     }
-    const channel=body.ids[0].includes(documentId(binding,'channel','C'));
-    const d=channel?{...base,kind:'channel',sourceId:'C',publicChannel}:{...base,kind:'file',sourceId:'F',resourceVersion:currentVersion,available};
-    return realmResponse('connector',{docs:[{_id:documentId(binding,d.kind,d.sourceId),found:true,_source:d}]});
+    const documents=[{...base,kind:'channel',sourceId:'C',publicChannel},{...base,kind:'file',sourceId:'F',resourceVersion:currentVersion,available}];
+    const byId=new Map(documents.map(d=>['connector:'+documentId(binding,d.kind,d.sourceId),{_id:documentId(binding,d.kind,d.sourceId),found:true,_source:d}]));
+    return realmResponse('connector',{docs:body.ids.map(id=>{assert.ok(byId.has(id),'unexpected metadata ID');return byId.get(id);})});
   }});
   const service=createWorkspaceSearch({connectors:{search:(p,q)=>adapter.search(p,[binding],q)}});
   assert.equal((await service.fetch(principal,{id:'connectors:'+id})).text,'private full text');

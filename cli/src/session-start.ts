@@ -5,17 +5,18 @@ import {join} from 'node:path';
 import {atomicJson, configDir, withSessionLock} from './session.ts';
 import {boardRequest, boardStateFile, saveBoardRegistration} from './board.ts';
 import {apiOrigin, DEFAULT_API_ORIGIN, CliError} from './oauth.ts';
-import {readCaptureConfig} from './capture/runtime.ts';
+import {readCaptureConfig,captureDaemonEnabled} from './capture/runtime.ts';
 import {normalizeHarness} from './capture/parse.ts';
 import {withEnvironmentTokenOrigin} from './environment-token.ts';
 import {parseArgs} from 'node:util';
 import {hasPluginContext, pluginHookContext, recordPluginActivation} from './setup/plugin-context.ts';
+import {refreshManagedSkills} from './skill-activation.ts';
 import {retrievalInstruction} from './retrieval-instruction.ts';
 import {enqueueSessionStart,startupBindingKey,startupObservation} from './session-start-task.ts';
 
 export type AntigravityStartOutput = {injectSteps: [{systemMessage: {systemMessage: string}}]};
 export type CursorStartOutput = {additional_context: string};
-export type StandardStartOutput = {hookSpecificOutput: {hookEventName: 'SessionStart'; additionalContext: string}};
+export type StandardStartOutput = {hookSpecificOutput: {hookEventName: 'SessionStart'; additionalContext: string; reloadSkills?: boolean}};
 const sessionPattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,199}$/;
 const registeredPrefix = 'OpenCrawl: registered with ';
 const pendingPrefix = 'OpenCrawl: background registration pending.';
@@ -157,8 +158,10 @@ export async function sessionStartCommand(args: string[], input: Readable = proc
     if ((harness === 'claude-code' || harness === 'codex') && event !== null && typeof event === 'object' &&
         'cursor_version' in event && typeof event.cursor_version === 'string') return 0;
     recordPluginActivation(plugin,event);
+    const activation=!plugin&&!captureDaemonEnabled()&&!readCaptureConfig()?.backgroundStartup?await refreshManagedSkills(api,{hook:true}):undefined;
     result = await withEnvironmentTokenOrigin(parsed.values.api ?? process.env.OPENCRAWL_API_URL,
       () => parsed.values['after-tool'] ? cursorToolContext(api, event) : sessionStart(api, harness, event));
+    if(harness==='claude-code'&&activation?.updated&&'hookSpecificOutput' in result)result.hookSpecificOutput.reloadSkills=true;
   } catch {result = unavailable(harness, 'The local hook input or configuration could not be read.');}
   process.stdout.write(JSON.stringify(result) + '\n');
   return 0;

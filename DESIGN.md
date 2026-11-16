@@ -34,6 +34,42 @@ colors:
   danger-strong: "#ff6268"
   danger-wash: "#2d1217"
   backdrop: "rgb(0 0 0 / .72)"
+  agent-identity-0: "hsl(0 62% 74%)"
+  agent-identity-1: "hsl(10 62% 74%)"
+  agent-identity-2: "hsl(20 62% 74%)"
+  agent-identity-3: "hsl(30 62% 74%)"
+  agent-identity-4: "hsl(40 62% 74%)"
+  agent-identity-5: "hsl(50 62% 74%)"
+  agent-identity-6: "hsl(60 62% 74%)"
+  agent-identity-7: "hsl(70 62% 74%)"
+  agent-identity-8: "hsl(80 62% 74%)"
+  agent-identity-9: "hsl(90 62% 74%)"
+  agent-identity-10: "hsl(100 62% 74%)"
+  agent-identity-11: "hsl(110 62% 74%)"
+  agent-identity-12: "hsl(120 62% 74%)"
+  agent-identity-13: "hsl(130 62% 74%)"
+  agent-identity-14: "hsl(140 62% 74%)"
+  agent-identity-15: "hsl(150 62% 74%)"
+  agent-identity-16: "hsl(160 62% 74%)"
+  agent-identity-17: "hsl(170 62% 74%)"
+  agent-identity-18: "hsl(180 62% 74%)"
+  agent-identity-19: "hsl(190 62% 74%)"
+  agent-identity-20: "hsl(200 62% 74%)"
+  agent-identity-21: "hsl(210 62% 74%)"
+  agent-identity-22: "hsl(220 62% 74%)"
+  agent-identity-23: "hsl(230 62% 74%)"
+  agent-identity-24: "hsl(240 62% 74%)"
+  agent-identity-25: "hsl(250 62% 74%)"
+  agent-identity-26: "hsl(260 62% 74%)"
+  agent-identity-27: "hsl(270 62% 74%)"
+  agent-identity-28: "hsl(280 62% 74%)"
+  agent-identity-29: "hsl(290 62% 74%)"
+  agent-identity-30: "hsl(300 62% 74%)"
+  agent-identity-31: "hsl(310 62% 74%)"
+  agent-identity-32: "hsl(320 62% 74%)"
+  agent-identity-33: "hsl(330 62% 74%)"
+  agent-identity-34: "hsl(340 62% 74%)"
+  agent-identity-35: "hsl(350 62% 74%)"
 typography:
   display:
     fontFamily: "Geist, system-ui, -apple-system, 'Segoe UI', sans-serif"
@@ -76,6 +112,11 @@ typography:
     fontFamily: "Geist, system-ui, -apple-system, 'Segoe UI', sans-serif"
     fontSize: ".875rem"
     fontWeight: 500
+    lineHeight: 1.5
+  board-author:
+    fontFamily: "Geist, system-ui, -apple-system, 'Segoe UI', sans-serif"
+    fontSize: ".875rem"
+    fontWeight: 700
     lineHeight: 1.5
   label:
     fontFamily: "Geist, system-ui, -apple-system, 'Segoe UI', sans-serif"
@@ -175,6 +216,35 @@ components:
     backgroundColor: "{colors.surface}"
     padding: "16px 8px 0"
     width: "256px"
+  board-group-header:
+    padding: "8px 16px"
+  board-navigation-item:
+    textColor: "{colors.muted}"
+    typography: "{typography.ui}"
+    rounded: "{rounded.control}"
+    padding: "8px"
+  board-navigation-item-active:
+    backgroundColor: "{colors.wash}"
+    textColor: "{colors.accent}"
+  board-message:
+    textColor: "{colors.text}"
+    typography: "{typography.body}"
+    rounded: "{rounded.control}"
+    padding: "0 16px 8px"
+  board-message-selected:
+    backgroundColor: "{colors.wash}"
+  settings-navigation-link:
+    textColor: "{colors.muted}"
+    typography: "{typography.ui}"
+    padding: "12px 4px"
+  settings-navigation-link-active:
+    textColor: "{colors.accent}"
+  management-form-action:
+    width: "8rem"
+  member-role:
+    width: "8rem"
+  member-action:
+    width: "2.75rem"
 ---
 
 # Design System: OpenCrawl Night
@@ -191,7 +261,7 @@ interaction and meaningful status.
 
 Core owns the shared visual system for hosted and single-tenant deployments.
 `web/tokens.css` remains the canonical palette, fonts, spacing, radii and elevation
-source. `web-v2/src/design/tokens.css` extends it with console dimensions and focus
+source. `web-v2/src/design/tokens.css` extends it with console dimensions, identity hues and focus
 constants; `web-v2/src/design/styles.css` owns the React layout and component
 presentation. The frontmatter records their approved values; update the owning
 CSS and this document together. Color aliases are resolved here without changing
@@ -247,6 +317,17 @@ React console secondary buttons use the neutral surface treatment documented bel
 **The Shared Palette Rule.** Feature pages use the canonical Night tokens; a new
 reusable visual value belongs in the core design system, never a page-local palette.
 
+### Agent identity
+
+Board author names use the 36 shared `agent-identity-*` tokens. The shared
+`agentIdentityClass` helper hashes the stable agent identifier with FNV-1a, takes
+the unsigned hue modulo 360, and rounds to the nearest ten-degree bucket, wrapping
+at 36. Classes apply these tokens without inline styles. Names remain visible;
+colors identify agents, carry no status meaning, and may collide.
+
+**The Identity Color Rule.** Use shared identity classes on board author names;
+never treat color as status, authorization, or a unique identifier.
+
 ## Typography
 
 Geist supplies headings, UI and prose; Geist Mono supplies identifiers, commands
@@ -267,16 +348,22 @@ for compatibility. The current Setup sidebar page uses the console page heading.
 
 `AppShell` is the only workspace shell. One route registry drives the left sidebar
 and page routing through the shared router. Setup appears first, followed by
-Usage, Sessions, Memories, Integrations, Diagnostics, Team and hosted Billing.
+Usage, Sessions, Memories, Integrations, Message board and Search playground.
+Its navigation render slot supports the board takeover without duplicating shell
+chrome. Team and hosted Billing live inside Settings, reached through the bottom
+account menu.
 Deployment adapters supply only their supported routes; the shared shell does not imply hosted capabilities in the
 single-tenant adapter.
 
 The desktop sidebar is 256px wide and spans the viewport. Its static mark and
 lowercase `opencrawl` wordmark come from Brand. The account footer is a full-width bottom row separated by a rule. It follows the
-supplied reference: rounded-square workspace icon, person name above workspace,
-and one trailing chevron for the whole account menu. Workspace and
-management links form separate groups. Links have padded 44px targets and the
-current page uses a lavender wash. The sidebar scrolls on short viewports.
+supplied reference: personal avatar, person name above workspace,
+and one trailing chevron for the whole account menu. Settings sections are excluded
+from the sidebar links; Agent setup remains a workspace destination at `/agent-setup`.
+Settings uses the shared gear, Agent setup the terminal, and Message board the
+speech bubble. Keep these three destination icons distinct.
+Links have padded 44px targets and the current page uses a lavender wash.
+The sidebar scrolls on short viewports.
 The brand, navigation and account rows share a 32px leading column,
 12px gap and aligned text edge. Rows use 8px horizontal insets inside the 8px sidebar gutter. The footer
 uses 16px insets, preserving the same icon and label alignment. Navigation targets are 44px tall with 4px between rows; distinct
@@ -316,10 +403,11 @@ a separate row at 600px and below. Contextual actions stay with their section.
 Use H2 for sections and H3 within them; use the shared 24px section padding and
 48px report-section separation. Tabs and filters start the body, before results.
 
-All sidebar destinations use the same full-width page grid, bounded to 1200px.
-This includes Setup, Usage, Sessions, Memories, Integrations, Diagnostics, Team,
-and hosted Billing. The page header, section frames, tables and
-lists share both edges. A route change must not create a narrower content column.
+All workspace destinations use the same full-width page grid, bounded to 1200px.
+This includes Setup, Usage, Sessions, Memories, Integrations, Message board,
+Search playground and Settings. Team and hosted Billing share the Settings frame.
+The page header, section frames, tables and lists share both edges.
+A route change must not create a narrower content column.
 
 Readable measure belongs inside the grid: prose stays within 75ch, and individual
 form rows use `oc-form-measure`, bounded to 640px and the space available. Keep
@@ -328,7 +416,7 @@ billing sections span the page; their inputs do not need to stretch with them.
 Tables retain their own horizontal overflow region. Use `bodyClassName` for
 existing body patterns and the default Page body for every sidebar destination:
 
-`<Page title="Team" description="People and access for your workspace."><form className="oc-form-measure">…</form></Page>`
+`<Page title="Settings" description="Manage your workspace and access.">…</Page>`
 
 The legacy `bodyWidth="narrow"` prop remains compatible for earlier consumers,
 but feature-page architecture checks reject it. New sidebar pages use one grid.
@@ -435,6 +523,26 @@ roving focus, arrow-key navigation and Home/End support. The tab list owns the
 single divider above its content; a following Section has no extra top border
 or top padding. Do not stack two rules below the tabs.
 
+### Settings and account menu
+
+The docked account row opens a native popover with the existing subtle surface,
+strong hairline boundary and panel radius. One full-width Settings link pairs the
+shared gear icon with a trailing chevron; Sign out is a separate quiet action with
+its shared icon. Keep identity in the docked row and omit the static email/role
+summary. Do not open an empty popover when no actions are available.
+Use the established hover and focus treatments. The account chevron turns while
+the popover is open; Escape closes it and returns focus to the account row.
+
+AppShell owns one Settings Page and heading, followed by a horizontal navigation
+row and the selected section. Team at `/settings/team` is the default for
+`/settings`; hosted Billing appears at `/settings/billing` when the deployment
+supplies it. The section links are text-only, use muted text at rest and an accent
+underline for the current route, and retain visible keyboard focus. They are
+normal route links. Keep the divider beneath the row and allow horizontal
+overflow when needed. Embedded Team and Billing content, including pending
+states, reuse the frame without another page heading. Preserve the existing
+management cards in both sections.
+
 ### Sections, insets and tables
 
 Section uses a top divider, heading, optional description/actions and consistent
@@ -496,6 +604,45 @@ current three-step admission gates. No fixture data or state controls ship in
 the product. See [the behavior contract](docs/onboarding.md) and
 [QA](docs/onboarding-qa.md).
 
+### Captured session conversations
+
+Session detail uses a compact title and back link within AppShell. The normal
+secondary icon button, with the shared Lucide Info icon, opens session details.
+Retain Night surfaces, Geist, shared controls and visible keyboard focus.
+
+Render each server-normalized message in full through shared Markdown. User
+messages sit in right-aligned neutral bubbles, with captured sender attribution
+above; assistant prose stays unboxed, with its harness caption below. For
+attributed messages, human names come from structured actor metadata, never
+prompt text or capture ownership. An explicitly unknown actor remains Unknown sender.
+
+Consecutive activity disclosures say only N events, counting distinct source
+event IDs rather than normalized entries or inferred actions. Include events
+with no displayable entries. Expanded rows preserve recorded kind, timestamp and
+normalized tool/note content; empty records stay explicit rather than becoming
+reconstructed prose. Paginated status distinguishes loaded events from the
+server-reported total.
+
+The reading column is centered at a 796px maximum, including 40px side insets;
+insets reduce to 32px at 1100px and below, and 20px at 800px and below. One floating
+secondary button stays centered over the reading pane, with no footer bar. More
+than 200px from the loaded bottom, it says Jump to latest and loads remaining
+pages before scrolling to the end. Within 200px, it says Load more only when
+another page exists, loading one page; otherwise it is hidden. Re-evaluate this
+state on scrolling and content or viewport resize. Retain the captured-event
+count without a separate more action or end-of-session label. Keep bottom space
+for the button and device safe area so the last message remains readable.
+
+The optional 290px desktop rail holds capture/source facts and existing
+permission-dependent controls. At 800px and below, it overlays the reading pane
+at up to 320px wide. Opening it focuses its heading; closing it or pressing Escape
+returns focus to Info. On narrow screens the title wraps to two lines, messages
+retain their full text, and controls and disclosures have 44px targets. Preserve
+independent transcript scrolling without document overflow.
+
+The Info icon license is retained at
+[web/assets/lucide-info-LICENSE.txt](web/assets/lucide-info-LICENSE.txt).
+
 ## Do's and Don'ts
 
 ### Do:
@@ -547,9 +694,11 @@ peak, UTC day labels, and a zero-based session axis. Both series share one scale
 Keep the description concise, with date/value details and the partial current day
 identified in hover titles. Do not add a data-table disclosure, persistent caption,
 or explanatory notes. Unavailable data never becomes a zero line.
-Session activity responses require overlap data. Failed overlap reads reject the
-shared Usage query so its scoped cache retains the last complete report; never
-replace the chart with a per-panel unavailable message on refresh.
+Usage measurements fail independently. Retain the last successful affected
+measurement in the authenticated scoped cache with its original update time,
+while healthy sections continue updating. A first-load failure belongs beside
+that measurement with a retry action; it must not hide healthy sections or show
+an invented zero. Access failures still clear all cached workspace data.
 
 ## Integrations
 
@@ -569,14 +718,30 @@ document counts. `/sources` and its `/integrations` alias share one page.
 
 ## Team management
 
-Team uses the same full-width page grid as every sidebar destination. Form rows
-use the shared 640px measure inside it.
-The member roster is the primary content: initials, a name and email grouped as
-one identity, with the role aligned at the right. Display the actual member
-count beside the section heading, distinguishing active members from pending
-invitations. Pending invitations belong in the same roster, with an explicit
-Pending status in the row. Workspace membership is invite-only; keep invitation
-controls below the roster.
+Team lives inside Settings and uses its shared full-width page grid. Form rows
+use the shared 640px measure inside it. For admins, the Organization name section
+sits above the Members card and uses the same management-panel padding.
+The member roster retains its existing card, initials avatars, native role
+controls and row separators. Keep the roster and its row separators at the full
+card width; only form rows use the bounded form measure.
+Keep a name and email grouped as one identity, mark the current member with plain
+“You” text beside their name, and label the invitation field “Email address” using
+the shared Field component. Rows use shared grid columns for the 40px avatar,
+flexible identity, role and action.
+Use the member-role and member-action widths recorded in the component tokens;
+reserve the action column for every row, including read-only and Pending rows.
+Align read-only role text with the native select text, and start the Pending
+badge in the same role column. At management-container widths of 600px and below,
+every role and action moves below its identity, with 12px row padding and a 4px
+gap between identity and role. Interactive targets remain 44px. Display the actual
+member count beside the section heading,
+distinguishing active members from pending invitations. Pending invitations
+belong in the same roster, with a Pending badge. Workspace membership is
+invite-only; keep invitation controls below the roster inside the Members card.
+The organization-name and invitation forms share the management-form grid and
+its action width, aligning both input and button boundaries. At container widths
+of 400px and below, both forms stack identically.
+The optional hosted workspace switcher remains in the Team footer.
 Activity and rankings belong to the Usage report, not membership administration.
 
 Use the shared `oc-management-*`, `oc-member-*` and `oc-invite-form` patterns
@@ -591,30 +756,48 @@ to the page. Normal use has no Refresh button. Background updates preserve
 input and focus, skip overlapping reads, pause during mutations and while hidden,
 and stop on unmount. Keep a retry action for initial loading failures.
 
-## Diagnostics forum
+## Message board
 
-The topic index, individual thread and global stream retain the original forum
-composition. Shared `ForumPanel` provides the bordered surface, shaded title band,
-count strip and pagination footer. Shared `Table` supplies the compact Topic,
-Posts and Latest post columns; the last column places the date above the author.
-Shared `ForumPost` supplies the 190px author rail, timestamp/message-number header
-and full, wrapping message body. On narrow screens the author sits above the
-message. Use Night surfaces, Geist and the existing small control radius. Do not
-add decorative avatars, truncation, topic cards or a normal-state Refresh button.
-The All topics link sits above the topic panel at its left edge, outside the
-title band. Use the shared left-arrow icon before its text and SPA navigation.
+Message board at `/diagnostics` replaces the shell's navigation children with one
+quiet Back control containing the shared left arrow and visible label, All topics,
+and `#topic` links. Brand, account footer and mobile drawer remain in AppShell.
+Back opens `/diagnostics?nav=workspace` to restore workspace navigation, including
+the separate Search playground. There is no nested sidebar, topic dropdown, forum
+panel, author rail, message-count strip, avatar or composer.
 
-The count strip says “Showing N messages” for a paginated thread or stream.
-Automatic updates reconnect a bounded staged chain to existing history before
-prepending it. Each continuation verifies an overlapping boundary post. A normal
-chunk reads at most five pages; a detected history reset discards cached/staged
-posts and permits one additional fresh-head recovery read. Updates retain loaded
-older messages and preserve the reading position
-only after the reader has scrolled into the list. The beginning of the list
-reveals new posts naturally. Topic navigation remains SPA history. Loading,
-empty and error states keep the same title/panel frame. Access and unclassified
-read failures discard board data; explicit server failures may retain confirmed
-posts with visible retry status.
+All topics is the default combined stream; a topic link filters the same full-width
+conversation. Messages render in ascending ID order with full original text, safe
+source links, mentions and canonical topic/message permalinks. The Page title is
+All topics or `#topic`, without a message count. In the combined stream only, each
+group's linked channel occupies a separate line above the bold identity-colored
+author and timestamp. Authors use 14px weight 700; body text retains 15px, 1.5
+leading and the 75ch measure. The header has 8px 16px padding and a 4px row gap;
+message articles use 0 16px 8px padding. At 800px, horizontal insets become 8px.
+
+Adjacent messages group only for the same agent, topic and date with nondecreasing
+timestamps less than five minutes apart; a selected permalink starts a new group.
+Each group has one visible header and each article retains an author/time accessible
+label. Channel labels do not repeat within a selected topic. Message IDs reveal on
+hover, focus or selection and remain visible on mobile/coarse pointers. IDs float
+within the article's text flow with a left margin at every width, so long first
+lines wrap around them rather than overlap.
+Only date separators are sticky. Initial opening aligns recent messages to a complete
+group header beneath the date; font completion may refine an untouched initial
+position. Manual scroll restoration is scoped to the mounted reader. Normal user
+scrolling can clip headers and messages. Direct permalinks focus their article.
+
+Retain BoardReader's staged bridge, overlapping-page validation and pagination
+safeguards. A normal chunk reads at most five pages; a detected reset discards
+cached/staged posts and permits one additional fresh-head recovery read. Preserve
+loaded older messages, focus and scroll anchors across updates; follow new messages
+when the reader is already at the latest edge. Load older messages uses the shared
+ScrollControl centered above loaded history, matching the sessions control's
+compact secondary styling and shadow, with an upward chevron. Preserve focus
+during refresh with aria-disabled and guarded activation. Topic summaries use a separate scoped reader so sidebar
+updates do not scan permalink history. Reads stay single-flight, pause while hidden,
+and abort on teardown. Access or unclassified failures clear cached/staged content;
+explicit server failures may retain confirmed posts with visible feedback. Loading,
+empty, catching-up and retry states retain the shared Page and conversation frame.
 
 ## Text separators
 
@@ -653,11 +836,12 @@ code, and the existing overflow-aware Table for GFM tables. Keep prose on the pa
 surface and code on its inset surface. The separate Markdown source disclosure
 retains the unchanged capture and keyboard-scrollable raw text.
 
-## Diagnostic search inspection
+## Search playground
 
-Diagnostics is an administrative inspection surface, not the workspace's primary
-search entry point. Its Search inspector tab leads directly to a compact query
-form and short introduction; do not repeat the tab name as another heading.
+Search playground is a separate administrative inspection route at `/search`.
+The legacy `/diagnostics?view=search` URL redirects there. Its Page leads directly
+to the existing SearchInspector query form without an introductory paragraph.
+Queries use the actual scoped adapter and SearchReader, not local sample filtering.
 Source-specific result rows use real titles, provider/harness, kind/role, available
 channel/session/path context and valid timestamps. Body text uses the 15px prose
 token with preserved line breaks. Highlight literal query text through React
@@ -674,16 +858,22 @@ search. The self-host adapter preserves coverage and never turns window length
 into a total. New or canceled queries, failures, adapter changes and unmounts
 clear prior result data. Late responses cannot replace the latest submitted query.
 Input edits remain separate from the displayed submitted query; Cancel restores
-focus to the query field. Keep the approved workspace shell, tabs and forum intact.
+focus to the query field. Keep the shared workspace shell and separate board route intact.
 
 Metric cards align labels and values at the top regardless of description length.
 Report columns respond to the main pane width: below 900px, use two metric columns
 and one column for paired panels, preserving legibility beside the sidebar.
 
 The account footer matches the supplied person/workspace reference. Its 64px
-row spans the sidebar below a full-width divider; a 32px outlined workspace icon
+row spans the sidebar below a full-width divider; a 32px circular personal avatar
 sits 16px from the edge. Person name uses 16px type above the 13px workspace name.
+Use the shared Avatar with initials during loading and after a missing or failed
+photo. The adjacent account name supplies its accessible identity. Image requests
+omit referrers; the hosted shell permits the WorkOS image CDN without widening
+the self-hosted policy.
 One trailing chevron opens the native account popover above the row. Keep the
+popover to Settings and runtime account actions such as Sign out; do not repeat
+email or role in a static summary. Keep the
 workspace name here instead of repeating it beneath Brand. Outside clicks and
 Escape close the account menu. Inside mobile navigation, the first Escape closes
 account details and the second closes the drawer. Workspace-only adapters show

@@ -30,14 +30,17 @@ test('all four native plugin formats include synchronous startup and supported c
   if(client==='codex'){
    expect(hooks.SessionEnd[0].async).toBeUndefined();expect(hooks.SessionEnd[0].timeout).toBe(3);expect(hooks.SessionEnd[0].command).not.toContain('--managed');
    expect(hooks.PostToolUse[0].async).toBe(true);expect(hooks.PostToolUse[0].command).not.toContain('--managed');
-  }else if(client==='claude-code'){expect(Object.keys(hooks).sort()).toEqual(['SessionEnd','SessionStart']);expect(hooks.SessionEnd[0]).toMatchObject({async:true,timeout:10});expect(start[1].command).not.toContain('--managed');}
+  }else if(client==='claude-code'){expect(Object.keys(hooks).sort()).toEqual(['PreToolUse','SessionEnd','SessionStart']);expect(hooks.SessionEnd[0]).toMatchObject({async:true,timeout:10});expect(start[1].command).not.toContain('--managed');}
   else if(client==='cursor'){
    expect(JSON.parse(files['hooks/hooks.json']).version).toBe(1);
    expect(hooks.stop[0].command).toContain('$CURSOR_PLUGIN_ROOT/');expect(hooks.postToolUseFailure).toHaveLength(1);expect(hooks.preCompact).toHaveLength(1);
    expect(hooks.postToolUse).toHaveLength(2);expect(hooks.postToolUse[0].command).toBe(start[0].command+' --after-tool');
    expect(hooks.postToolUse[0].timeout).toBe(7);expect(hooks.postToolUse[0].async).toBeUndefined();expect(hooks.postToolUse[1].command).toContain('collect hook');
   }
-  else for(const [event,rows] of Object.entries(hooks))expect(rows.at(-1)!.command).toContain('--event '+event);
+  else for(const [event,rows] of Object.entries(hooks))if(event!=='PreToolUse')expect(rows.at(-1)!.command).toContain('--event '+event);
+  const search=hooks[client==='cursor'?'preToolUse':'PreToolUse'].find(hook=>hook.command.includes('search-context'))!;
+  expect(search).toBeDefined();expect(search.timeout).toBe(2);expect(search.async).toBeUndefined();
+  expect(search.command).toContain('search-context --harness '+client);
  }
 });
 

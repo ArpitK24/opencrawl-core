@@ -1,3 +1,4 @@
+import type {ApplicationState} from '../state/types.mjs';
 import type {Principal} from '../identity/types.mjs';
 import type {IntegrationRecord} from './types.mjs';
 import type {IntegrationRegistry} from './ports.mjs';
@@ -12,6 +13,7 @@ export function denied(): never {throw Object.assign(new Error('Connector is ina
 export interface HostedConnectorReference {tenantId: string; userId: string; connectionId: string; generation?: string}
 export interface ConnectorReferenceInput {tenantId?: unknown; userId?: unknown; connectionId?: unknown; generation?: unknown}
 export interface ConnectorResolverOptions {
+  state:ApplicationState;
   environment: IntegrationRecord['environment'];
   generation: string;
   registry: IntegrationRegistry;
@@ -22,7 +24,7 @@ export interface ConnectorResolverOptions {
 }
 interface ConnectionCount {total: number; kinds: Record<string, number>}
 export interface CountSummary extends ConnectionCount {providers: Record<string, ConnectionCount>; connections: Record<string, ConnectionCount>}
-export function createConnectorResolver({environment, generation, registry, storage, search: searchFor, driveAccess}: ConnectorResolverOptions) {
+export function createConnectorResolver({environment, generation, state, registry, storage, search: searchFor, driveAccess}: ConnectorResolverOptions) {
   if (!['staging', 'production', 'selfhost'].includes(environment) || !/^v[1-9][0-9]*$/.test(generation)) throw new Error('Invalid connector configuration');
   function reference(value: ConnectorReferenceInput): asserts value is HostedConnectorReference {
     if (!value || !/^(org_[A-Za-z0-9]+|personal:user_[A-Za-z0-9]+)$/.test(typeof value.tenantId === 'string' ? value.tenantId : '') || !/^user_[A-Za-z0-9]+$/.test(typeof value.userId === 'string' ? value.userId : '') || !/^int_[a-f0-9]{26}$/.test(typeof value.connectionId === 'string' ? value.connectionId : '') || (value.generation && value.generation !== generation)) denied();
@@ -36,7 +38,7 @@ export function createConnectorResolver({environment, generation, registry, stor
     const store = await storage(record);
     const search = searchFor(binding.tenantId);
     const drive = record.provider === 'googledrive' ? driveAccess?.(record) : undefined;
-    return {binding, store, search, ...(drive ? {drive, resourceAccess: async (sourceId: string) => {const permitted = await drive.inspect(sourceId); await drive.validateAudience(); return Boolean(permitted);}} : {})};
+    return {binding, state, store, search, ...(drive ? {drive, resourceAccess: async (sourceId: string) => {const permitted = await drive.inspect(sourceId); await drive.validateAudience(); return Boolean(permitted);}} : {})};
   }
   type CoreSearch = ReturnType<typeof createConnectorSearch>['search'];
   type ConnectorQuery = Parameters<CoreSearch>[2];
@@ -53,9 +55,11 @@ export function createConnectorResolver({environment, generation, registry, stor
       const accessed = new Set<string>();
       const result = await resolved[0].search.search(principal, resolved.map(r => r.binding), query, async (binding, sourceId) => {
         const match = resolved.find(item => item.binding.connectionId === binding.connectionId);
-        if (!match?.resourceAccess) return false;
+        if (!match?.drive) return false;
         accessed.add(binding.connectionId);
-        return match.resourceAccess(sourceId);
+        // No results leave this operation before the final audience check.
+        // Every file still receives its own fresh provider ACL inspection.
+        return Boolean(await match.drive.inspect(sourceId));
       });
       // A concurrent disconnect must not return results after we observe it.
       for (const record of records) await resolve({tenantId: principal.tenantId, userId: record.userId, connectionId: record.integrationId, generation});
@@ -73,7 +77,11 @@ export function createConnectorResolver({environment, generation, registry, stor
       if (new Set(resolved.map(value => value.binding.connectionId)).size !== resolved.length) denied();
       // Core owns counting and scope checks. Keep connection attribution distinct
       // from provider totals: a card may show one of several same-provider connections.
-      const counts = await Promise.all(resolved.map(value => value.search.count(principal, [value.binding])));
+      const counts: Record<string, ConnectionCount> = {};
+      for (let offset = 0; offset < resolved.length; offset += 100) {
+        const batch = resolved.slice(offset, offset + 100);
+        Object.assign(counts, await batch[0].search.countByConnection(principal, batch.map(value => value.binding)));
+      }
       // Match search's revocation rule when a disconnect races the reporting query.
       for (const record of records) await resolve({tenantId: principal.tenantId, userId: record.userId, connectionId: record.integrationId, generation});
       const result: CountSummary = {total: 0, kinds: {}, providers: {}, connections: {}};
@@ -82,7 +90,7 @@ export function createConnectorResolver({environment, generation, registry, stor
         for (const [kind, countForKind] of Object.entries(count.kinds)) target.kinds[kind] = (target.kinds[kind] || 0) + countForKind;
       };
       for (let i = 0; i < resolved.length; i++) {
-        const {provider, connectionId} = resolved[i].binding, count = counts[i];
+        const {provider, connectionId} = resolved[i].binding, count = counts[connectionId];
         result.connections[connectionId] = count;
         add(result, count);
         add(result.providers[provider] ||= {total: 0, kinds: {}}, count);

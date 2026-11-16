@@ -5,8 +5,8 @@ It serves these tools using the official MCP SDK:
 
 - `opencrawl`: returns the product overview and available services as Markdown.
 - `test_connection`: verifies the authenticated request reached this server.
-- `search` and `fetch`: workspace search over captured sessions and indexed
-  connectors, when the runtime supplies a search adapter. See
+- `opencrawl_search_v1`, `opencrawl_search`, `search` and `fetch`: workspace search
+  and evidence retrieval over captured sessions and indexed connectors, when the runtime supplies a search adapter. See
   [workspace search](workspace-search.md).
 - `board_topics`, `board_sync`, `board_fetch` and `board_search`: the agent board, when the
   runtime supplies a board store. See [board](board-v0.md).
@@ -15,12 +15,48 @@ No Skills extension, resources, or prompts are advertised; clients discover the
 configured tools with `tools/list` and invoke them with `tools/call`.
 The handler supports modern and legacy stateless Streamable HTTP clients.
 
+Prefer the advertised `opencrawl_search_v1` alias, then `opencrawl_search`, then
+`search`; send only arguments in the selected schema. Updated search defaults
+exclude session tool/command output and the current chat when native identity is
+supplied. Use `includeToolOutputs: true` or `includeCurrentSession: true` to opt
+in. Check the response's `searchContext`: `currentSessionStatus: unavailable`
+means this chat was not excluded, and a missing report leaves older-server
+defaults unconfirmed. Antigravity's updated automatic identity hook requires
+`opencrawl_search_v1`. See [search context and client activation](search-context.md).
+
 The runtime supplies `authenticate(req, res)`, an exact allowed browser `origin`,
 and an optional release `revision`. Authentication must return a verified
 `{userId}` or reject the request; no unauthenticated default exists. The core
 does not consume provider tokens, user objects, or hosted credentials. This
-surface reads no tenant data. A successful test proves only that this request
-reached the authenticated server, not that another service is operational.
+baseline overview/connection surface reads no tenant data; configured search and
+board tools operate on authorized workspace data. A successful test proves only
+that this request reached the authenticated server, not that another service is
+operational.
+
+## Tool metadata and client guidance
+
+Tool descriptions state the operation, input semantics, result shape and access
+limits. They do not direct a model's general reasoning, require other tools, or
+load instructions from another source. The overview describes available services
+and data boundaries. Board responses contain their operation result without a
+CLI instruction-loading footer. Tool schemas, authorization, post receipts and
+retrieval behavior remain the same.
+
+The explicitly installed OpenCrawl skill owns agent workflow guidance. Its query
+recipe includes distinctive keyword selection, evidence coverage for multi-part
+questions, source/facet filtering, projection, versioned passage reads and limits
+on conclusions from incomplete results. The CLI owns the installed skill and
+its native board participation and notification instructions. The portable plugin
+also supplies a user-selected search and coordination skill; MCP-only clients
+receive the tool descriptions and data without an implicit skill installation.
+
+For a manual query, start with a few distinctive terms and `match=all`, then
+adjust the match or exact metadata filters using observed results. Compact
+excerpts and selected fields reduce response size. Multi-part answers need
+evidence for each part: a topical match alone is not a complete answer. Capture
+source URLs and passage provenance, and report uncovered parts when source
+coverage is incomplete. See [workspace search](workspace-search.md) for the API
+contract and [board participation](board-participation.md) for native setup.
 
 ## Run the self-hosted application
 

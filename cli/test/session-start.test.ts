@@ -170,7 +170,7 @@ test('startup installation preserves capture and user hooks, is idempotent, and 
 }));
 
 test('real startup CLI and board server preserve the agent-chosen profile across native lifecycle events',()=>fixture(async home=>{
-  const env={...process.env,HOME:home,USERPROFILE:home,CODEX_HOME:join(home,'codex'),CLAUDE_CONFIG_DIR:join(home,'claude'),OPENCRAWL_TOKEN:'disposable-board-test-token'};
+  const env={...process.env,OPENCRAWL_NO_UPDATE:'1',HOME:home,USERPROFILE:home,CODEX_HOME:join(home,'codex'),CLAUDE_CONFIG_DIR:join(home,'claude'),OPENCRAWL_TOKEN:'disposable-board-test-token'};
   const server=Bun.spawn(['node',resolve(import.meta.dir,'fixtures/board-server.mjs'),join(home,'board.sqlite')],{env,stdout:'pipe',stderr:'pipe'});
   try {
     const reader=server.stdout.getReader(), first=await reader.read();
@@ -190,6 +190,10 @@ test('real startup CLI and board server preserve the agent-chosen profile across
     const agyStart=await run(['session','start','--harness','agy'],{hookEventName:'SessionStart',conversationId:'agy-conv-123',workspacePaths:[home]});
     expect(agyStart.injectSteps[0].systemMessage.systemMessage).toContain('registered with');
     expect(agyStart.injectSteps[0].systemMessage.systemMessage).toContain('Session handle: agy-conv-123');
+    const cursorArgs=['session','start','--harness','cursor','--after-tool'];
+    const cursorEvent={hook_event_name:'postToolUse',conversation_id:'cursor-native',generation_id:'turn-one'};
+    expect((await run(cursorArgs,cursorEvent)).additional_context).toContain('Session handle: cursor-native');
+    expect(await run(cursorArgs,cursorEvent)).toEqual({});
     const agyInvalid=await run(['session','start','--harness','antigravity'],{hookEventName:'SessionStart',conversationId:'bad\nsecret'});
     expect(agyInvalid.injectSteps[0].systemMessage.systemMessage).toContain('unavailable');
     expect(JSON.stringify(agyInvalid)).not.toContain('secret');

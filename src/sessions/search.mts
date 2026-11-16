@@ -1,6 +1,7 @@
+import type {ApplicationState} from '../state/types.mjs';
 import {lexicalQuery} from '../search/lexical.mjs';
+import {sessionSearchExclusions} from '../search/context.mjs';
 import type {Principal, ObjectStore} from './types.mjs';
-import {serviceError} from './types.mjs';
 import type {RealmOptions, DocumentItem, SearchInput, SearchResult, OpenSearchResponse, Passage} from '../search/types.mjs';
 interface TermsAggregation {buckets: Array<{key: string; doc_count: number}>}
 interface SessionCount {count: {value: number}}
@@ -18,13 +19,13 @@ import {sessionIndexMapping} from '../search/mapping.mjs';
 export {sessionIndexMapping};
 
 function fail(status: number,message: string): never {throw Object.assign(new Error(message),{status});}
-export function createSessionSearch(options: RealmOptions & {store?: ObjectStore; prefix?: string}) {
+export function createSessionSearch(options: RealmOptions & {state:ApplicationState;store?: ObjectStore; prefix?: string}) {
   const resolve=createRealmResolver(options), f=(field: string)=>realmField('session',field);
-  const controls=options.store && options.prefix ? createControls({store:options.store,prefix:options.prefix}) : null;
+  const controls=createControls({state:options.state});
   function search(principal: Principal, input: SearchInput & {raw: true}): Promise<OpenSearchResponse>;
   function search(principal: Principal, input?: SearchInput & {raw?: false}): Promise<SearchResult>;
   function search(principal: Principal, input: SearchInput): Promise<SearchResult | OpenSearchResponse>;
-  async function search(principal: Principal,{query='',limit=20,raw=false,match='all',sessionId,id,filters,order}: SearchInput={}): Promise<SearchResult | OpenSearchResponse> {
+  async function search(principal: Principal,{query='',limit=20,raw=false,match='all',sessionId,id,filters,order,currentSession,includeCurrentSession,includeToolOutputs}: SearchInput={}): Promise<SearchResult | OpenSearchResponse> {
       sessionScope(principal);
       if (principal.captureAccess !== undefined) fail(403, 'Session read access required');
       if (!controls) fail(503, 'Session search requires authoritative resource controls');
@@ -32,7 +33,7 @@ export function createSessionSearch(options: RealmOptions & {store?: ObjectStore
       if(!['all','any','phrase'].includes(match)||(sessionId!==undefined&&(typeof sessionId!=='string'||!sessionId||sessionId.length>200)))fail(400,'Invalid search filters');
       if(typeof query!=='string'||query.length>4000||!Number.isInteger(limit)||limit<1||limit>100)fail(400,'Invalid search query or limit');
       const result=await resolve(principal).collection('session').search(principal,{size:limit,track_total_hits:true,
-        query:{bool:{filter:[{term:{tenantId:principal.tenantId}},visibleTo('session',principal),...searchFilters('session',filters),...(sessionId?[{term:{[f('sessionId')]:sessionId}}]:[]),...(id?[{term:{id}}]:[])],must:[lexicalQuery(query,match)]}},
+        query:{bool:{filter:[{term:{tenantId:principal.tenantId}},visibleTo('session',principal),...searchFilters('session',filters),...(!id?sessionSearchExclusions(principal,{currentSession,includeCurrentSession,includeToolOutputs}):[]),...(sessionId?[{term:{[f('sessionId')]:sessionId}}]:[]),...(id?[{term:{id}}]:[])],must:[lexicalQuery(query,match)]}},
         sort:[...searchSort('session',order),...(query?['_score',...['receivedAt','sessionId','eventId','chunk','userId','installationId'].map(key=>({[f(key)]:key==='receivedAt'?'desc':'asc'}))]:[{[f('receivedAt')]:'desc'},{[f('sequence')]:'asc'},{id:'asc'}])]});
       const hits=result?.hits?.hits;
       if(!Array.isArray(hits)||hits.some(hit=>hit._source?.tenantId!==principal.tenantId||typeof hit._source?.userId!=='string'||!hit._source.userId))throw new Error('Search returned an invalid ownership scope');

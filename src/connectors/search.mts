@@ -1,9 +1,9 @@
 import {lexicalQuery} from '../search/lexical.mjs';
-import type {RealmOptions, OpenSearchResponse, IndexHit, QueryBody, SearchInput} from '../search/types.mjs';
+import type {RealmOptions, OpenSearchResponse, IndexHit, QueryBody, SearchInput, Aggregation} from '../search/types.mjs';
 import {searchFilters,searchSort} from '../search/controls.mjs';
 import type {ConnectorBinding, ConnectorPrincipal, ConnectorDocument, DocumentItem, SuppressionIdentity} from './types.mjs';
 import {createRealm} from '../search/realm.mjs';
-import {authorize, digest, documentId, validateBinding} from './scope.mjs';
+import {authorize, documentId} from './scope.mjs';
 
 import {connectorMapping} from '../search/mapping.mjs';
 export {connectorMapping};
@@ -19,6 +19,8 @@ export function createConnectorSearch(options: RealmOptions & {tenantId: string}
   function scoped(principal: ConnectorPrincipal, binding: ConnectorBinding) {authorize(principal,binding);realm.scope(principal);}
   type SearchResponse = OpenSearchResponse<ConnectorDocument> & {took?: number};
   type MultiGetResponse = {docs: IndexHit<ConnectorDocument>[]};
+  type ConnectionCount = {total: number; kinds: Record<string, number>};
+  type CountBucket = {key: string; doc_count: number; doc_count_error_upper_bound?: number; kinds?: Aggregation};
   function request(path: '/_search', options: {body: string | QueryBody}): Promise<SearchResponse>;
   function request(path: '/_mget', options: {body: string | {ids: string[]}}): Promise<MultiGetResponse>;
   async function request(path: string, {body}: {body: string | QueryBody}) {
@@ -63,21 +65,21 @@ export function createConnectorSearch(options: RealmOptions & {tenantId: string}
           if (!binding || d.tenantId !== tenantId || d.workspaceId !== binding.workspaceId || d.provider !== binding.provider || !SEARCHABLE_KINDS.includes(d.kind) || d.deleted || hit._id !== documentId(binding, d.kind, d.sourceId)) throw new Error('Search returned an invalid connector scope');
         }
         const ids = [...new Set(candidates.filter(hit => hit._source.provider === 'slack').map(hit => documentId(byConnection.get(hit._source.connectionId)!, 'channel', hit._source.channelId!)))];
-        const channels = ids.length ? await request('/_mget', {body: JSON.stringify({ids})}) : {docs: []};
-        if (!Array.isArray(channels.docs)) throw new Error('Missing channel visibility metadata');
+        const children = candidates.filter(hit => hit._source.parentId);
+        const parentIds = [...new Set(children.map(hit => documentId(byConnection.get(hit._source.connectionId)!, hit._source.parentKind!, hit._source.parentId!)))];
+        // Both guards depend only on this candidate page. Read their metadata
+        // together, then validate each role independently, including shared IDs.
+        const metadataIds = [...new Set([...ids, ...parentIds])];
+        const metadata = metadataIds.length ? await request('/_mget', {body: JSON.stringify({ids: metadataIds})}) : {docs: []};
         const allowed = new Set();
-        for (const item of channels.docs) {
+        for (const item of metadata.docs.filter(item => ids.includes(item._id))) {
           if (!item.found) continue;
           const d = item._source, binding = byConnection.get(d?.connectionId);
           if (!binding || d.tenantId !== tenantId || d.workspaceId !== binding.workspaceId || d.provider !== 'slack' || d.kind !== 'channel' || !ids.includes(item._id) || item._id !== documentId(binding, 'channel', d.sourceId)) throw new Error('Channel metadata scope mismatch');
           if (d.publicChannel === true && !d.deleted) allowed.add(item._id);
         }
-        const children = candidates.filter(hit => hit._source.parentId);
-        const parentIds = [...new Set(children.map(hit => documentId(byConnection.get(hit._source.connectionId)!, hit._source.parentKind!, hit._source.parentId!)))];
-        const parents = parentIds.length ? await request('/_mget', {body: JSON.stringify({ids: parentIds})}) : {docs: []};
-        if (!Array.isArray(parents.docs)) throw new Error('Missing resource revision metadata');
         const current = new Map();
-        for (const item of parents.docs) {
+        for (const item of metadata.docs.filter(item => parentIds.includes(item._id))) {
           if (!item.found) continue;
           const d = item._source, binding = byConnection.get(d?.connectionId);
           if (!binding || d.tenantId !== tenantId || d.workspaceId !== binding.workspaceId || d.provider !== binding.provider || !parentIds.includes(item._id) || item._id !== documentId(binding, d.kind, d.sourceId)) throw new Error('Parent metadata scope mismatch');
@@ -110,6 +112,12 @@ export function createConnectorSearch(options: RealmOptions & {tenantId: string}
       }
       return raw ? {responses, examined, truncated: more || capped} : {hits, examined, truncated: more || capped};
     }
+  async function countQuery(principal: ConnectorPrincipal, bindings: ConnectorBinding[], aggs: Record<string, unknown>) {
+    if (!Array.isArray(bindings) || !bindings.length || bindings.length > 100) throw new Error('Authorized connections required');
+    for (const binding of bindings) scoped(principal, binding);
+    return request('/_search', {body: JSON.stringify({size: 0, track_total_hits: true,
+      query: {bool: {filter: [{term: {tenantId}}, {terms: {[f('connectionId')]: bindings.map(b => b.connectionId)}}, {term: {[f('deleted')]: false}}], must_not: [{terms: {[f('kind')]: ['passage', 'transcript', 'file_chunk']}}]}}, aggs})});
+  }
   return {
     identity:realm.identity,
     ensureIndex:realm.ensureIndex,
@@ -134,13 +142,40 @@ export function createConnectorSearch(options: RealmOptions & {tenantId: string}
     search,
     /** Live source entities per kind, excluding passage revisions across authorized connections, for reporting. */
     async count(principal: ConnectorPrincipal, bindings: ConnectorBinding[]) {
-      if (!Array.isArray(bindings) || !bindings.length || bindings.length > 100) throw new Error('Authorized connections required');
-      for (const binding of bindings) scoped(principal, binding);
-      const result = await request('/_search', {body: JSON.stringify({size: 0, track_total_hits: true,
-        query: {bool: {filter: [{term: {tenantId}}, {terms: {[f('connectionId')]: bindings.map(b => b.connectionId)}}, {term: {[f('deleted')]: false}}], must_not: [{terms: {[f('kind')]: ['passage', 'transcript', 'file_chunk']}}]}},
-        aggs: {kinds: {terms: {field: f('kind'), size: 30}}}})});
+      const result = await countQuery(principal, bindings, {kinds: {terms: {field: f('kind'), size: 30}}});
       if (!Array.isArray(result?.aggregations?.kinds?.buckets)) throw new Error('Invalid connector count response');
       return {total: result.hits.total?.value ?? 0, kinds: Object.fromEntries(result.aggregations.kinds.buckets.map(b => [b.key, b.doc_count]))};
+    },
+    /** Exact attribution for one bounded group of authorized connections. */
+    async countByConnection(principal: ConnectorPrincipal, bindings: ConnectorBinding[]): Promise<Record<string, ConnectionCount>> {
+      if (!Array.isArray(bindings) || new Set(bindings.map(binding => binding.connectionId)).size !== bindings.length) throw new Error('Distinct authorized connections required');
+      const result = await countQuery(principal, bindings, {connections: {
+        terms: {field: f('connectionId'), size: bindings.length, shard_size: bindings.length, show_term_doc_count_error: true},
+        aggs: {kinds: {terms: {field: f('kind'), size: 30, shard_size: 30, show_term_doc_count_error: true}}},
+      }});
+      const invalid = () => new Error('Incomplete connector connection counts');
+      const exact = (aggregation: Aggregation | undefined): CountBucket[] => {
+        if (!aggregation || !Array.isArray(aggregation.buckets) || aggregation.doc_count_error_upper_bound !== 0 || aggregation.sum_other_doc_count !== 0) throw invalid();
+        const seen = new Set<string>();
+        for (const bucket of aggregation.buckets) {
+          if (!bucket || typeof bucket.key !== 'string' || !bucket.key || seen.has(bucket.key) || !Number.isSafeInteger(bucket.doc_count) || bucket.doc_count < 0 || (bucket.doc_count_error_upper_bound ?? 0) !== 0) throw invalid();
+          seen.add(bucket.key);
+        }
+        return aggregation.buckets;
+      };
+      const total = result.hits.total;
+      if (total?.relation !== 'eq' || !Number.isSafeInteger(total.value) || total.value < 0) throw invalid();
+      const counts: Record<string, ConnectionCount> = Object.fromEntries(bindings.map(binding => [binding.connectionId, {total: 0, kinds: {}}]));
+      let counted = 0;
+      for (const bucket of exact(result.aggregations?.connections)) {
+        if (!Object.hasOwn(counts, bucket.key)) throw invalid();
+        const kinds = exact(bucket.kinds);
+        if (kinds.reduce((sum, kind) => sum + kind.doc_count, 0) !== bucket.doc_count) throw invalid();
+        counts[bucket.key] = {total: bucket.doc_count, kinds: Object.fromEntries(kinds.map(kind => [kind.key, kind.doc_count]))};
+        counted += bucket.doc_count;
+      }
+      if (counted !== total.value) throw invalid();
+      return counts;
     },
     refresh: () => realm.refresh(principal),
   };

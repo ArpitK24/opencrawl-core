@@ -1,11 +1,13 @@
 import {Component, useCallback, useEffect, useRef, useState, useMemo} from 'react';
 import type {ErrorInfo, ReactNode} from 'react';
-import {ConsoleDataProvider, useConsoleQueryClient, AppRouter, AppShell, FocusedFrame, UsagePage, SessionsPage, MemoriesPage, DiagnosticsPage, Button, LoadingState, Notice, Page, LinkButton, Navigate, useLocation, useNavigate} from '../index.ts';
+import {ConsoleDataProvider, useConsoleQueryClient, AppRouter, AppShell, FocusedFrame, UsagePage, SessionsPage, MemoriesPage, DiagnosticsPage, Button, LoadingState, Notice, Page, LinkButton, Icon, Navigate, useLocation, useNavigate} from '../index.ts';
 import type {ConsoleDataAdapter, NavigationItem} from '../index.ts';
 import type {Bootstrap, ProductApi} from './api.ts';
 import {SourcesPage} from './sources.tsx';
 import {SetupPage} from './setup.tsx';
 import {TeamPage, TeamLoadingPage} from './team.tsx';
+import {BoardNavigation} from '../pages/board.tsx';
+import {SearchPlaygroundPage} from '../pages/diagnostics.tsx';
 import {DocumentFrame, ProductDocument, readBrowserDocument} from './documents.tsx';
 
 export interface ConsoleRoute extends NavigationItem {pending?: (feedback?: ReactNode) => ReactNode}
@@ -28,7 +30,7 @@ function WorkspaceInvalidation() {
   },[cache]);
   return null;
 }
-function SignOut() {return <form method="post" action="/auth/logout"><Button type="submit" variant="quiet">Sign out</Button></form>;}
+function SignOut() {return <form method="post" action="/auth/logout"><Button type="submit" variant="quiet"><Icon name="sign-out" size={18}/>Sign out</Button></form>;}
 class ErrorBoundary extends Component<{children: ReactNode}, {failed: boolean}> {
   state = {failed:false};
   static getDerivedStateFromError() {return {failed:true};}
@@ -64,23 +66,28 @@ function ConsoleApp<B extends Bootstrap>({api, extensions}: {api: ProductApi<B>;
     // Commit admission and navigation together before the initiating page unmounts.
     setData(next); navigate(next.onboarding.completed ? '/' : '/setup');
   };
+  const boardQuery = new URLSearchParams(location.search);
+  const boardNavigation = location.pathname === '/diagnostics' && boardQuery.get('nav') !== 'workspace' && boardQuery.get('view') !== 'search' && data?.workspace.role === 'admin';
+  const boardTopic = boardQuery.get('view') === 'stream' ? '' : boardQuery.get('topic')?.trim() || '';
   const routes: ConsoleRoute[] = [
-    {path:'/setup',label:'Setup',icon:'settings',element:data ? <SetupPage api={api} mcpUrl={data.mcpUrl} setupStartCommand={data.setupStartCommand} setupCliCommand={data.setupCliCommand}/> : null,pending:feedback => <PendingPage title="Setup" description="Manage your agent connections and history imports.">{feedback}</PendingPage>},
+    {path:'/setup',label:'Setup',icon:'terminal',element:data ? <SetupPage api={api} mcpUrl={data.mcpUrl} setupStartCommand={data.setupStartCommand} setupCliCommand={data.setupCliCommand}/> : null,pending:feedback => <PendingPage title="Setup" description="Manage your agent connections and history imports.">{feedback}</PendingPage>},
     {path:'/',label:'Usage',icon:'usage',element:<UsagePage adapter={dataAdapter}/>,pending:feedback => <PendingPage bodyClassName="usage-report" title="Usage" description="Workspace usage">{feedback}</PendingPage>},
     {path:'/sessions',label:'Sessions',icon:'sessions',element:<SessionsPage adapter={libraryAdapter}/>,pending:feedback => <PendingPage bodyClassName="oc-library" title="Sessions" description="Agent sessions captured across your workspace. Private sessions are visible only to the person who captured them.">{feedback}</PendingPage>},
-    {path:'/memories',label:'Memories',icon:'memories',element:<MemoriesPage adapter={libraryAdapter}/>,pending:feedback => <PendingPage bodyClassName="oc-library" title="Memories" description="Memory files your agents keep, captured so teammates’ agents can use them. Private memories are visible only to the person who captured them.">{feedback}</PendingPage>},
+    {path:'/memories',label:'Memories',icon:'memories',element:<MemoriesPage adapter={libraryAdapter}/>,pending:feedback => <PendingPage bodyClassName="oc-library" title="Memories" description="Memory files your agents keep, captured so teammates’ agents can use them.">{feedback}</PendingPage>},
     {path:'/sources',label:'Integrations',icon:'sources',element:<SourcesPage adapter={api} canConfigure={data?.workspace.role === 'admin'}/>,pending:feedback => <PendingPage bodyClassName="oc-connections" title="Integrations" description="Connect your tools and OpenCrawl keeps their content in sync for your agents.">{feedback}</PendingPage>},
     {path:'/usage',label:'Usage',navigation:false,element:<Navigate to={'/' + location.search} replace/>},
-    {path:'/diagnostics',label:'Diagnostics',icon:'diagnostics',element:<DiagnosticsPage adapter={dataAdapter} canInspect={data?.workspace.role === 'admin'}/>,pending:feedback => <PendingPage title="Diagnostics" description="See what your agents can retrieve and how they coordinate work.">{feedback}</PendingPage>},
-    {path:'/settings',label:'Setup',navigation:false,element:<Navigate to="/setup" replace/>},
-    {path:'/onboarding',label:'Setup',navigation:false,element:<Navigate to="/setup" replace/>},
-    {path:'/onboarding/sources',label:'Integrations',navigation:false,element:<Navigate to="/sources" replace/>},
-    {path:'/onboarding/invite',label:'Team',navigation:false,element:<Navigate to="/team" replace/>},
-    {path:'/team',label:'Team',icon:'team',group:'manage',element:<TeamPage adapter={api} footer={extensions?.teamFooter} onWorkspaceRenamed={name => setData(current => current ? {...current, workspace: {...current.workspace, name}} : current)}/>,pending:feedback => <TeamLoadingPage>{feedback}</TeamLoadingPage>},
+    {path:'/diagnostics',label:'Message board',icon:'diagnostics',element:<DiagnosticsPage adapter={dataAdapter} canInspect={data?.workspace.role === 'admin'}/>,pending:feedback => <PendingPage title={boardTopic ? '# ' + boardTopic : 'All topics'}>{feedback}</PendingPage>},
+    {path:'/search',label:'Search playground',icon:'search',element:<SearchPlaygroundPage adapter={dataAdapter} canInspect={data?.workspace.role === 'admin'}/>,pending:feedback => <PendingPage title="Search playground">{feedback}</PendingPage>},
+    {path:'/agent-setup',label:'Setup',navigation:false,element:<Navigate to={'/setup' + location.search + location.hash} replace/>},
+    {path:'/onboarding',label:'Setup',navigation:false,element:<Navigate to={'/setup' + location.search + location.hash} replace/>},
+    {path:'/onboarding/sources',label:'Integrations',navigation:false,element:<Navigate to={'/sources' + location.search + location.hash} replace/>},
+    {path:'/onboarding/invite',label:'Team',navigation:false,element:<Navigate to={'/settings/team' + location.search + location.hash} replace/>},
+    {path:'/settings/team',label:'Team',icon:'team',group:'settings',element:<TeamPage embedded adapter={api} footer={extensions?.teamFooter} onWorkspaceRenamed={name => setData(current => current ? {...current, workspace: {...current.workspace, name}} : current)}/>,pending:feedback => <TeamLoadingPage embedded>{feedback}</TeamLoadingPage>},
     ...(extensions?.routes?.({data, activated}) ?? []),
+    {path:'/settings',label:'Settings',navigation:false,element:<Navigate to={'/settings/team' + location.search + location.hash} replace/>,pending:() => <Navigate to={'/settings/team' + location.search + location.hash} replace/>},
+    {path:'/team',label:'Team',navigation:false,element:<Navigate to={'/settings/team' + location.search + location.hash} replace/>,pending:() => <Navigate to={'/settings/team' + location.search + location.hash} replace/>},
     {path:'/integrations',label:'Integrations',navigation:false,element:<Navigate to="/sources" replace/>},
     {path:'/data',label:'Data controls',navigation:false,element:<Navigate to="/sources#data-controls" replace/>},
-    {path:'/search',label:'Search inspector',navigation:false,element:<Navigate to="/diagnostics?view=search" replace/>},
     {path:'/_/debug',label:'Diagnostics',navigation:false,element:<Navigate to={'/diagnostics' + location.search} replace/>},
   ];
   if (!data) {
@@ -89,7 +96,7 @@ function ConsoleApp<B extends Bootstrap>({api, extensions}: {api: ProductApi<B>;
     return <AppShell workspace={{name:'Workspace'}} routes={routes} footer={<SignOut/>}>{route?.pending?.(feedback) ?? <PendingPage title={route?.label ?? 'Workspace'}>{feedback}</PendingPage>}</AppShell>;
   }
   const shown = extensions?.decorateRoute ? routes.map(route => extensions.decorateRoute!(route, data)) : routes;
-  return <ConsoleDataProvider scopeKey={data.cacheScope} onAccessFailure={invalidateAccess}><WorkspaceInvalidation/><AppShell workspace={data.workspace} routes={shown} footer={<SignOut/>}/></ConsoleDataProvider>;
+  return <ConsoleDataProvider scopeKey={data.cacheScope} onAccessFailure={invalidateAccess}><WorkspaceInvalidation/><AppShell workspace={data.workspace} routes={shown} footer={<SignOut/>} navigationLabel={boardNavigation ? 'Message board topics' : undefined} navigation={boardNavigation ? closeNavigation => <BoardNavigation adapter={dataAdapter} topic={boardTopic} closeNavigation={closeNavigation}/> : undefined}/></ConsoleDataProvider>;
 }
 /** One application composition for self-hosted and hosted deployments. */
 export function OpenCrawlApp<B extends Bootstrap>({api, extensions}: {api: ProductApi<B>; extensions?: ConsoleExtensions<B>}) {

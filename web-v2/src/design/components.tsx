@@ -6,7 +6,7 @@ import {Icon} from './icons.tsx';
 
 type Styled<T> = Omit<T, 'style'>;
 type SurfaceProps = Styled<HTMLAttributes<HTMLElement>>;
-export type ButtonVariant = 'primary' | 'secondary' | 'quiet' | 'danger' | 'plain';
+export type ButtonVariant = 'primary' | 'secondary' | 'quiet' | 'danger' | 'danger-quiet' | 'plain';
 export interface ButtonProps extends Styled<ButtonHTMLAttributes<HTMLButtonElement>> {
   variant?: ButtonVariant;
   busy?: boolean;
@@ -15,8 +15,28 @@ export interface ButtonProps extends Styled<ButtonHTMLAttributes<HTMLButtonEleme
 export function Button({variant = 'secondary', busy = false, className = '', disabled, children, type = 'button', ...props}: ButtonProps) {
   return <button {...props} type={type} disabled={disabled || busy} aria-busy={busy || props['aria-busy'] || undefined} className={`oc-button ${variant} ${className}`}>{busy && <Icon name="loader" className="oc-spin"/>}{children}</button>;
 }
+export function ScrollControl({direction = 'down', className = '', children, ...props}: Omit<ButtonProps, 'variant'> & {direction?: 'up' | 'down'}) {
+  return <Button {...props} className={`oc-scroll-control ${className}`}>{children}<Icon name="chevron-down" size={14} className={`oc-scroll-control-${direction}`}/></Button>;
+}
 export function LinkButton({variant = 'secondary', className = '', ...props}: Styled<LinkProps> & {variant?: ButtonVariant}) {
   return <Link {...props} className={`oc-button ${variant} ${className}`}/>;
+}
+/** Decorative beside an account name; retain initials until a safe image loads. */
+export function Avatar({name, src}: {name: string; src?: string | null}) {
+  const [loaded, setLoaded] = useState<string | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+  let image: string | null = null;
+  if (src?.startsWith('/') && !src.startsWith('//') && !src.includes('\\')) image = src;
+  else if (src) {
+    try {const url = new URL(src); if (url.protocol === 'https:' && !url.username && !url.password) image = url.href;} catch { /* Initials cover missing or invalid URLs. */ }
+  }
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  const initials = (words.length > 1 ? [words[0], words[words.length - 1]].map(word => Array.from(word ?? '')[0] ?? '').join('') : Array.from(words[0] ?? '').slice(0, 2).join('')).toUpperCase();
+  const visible = Boolean(image && loaded === image && failed !== image);
+  return <span className="oc-avatar" aria-hidden="true" data-loaded={visible || undefined}>
+    <span>{initials}</span>
+    {image && failed !== image && <img key={image} src={image} alt="" width={32} height={32} decoding="async" draggable={false} referrerPolicy="no-referrer" onLoad={() => setLoaded(image)} onError={() => setFailed(image)}/>}
+  </span>;
 }
 /** One static mark and wordmark for workspace and focused headers. */
 export function Brand({className = '', reloadDocument = false}: {className?: string; reloadDocument?:boolean}) {

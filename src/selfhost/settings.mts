@@ -6,8 +6,8 @@ export interface SelfhostSettings extends IdentitySettings {
   replicasBindings?:ReplicasBinding[];
   setupStartCommand?:string;
   setupCliCommand?:string;
-  organizationId:string; authSecret:string; identityPath:string; setupToken:string; revision?:string;
-  registryPath:string; search:{endpoint:string;username?:string;password?:string;environment:string;tenantId:string};
+  organizationId:string; authSecret:string; setupToken:string; revision?:string;
+  search:{endpoint:string;index?:string;username?:string;password?:string;environment:string;tenantId:string};
 }
 const LOOPBACK=new Set(['localhost','127.0.0.1','[::1]']);
 /** Explicit opt-out; a typo must not silently disable source ingestion. */
@@ -36,7 +36,6 @@ export function selfhostSettings(env:NodeJS.ProcessEnv=process.env):SelfhostSett
   const setupStartCommand=env.OPENCRAWL_SETUP_START_COMMAND?.trim()||undefined,setupCliCommand=env.OPENCRAWL_SETUP_CLI_COMMAND?.trim()||undefined;
   if(Boolean(setupStartCommand)!==Boolean(setupCliCommand))throw new Error('OPENCRAWL_SETUP_START_COMMAND and OPENCRAWL_SETUP_CLI_COMMAND must be configured together');
   return {setupStartCommand,setupCliCommand,replicasBindings:replicasBindings(env.OPENCRAWL_REPLICAS_BINDINGS,organizationId),url,authOrigin:url+'/api/auth',clientId:CLI_CLIENT_ID,organizationId,authSecret,revision:env.REVISION,
-    identityPath:env.OPENCRAWL_IDENTITY_PATH||'/data/identity.sqlite',setupToken:required('OPENCRAWL_SETUP_TOKEN'),
-    registryPath:env.OPENCRAWL_REGISTRY_PATH||'/data/integrations.sqlite',
-    search:{endpoint,username,password,environment:'selfhost',tenantId:organizationId}};
+    setupToken:required('OPENCRAWL_SETUP_TOKEN'),
+    search:{endpoint,index:env.OPENCRAWL_OPENSEARCH_INDEX?.trim()||undefined,username,password,environment:'selfhost',tenantId:organizationId}};
 }

@@ -7,7 +7,7 @@ import type {Bootstrap, TeamReport, SourceCard} from './types.mjs';
 import type {SetupStatus} from '../setup/types.mjs';
 import type {UsageReport, DiagnosticSearch, BoardReport, OnboardingStatus, OnboardingSource, InvitationList, LibraryContract} from './types.mjs';
 
-export interface WebContext {invoke<T>(path: string, method?: 'GET' | 'POST', input?: object): Promise<T>}
+export interface WebContext {usageSections?: boolean; invoke<T>(path: string, method?: 'GET' | 'POST', input?: object): Promise<T>}
 export const webRpc = initTRPC.context<WebContext>().create({errorFormatter: ({shape}) => ({...shape,
   message:shape.data.code === 'INTERNAL_SERVER_ERROR' ? 'This information is temporarily unavailable. Try again.' : shape.message,
   data: {...shape.data, stack: undefined}})});
@@ -20,7 +20,13 @@ export function productRoutes<B extends Bootstrap = Bootstrap, T extends TeamRep
   setup:t.router({status:p.input(empty).query(async({ctx})=>(await ctx.invoke<{schemaVersion:1;data:SetupStatus}>('/api/setup')).data)}),
   console: {
     bootstrap: p.input(empty).query(({ctx}) => ctx.invoke<B>('/api/console/bootstrap')),
-    usage: p.input(empty).query(({ctx}) => ctx.invoke<UsageReport>('/api/console/usage')),
+    usage: p.input(empty).query(async ({ctx}) => {
+      const report = await ctx.invoke<UsageReport>('/api/console/usage');
+      // Already-open older clients assume activity always has an overlap chart.
+      // Keep their previous error/cache behavior until they load the new assets.
+      if (!ctx.usageSections && report.agents && !report.overlap) throw rpcError(503, 'Usage couldn’t update. Reload this page to retry.');
+      return report;
+    }),
     sources: p.input(empty).query(({ctx}) => ctx.invoke<{items: SourceCard[]}>('/api/console/sources')),
     team: p.input(empty).query(({ctx}) => ctx.invoke<T>('/api/console/team')),
     invite: p.input(email).mutation(({ctx,input}) => ctx.invoke<{ok: true; inviteUrl?: string}>('/api/console/team/invite','POST',input)),
@@ -78,7 +84,7 @@ export async function handleProductRpc<R extends AnyRouter>(req: IncomingMessage
   // Never stream procedure results ahead of the batch's final authorization barrier.
   headers.set('accept','application/json');
   const request = new Request(url,{method:req.method,headers,...req.method==='POST'?{body:Buffer.concat(chunks).toString('utf8')}:{}});
-  const response = await fetchRequestHandler({endpoint:'/api/trpc',req:request,router,createContext:()=>context,maxBatchSize:8,allowBatching:true,allowMethodOverride:true});
+  const response = await fetchRequestHandler({endpoint:'/api/trpc',req:request,router,createContext:()=>({...context,usageSections:req.headers['x-opencrawl-usage-sections']==='1'}),maxBatchSize:8,allowBatching:true,allowMethodOverride:true});
   const body = await response.text();
   if (!await revalidate()) {
     const error={error:{message:'Workspace access changed. Sign in again.',code:-32003,data:{code:'FORBIDDEN',httpStatus:403}}};

@@ -33,13 +33,15 @@ jobs:
         run: python3 -m unittest discover -s connectors/github/tests
       - run: npm ci --prefix web-v2 --ignore-scripts --no-audit --no-fund
       - run: npm run check --prefix web-v2
+      - name: Verify the package contains the compiled self-host console
+        run: node tools/package-contents.mts
       - name: Install browser for UI regression coverage
         run: npx --prefix web-v2 playwright install --with-deps chromium
       - run: npm run test:browser --prefix web-v2
       - name: Verify every connector manifest on the pinned declarative runtime
         run: OPENCRAWL_TEST_CONNECTOR_RUNTIME=1 node --test test/connector-runtime.test.mjs
       - name: Verify real Temporal scheduling, retries and replay
-        run: OPENCRAWL_TEST_TEMPORAL=1 node --test test/session-temporal.test.mjs test/session-deletion-temporal.test.mjs test/slack-source-temporal.test.mjs test/connector-pagination-temporal.test.mjs
+        run: OPENCRAWL_TEST_TEMPORAL=1 node --test test/session-temporal.test.mjs test/session-deletion-temporal.test.mjs test/slack-source-temporal.test.mjs test/connector-pagination-temporal.test.mjs test/integration-workflows.test.mjs test/connector-catchup.test.mjs
       - name: Verify capture against S3-compatible storage
         env:
           OPENCRAWL_TEST_S3_ENDPOINT: http://127.0.0.1:18333
@@ -78,7 +80,7 @@ jobs:
             }
           }
           JS
-          node --test test/search-adapter-conformance.test.mjs test/session-overlap.test.mjs test/session-object-store.test.mjs test/session-indexer.test.mjs test/session-tokens.test.mjs test/session-projection.test.mjs test/recent-sessions.test.mjs test/library-live.test.mjs test/session-deletion-live.test.mjs test/connector-live.test.mjs test/google-drive.test.mjs test/connector-write-barrier-live.test.mjs test/board-search-live.test.mjs test/realm-live.test.mjs test/workspace-search-live.test.mjs test/search-quality-live.test.mjs test/memory-live.test.mjs test/memory-projection-live.test.mjs test/sqlite-search.test.mjs
+          node --test test/search-context.test.mjs test/search-adapter-conformance.test.mjs test/session-overlap.test.mjs test/session-object-store.test.mjs test/session-indexer.test.mjs test/session-tokens.test.mjs test/session-projection.test.mjs test/recent-sessions.test.mjs test/library-live.test.mjs test/session-deletion-live.test.mjs test/connector-live.test.mjs test/google-drive.test.mjs test/connector-write-barrier-live.test.mjs test/board-search-live.test.mjs test/realm-live.test.mjs test/workspace-search-live.test.mjs test/search-quality-live.test.mjs test/memory-live.test.mjs test/memory-projection-live.test.mjs test/sqlite-search.test.mjs
       - name: Measure bulk scheduling and verify large documents
         env:
           OPENCRAWL_TEST_OPENSEARCH_URL: http://127.0.0.1:19200

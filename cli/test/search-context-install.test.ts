@@ -1,0 +1,93 @@
+import {test, expect} from 'bun:test';
+import {mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join, resolve} from 'node:path';
+import {startupHooks} from '../src/startup-install.ts';
+import {searchContextMarker, searchContextMatcher, cursorSearchContextMatcher, antigravitySearchContextMatcher} from '../src/search-context.ts';
+
+test('startup installs one exact search adapter per harness without capture, preserving existing hooks',()=>{
+  const home=mkdtempSync(join(tmpdir(),'opencrawl-search-hooks-')), saved=process.env.OPENCRAWL_CONFIG_HOME;
+  process.env.OPENCRAWL_CONFIG_HOME=join(home,'config');
+  const options={home,env:{},command:[process.execPath,resolve(import.meta.dir,'../src/cli.ts')],requirementsFile:join(home,'requirements.toml')};
+  try {
+    for(const client of ['codex','claude-code','cursor','antigravity']) {
+      const root=join(home,client==='codex'?'.codex':client==='claude-code'?'.claude':client==='cursor'?'.cursor':'.gemini/config');
+      mkdirSync(root,{recursive:true});
+      const file=join(root,client==='claude-code'?'settings.json':'hooks.json');
+      const existing=client==='antigravity'?{'user-hooks':{PreToolUse:[{matcher:'other',hooks:[{type:'command',command:'user-hook'}]}]}}
+        :client==='cursor'?{version:1,hooks:{preToolUse:[{command:'user-hook',matcher:'MCP:search'}]}}
+        :{hooks:{PreToolUse:[{matcher:'other',hooks:[{type:'command',command:'user-hook'}]}]}};
+      writeFileSync(file,JSON.stringify(existing));
+      expect(startupHooks([client],'install',options)[0]!.status).toBe('installed');
+      const config=JSON.parse(readFileSync(file,'utf8'));
+      if(client==='antigravity') {
+        expect(config['user-hooks']).toEqual((existing as any)['user-hooks']);
+        expect(config['opencrawl-startup'].PreToolUse).toHaveLength(1);
+        expect(config['opencrawl-startup'].PreToolUse[0].matcher).toBe(antigravitySearchContextMatcher);
+        expect(config['opencrawl-startup'].PreToolUse[0].hooks[0].command).toEndWith('search-context --harness antigravity');
+      } else if(client==='cursor') {
+        expect(config.hooks.preToolUse[0]).toEqual((existing as any).hooks.preToolUse[0]);
+        expect(config.hooks.preToolUse).toHaveLength(2);
+        expect(config.hooks.preToolUse[1].matcher).toBe(cursorSearchContextMatcher);
+        expect(config.hooks.preToolUse[1].command).toEndWith('search-context --harness cursor');
+      } else {
+        expect(config.hooks.PreToolUse[0]).toEqual((existing as any).hooks.PreToolUse[0]);
+        expect(config.hooks.PreToolUse).toHaveLength(2);
+        const installed=config.hooks.PreToolUse[1];
+        expect(installed.matcher).toBe(searchContextMatcher);
+        expect(installed.hooks[0].statusMessage).toBe(searchContextMarker);
+        expect(installed.hooks[0].command).toEndWith('search-context --harness '+client);
+        expect(installed.hooks[0].async).toBeUndefined();
+      }
+      expect(startupHooks([client],'status',options)[0]!.status).toBe('current');
+      // Model an owned revision-10 hook with its original matcher. Refresh
+      // must replace that matcher, especially AGY's ambiguous plugin name.
+      const owned=client==='antigravity'?config['opencrawl-startup'].PreToolUse[0]
+        :client==='cursor'?config.hooks.preToolUse[1]:config.hooks.PreToolUse[1];
+      const currentMatcher=owned.matcher;
+      owned.matcher=client==='antigravity'?'^(?:mcp_opencrawl_opencrawl_search)$'
+        :client==='cursor'?'^MCP:opencrawl_search$'
+        :'^(?:mcp__opencrawl__opencrawl_search|mcp__plugin_opencrawl_opencrawl__opencrawl_search|mcp__codex_apps__opencrawl_opencrawl_search)$';
+      writeFileSync(file,JSON.stringify(config));
+      expect(startupHooks([client],'status',options)[0]!.status).toBe('outdated');
+      expect(startupHooks([client],'install',options)[0]!.status).toBe('installed');
+      owned.matcher=currentMatcher;
+      expect(JSON.parse(readFileSync(file,'utf8'))).toEqual(config);
+      if(client==='antigravity') {
+        expect(new RegExp(currentMatcher).test('mcp_opencrawl_opencrawl_search')).toBe(false);
+        expect(new RegExp(currentMatcher).test('mcp_opencrawl_opencrawl_search_v1')).toBe(true);
+        expect(new RegExp(currentMatcher).test('mcp_opencrawl_opencrawl_opencrawl_search_v1')).toBe(true);
+        expect(new RegExp(currentMatcher).test('call_mcp_tool')).toBe(true);
+      }
+      const before=readFileSync(file,'utf8');
+      expect(startupHooks([client],'install',options)[0]!.status).toBe('unchanged');
+      expect(readFileSync(file,'utf8')).toBe(before);
+    }
+    expect(existsSync(join(home,'config','opencrawl','capture'))).toBe(false);
+  } finally {
+    if(saved===undefined) delete process.env.OPENCRAWL_CONFIG_HOME; else process.env.OPENCRAWL_CONFIG_HOME=saved;
+    rmSync(home,{recursive:true,force:true});
+  }
+});
+
+
+test('search adapter matcher updates preserve foreign hook positions and mixed-group conditions',()=>{
+  const home=mkdtempSync(join(tmpdir(),'opencrawl-search-hook-stability-')),saved=process.env.OPENCRAWL_CONFIG_HOME;
+  process.env.OPENCRAWL_CONFIG_HOME=join(home,'config');
+  const options={home,env:{},command:[process.execPath,resolve(import.meta.dir,'../src/cli.ts')],requirementsFile:join(home,'requirements.toml')};
+  try{
+    const root=join(home,'.codex'),file=join(root,'hooks.json');mkdirSync(root,{recursive:true});
+    const foreign={matcher:'unchanged',hooks:[{type:'command',command:'foreign-hook',statusMessage:'Foreign'}]};
+    const old={matcher:'old-matcher',hooks:[{type:'command',command:'old-search-hook',statusMessage:searchContextMarker}]};
+    writeFileSync(file,JSON.stringify({hooks:{PreToolUse:[old,foreign]}}));
+    expect(startupHooks(['codex'],'install',options)[0]!.status).toBe('installed');
+    let config=JSON.parse(readFileSync(file,'utf8'));
+    expect(config.hooks.PreToolUse).toHaveLength(2);expect(config.hooks.PreToolUse[0].matcher).toBe(searchContextMatcher);expect(config.hooks.PreToolUse[1]).toEqual(foreign);
+    const mixed={matcher:'must-stay-conditional',hooks:[{type:'command',command:'foreign-mixed'},...old.hooks]};
+    writeFileSync(file,JSON.stringify({hooks:{PreToolUse:[mixed,foreign]}}));
+    expect(startupHooks(['codex'],'install',options)[0]!.status).toBe('installed');config=JSON.parse(readFileSync(file,'utf8'));
+    expect(config.hooks.PreToolUse[0]).toEqual({...mixed,hooks:[mixed.hooks[0]]});expect(config.hooks.PreToolUse[1]).toEqual(foreign);
+    expect(config.hooks.PreToolUse[2].matcher).toBe(searchContextMatcher);
+    const before=readFileSync(file,'utf8');expect(startupHooks(['codex'],'install',options)[0]!.status).toBe('unchanged');expect(readFileSync(file,'utf8')).toBe(before);
+  }finally{if(saved===undefined)delete process.env.OPENCRAWL_CONFIG_HOME;else process.env.OPENCRAWL_CONFIG_HOME=saved;rmSync(home,{recursive:true,force:true});}
+});

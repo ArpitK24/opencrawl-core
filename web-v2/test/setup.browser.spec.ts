@@ -100,10 +100,21 @@ test('native MCP verification stays visible while CLI activation reporting is pe
 
 test('legacy setup URLs open permanent Setup and preserve workspace navigation',async({page})=>{
   await page.request.post('/__test/reset',{data:{}});
-  for(const path of ['/onboarding','/settings']){
-    await page.goto(path+'?full-app');await expect(page).toHaveURL(/\/setup$/);
+  for(const path of ['/onboarding','/agent-setup']){
+    await page.goto(path+'?full-app#continue');await expect(page).toHaveURL(/\/setup\?full-app#continue$/);
     await expect(page.getByRole('heading',{level:1,name:'Setup'})).toBeVisible();
     await expect(page.getByRole('navigation',{name:'Workspace navigation'})).toBeVisible();
+  }
+});
+
+test('Settings and legacy Team links keep their own destination while Setup stays first',async({page})=>{
+  await page.request.post('/__test/reset',{data:{}});
+  for(const path of ['/settings','/team','/onboarding/invite']){
+    await page.goto(path+'?full-app#members');await expect(page).toHaveURL(/\/settings\/team\?full-app#members$/);
+    await expect(page.getByRole('heading',{level:1,name:'Settings'})).toBeVisible();
+    const navigation=page.getByRole('navigation',{name:'Workspace navigation'});
+    await expect(navigation.getByRole('link').first()).toHaveText('Setup');
+    await expect(navigation.getByRole('link',{name:'Team',exact:true})).toHaveCount(0);
   }
 });
 

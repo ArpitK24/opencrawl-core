@@ -1,14 +1,14 @@
 import {test,expect} from 'bun:test';
 import {parseRecord} from '../src/capture/parse.ts';
 import {createSetupStatus} from '../../dist/src/setup/status.mjs';
-import {memorySessionStore} from '../../test/session-store-fixture.mjs';
+import {memoryApplicationState} from '../../test/fixtures/memory-application-state.mjs';
 import type {SessionBatch,SessionEvent} from '../../src/sessions/types.mts';
 
 test('actual-shape Codex completion survives capture and proves native MCP; an exec echo cannot',async()=>{
   const owner={tenantId:'fixture-org',userId:'fixture-user'},selection={installationId:'fixture-installation',client:'codex'};
   let time=Date.parse('2026-11-15T17:49:49.000Z');
   const unexpectedSearch=async()=>{throw new Error('MCP evidence must not imply search verification');};
-  const setup=createSetupStatus({store:memorySessionStore(),search:{search:unexpectedSearch,fetch:unexpectedSearch},now:()=>new Date(time)});
+  const setup=createSetupStatus({state:memoryApplicationState(),search:{search:unexpectedSearch,fetch:unexpectedSearch},now:()=>new Date(time)});
   await setup.installation(owner,{installationId:selection.installationId,machine:{id:'fixture-machine',label:'Fixture'},clients:[{
     client:'codex',installed:true,forward:true,history:'skip',historyProgress:{state:'not_started',completed:0},hookTrust:'pending'}]});
   const proof=(await setup.verify(owner,selection)).proof;time+=1000;

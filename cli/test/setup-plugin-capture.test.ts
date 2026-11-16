@@ -127,3 +127,20 @@ test('unused legacy runner files do not block migration but active unknown comma
  const hooks=hookFiles(dir)[1],before=JSON.parse(readFileSync(hooks,'utf8'));before.hooks.Stop.push({hooks:[{type:'command',command:'node '+file+' collect hook --harness codex',statusMessage:'OpenCrawl session capture'}]});writeFileSync(hooks,JSON.stringify(before));
  expect(()=>prepareLegacyPluginMigration(scope(api),previous,['new-cli'])).toThrow('older runner');expect(readFileSync(file,'utf8')).toBe('retained historical runner');expect(readCaptureConfig()?.hookOwnership).toBe('global');
 }));
+
+
+test('native migration removes only exact profile-bound search context hooks',()=>fixture(async(api,dir)=>{
+ await installCapture(api,{home:dir,harnesses:['claude-code'],command:['legacy-cli']});
+ startupHooks(['claude-code'],'install',{home:dir,command:['legacy-cli'],requirementsFile:join(dir,'absent-policy')});
+ const previous=readCaptureConfig()!,file=hookFiles(dir)[0],before=JSON.parse(readFileSync(file,'utf8'));
+ const group=before.hooks.PreToolUse.find((entry:{hooks:{command:string}[]})=>entry.hooks.some(hook=>hook.command.includes(' search-context ')));
+ const owned=group.hooks[0];
+ expect(owned.command).toContain('search-context --harness claude-code');
+ const foreign={...owned,command:owned.command.replace(/startup([\\/])runner\./,'different-profile$1runner.')};
+ const wrapper={...owned,command:'echo '+owned.command};
+ group.hooks.push(foreign,wrapper);writeFileSync(file,JSON.stringify(before));
+ await installCapture(api,{home:dir,harnesses:['claude-code'],selectionMode:'replace',hookOwnership:'plugin',command:['new-cli']});
+ await retireLegacySetupHooks(scope(api),previous,['claude-code']);
+ const after=JSON.parse(readFileSync(file,'utf8'));
+ expect(after.hooks.PreToolUse).toEqual([{...group,hooks:[foreign,wrapper]}]);
+}));

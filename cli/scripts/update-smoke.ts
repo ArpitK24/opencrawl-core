@@ -1,3 +1,4 @@
+import {withTestState} from '../../test/fixtures/memory-application-state.mjs';
 // Prove a real npm-installed N launcher adopts a fully installed N+1 launcher
 // and native binary, using a disposable loopback registry and cache.
 import {readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, cpSync, existsSync, renameSync, realpathSync} from 'node:fs';
@@ -98,7 +99,7 @@ try {
     const principal={tenantId:'org_team',userId:'human',name:'Human'};
     const store=createLocalSessionStore(join(scratch,'objects'));
     const token='upgrade-fixture-token-at-least-32-characters';
-    captureServer=createServer(standaloneCapture({token,principal,store}));
+    captureServer=createServer(standaloneCapture(withTestState({token,principal,store})));
     await new Promise<void>(r=>captureServer!.listen(0,'127.0.0.1',r));
     const api='http://127.0.0.1:'+(captureServer.address() as any).port;
     Object.assign(env,{OPENCRAWL_SESSIONS_TOKEN:token});
@@ -133,8 +134,18 @@ try {
     if (readFileSync(skillFile, 'utf8') !== canonicalSkill || readFileSync(customized, 'utf8') !== canonicalSkill || existsSync(stale)) throw new Error('Upgrade did not regenerate CLI-owned skills');
     if (readFileSync(join(other, 'SKILL.md'), 'utf8') !== 'keep') throw new Error('Upgrade changed another named skill');
     if (JSON.parse(readFileSync(manifestFile, 'utf8')).api !== undefined) throw new Error('Skill retained a duplicate deployment URL');
-    const skillReceipt = JSON.parse(readFileSync(join(env.XDG_CACHE_HOME, 'opencrawl/skills-update.json'), 'utf8'));
-    if (skillReceipt.version !== version || skillReceipt.result.updated !== 2 || skillReceipt.result.conflicts !== 0) throw new Error('Upgrade did not report managed skill outcomes');
+    // The legacy launcher refreshes both trees before delegating. The native
+    // process then records the already-current outcome for its own profile.
+    // Compare only safe receipt fields so failures show which stage disagreed.
+    const legacySkillReceipt = JSON.parse(readFileSync(join(env.XDG_CACHE_HOME, 'opencrawl/skills-update.json'), 'utf8'));
+    const skillReceipt = JSON.parse(readFileSync(join(env.OPENCRAWL_CONFIG_HOME, 'opencrawl/skills-update.json'), 'utf8'));
+    const outcome = (receipt: any) => ({version:receipt.version,complete:receipt.complete,status:receipt.result?.status,
+      updated:receipt.result?.updated,conflicts:receipt.result?.conflicts,errors:receipt.result?.errors});
+    assert.deepEqual(outcome(legacySkillReceipt),{version,complete:true,status:'current',updated:2,conflicts:0,errors:0},
+      'Legacy launcher did not report both regenerated managed skills');
+    assert.deepEqual({...outcome(skillReceipt),revision:skillReceipt.revision},
+      {version,revision:11,complete:true,status:'current',updated:0,conflicts:0,errors:0},
+      'Native profile did not record the already-current managed skills');
     // The ordinary board command also performs the existing legacy hook migration.
     const upgradedConfig = readFileSync(join(capture, 'config.json'), 'utf8');
     const migrated=JSON.parse(upgradedConfig);
@@ -163,7 +174,7 @@ try {
     const status=JSON.parse(await asyncRun(['node',launcher,'collect','status','--json'])).data;
     if(status.queued!==0||status.owner.tenantId!==principal.tenantId||status.installationId!==config.installationId)throw new Error('Updated capture status is inconsistent');
     if(readFileSync(join(capture,'state','cursor.json'),'utf8')!=='{"offset":42}')throw new Error('Upgrade changed capture cursor');
-    const stored=await createSessionIngest({store}).getBatch(principal,{...batch,batchId:status.lastUpload.batchId});
+    const stored=await createSessionIngest(withTestState({store})).getBatch(principal,{...batch,batchId:status.lastUpload.batchId});
     if(stored?.owner.userId!==principal.userId||stored?.owner.tenantId!==principal.tenantId||stored?.events[0].data?.content!=='synthetic upgrade fixture')throw new Error('Upgrade lost attribution or queued content');
     console.log(`Real npm upgrade ${original.version} → ${version}, CLI-owned skill replacement, configuration precedence, original-command reuse and queued capture recovery verified.`);
   } finally { server.stop(true); }

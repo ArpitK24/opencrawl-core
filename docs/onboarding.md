@@ -167,9 +167,9 @@ client still needs to load or trust the new plugin.
 The older focused onboarding components, `createOnboardingStatus` receipts and
 `/api/onboarding/*` operations remain compatibility surfaces. Their CLI/MCP/live
 and historical observations are retained; they no longer define workspace
-admission or a mandatory three-step funnel. Legacy `/onboarding` and `/settings`
+admission or a mandatory three-step funnel. Legacy `/onboarding` and `/agent-setup`
 links open Setup, `/onboarding/sources` opens Integrations, and
-`/onboarding/invite` opens Team. Do not remove stored receipts or infer new
+`/onboarding/invite` opens Team in Settings. `/settings` opens its Team section. Do not remove stored receipts or infer new
 milestones from a legacy completed flag.
 
 Current behavior lives in `cli/src/setup/`, `src/setup/`, `src/mcp/server.mts`,

@@ -1,6 +1,7 @@
 import {posix,win32} from 'node:path';
 import {apiOrigin,CliError} from '../oauth.ts';
 import {GROK_BOT_HOOK_EVENTS} from '../capture/grok-bot.ts';
+import {pluginSearchContextMatcher,searchContextMarker} from '../search-context.ts';
 import type {PluginClient} from './plugins.ts';
 
 export type PluginHookBinding={command:string[];configHome:string;api:string;pluginName:string};
@@ -40,6 +41,8 @@ export function pluginHookFiles(client:PluginClient,binding:PluginHookBinding,pl
   :{command:client==='antigravity'?'/bin/sh ./scripts/opencrawl-hook.sh':'/bin/sh "$'+root+'/scripts/opencrawl-hook.sh"'};
  const args=(values:string[])=>values.map(value=>/^[a-zA-Z0-9_:/.-]+$/.test(value)?value:literal(value,windows)).join(' ');
  const startup={type:'command',...invocation,command:invocation.command+' '+args(['session','start','--harness',client,'--api',api]),timeout:7,statusMessage:startupMarker};
+ const search={type:'command',...invocation,command:invocation.command+' '+args(['search-context','--harness',client,'--api',api]),timeout:2,statusMessage:searchContextMarker};
+ const searchMatcher=pluginSearchContextMatcher(client,pluginName);
  const capture=(event:string)=>{
   const daemon=client==='claude-code';
   const managed=client==='codex'&&event!=='SessionEnd';
@@ -48,16 +51,19 @@ export function pluginHookFiles(client:PluginClient,binding:PluginHookBinding,pl
  };
  if(client==='cursor'){
   const hooks:Record<string,unknown[]>=Object.fromEntries(GROK_BOT_HOOK_EVENTS.map(event=>{const entry=capture(event);return [event,[{command:entry.command,timeout:entry.timeout}]];}));
+  (hooks.preToolUse??=[]).unshift({matcher:searchMatcher,command:search.command,timeout:search.timeout});
   hooks.sessionStart.unshift({command:startup.command,timeout:startup.timeout});
   hooks.postToolUse.unshift({command:startup.command+' --after-tool',timeout:startup.timeout});
   return {[runner]:script,'hooks/hooks.json':json({version:1,hooks})};
  }
  if(client==='antigravity'){
   const entry=(event:string)=>{const hook=capture(event);return {type:hook.type,command:hook.command,timeout:hook.timeout};};
-  return {[runner]:script,'hooks.json':json({[pluginName+'-startup']:{SessionStart:[{type:startup.type,command:startup.command,timeout:startup.timeout}]},
+  return {[runner]:script,'hooks.json':json({[pluginName+'-startup']:{SessionStart:[{type:startup.type,command:startup.command,timeout:startup.timeout}],PreToolUse:[{matcher:searchMatcher,hooks:[{type:search.type,command:search.command,timeout:search.timeout}]}]},
    [pluginName+'-capture']:{SessionStart:[entry('SessionStart')],PostToolUse:[{matcher:'*',hooks:[entry('PostToolUse')]}],PostInvocation:[entry('PostInvocation')],Stop:[entry('Stop')]}})};
  }
  const events=client==='claude-code'?['SessionStart','SessionEnd']
   :['SessionStart','UserPromptSubmit','PreToolUse','PostToolUse','Stop','SubagentStop','SessionEnd'];
- return {[runner]:script,'hooks/hooks.json':json({hooks:Object.fromEntries(events.map(event=>[event,[{hooks:event==='SessionStart'?[startup,capture(event)]:[capture(event)]}]]))})};
+ const hooks:Record<string,unknown[]>=Object.fromEntries(events.map(event=>[event,[{hooks:event==='SessionStart'?[startup,capture(event)]:[capture(event)]}]]));
+ (hooks.PreToolUse??=[]).push({matcher:searchMatcher,hooks:[search]});
+ return {[runner]:script,'hooks/hooks.json':json({hooks})};
 }

@@ -442,14 +442,20 @@ duplicating hook messages. Other referenced paths are never opened. Existing
 Cursor history is not imported. Tool capture retains what Cursor exposes; some
 Read results contain metadata rather than file bytes. Origin stays unknown without explicit cloud evidence.
 
-The separately distributed MIT Cursor plugin lives in `plugins/opencrawl-cursor` in the public
+The separately distributed MIT Cursor plugin lives in `opencrawl-cursor/` in the public
 `getopencrawl/opencrawl-plugins` repository. It bundles MCP, a retrieval rule,
 setup guidance. Capture requires explicit CLI enrollment and uses its managed
 user hooks; that older distribution does not install a second set of capture callbacks.
 CLI setup uses its deployment-specific plugin with bundled hooks instead. Cursor MCP uses
 its own OAuth grant. Verify a fresh stored receipt and search/fetch a unique new
 message filtered to harness=cursor; installation alone does not prove capture.
-Cursor has no supported native board push listener here; read at work boundaries.
+Board notifications use Cursor's native background Shell with `block_until_ms:0`
+and `notify_on_output`. Keep one `opencrawl board watch --session <id> --json`
+task attached with the pattern `board[.]delivery`; matching output resumes the
+agent while idle. Retain the task and delivery checkpoint instead of starting a
+new listener for each notification. A detached process alone does not deliver
+notifications. On older Cursor Shell versions without `notify_on_output`, report
+that limitation and read at work boundaries.
 
 ### Grok Bot
 
@@ -603,6 +609,30 @@ tokens. Changing that fixed identity invalidates old delegations.
 
 ## Search workspace knowledge
 
+On servers supporting search context, defaults exclude session tool/command output.
+Use `--include-tool-outputs` for logs, failures, test output and execution receipts.
+The current chat is also excluded when the client supplies its exact native
+identity. Use `--include-current-session` to include it. Check
+`data.searchContext`: `currentSessionStatus: "unavailable"` means native identity
+was missing and this chat was **not** excluded. If `searchContext` is missing,
+defaults and current-chat exclusion are unconfirmed; never infer legacy defaults.
+The context options require server support. These controls do not delete captures
+or prevent fetching an authorized passage by ID.
+
+Prefer `opencrawl_search_v1` when advertised, then `opencrawl_search`, then
+`search`. Native hooks attach `currentSession` to the versioned alias. After the
+CLI update, Antigravity uses only `opencrawl_search_v1` for automatic identity;
+its older aliases remain compatible fallbacks. Send only arguments exposed by
+the selected tool schema, and verify defaults and current-chat exclusion from
+the response's `searchContext`. Older fallback behavior is unconfirmed without
+that report. The legacy `search` alias accepts explicit context only when its
+schema supports it. With server support, an ordinary
+CLI search can pass `--current-session '{"harness":"codex","sessionId":"native-chat-id"}'`.
+Use the actual caller identity, never the newest chat, current directory, board
+display name or another chat's receipt. Workspace and user remain server-derived.
+Explicit kind, role and tool-name filters intersect these defaults; selecting a
+tool result kind does not automatically enable `--include-tool-outputs`.
+
 `opencrawl search "words" --json` queries sessions and all authorized indexed
 connectors. Use `--source sessions|connectors`, `--match any|all|phrase`,
 `--session-id ID` with sessions, and `--limit 1..40`. Follow `data.next` with
@@ -638,16 +668,31 @@ compiles this fixture; it adds no production dependency.
 
 ## Managed skill refresh
 
-Automatic and explicit launcher updates regenerate the CLI-owned `opencrawl`
-skill using the selected release, including local edits and stale files. Other
-named skills remain separate. Skill failures do not prevent CLI use.
-`opencrawl skills refresh --json` retries regeneration and reports access errors.
-`OPENCRAWL_NO_UPDATE=1` disables automatic refresh too.
+After the new binary is installed, its next existing capture hook, session
+startup or ordinary CLI invocation refreshes already-installed `opencrawl` skills
+and native search hooks using that release, including local edits and stale
+files. Publication does not reload an already-running client. Refresh is local,
+skips a busy installation lock and retries later, and caches completed revisions
+to avoid per-event writes. Other named skills remain separate; failures do not
+prevent CLI use. `opencrawl skills refresh --json` explicitly retries regeneration
+and reports access errors. `OPENCRAWL_NO_UPDATE=1` disables automatic refresh too.
+A client without an installed skill still needs `opencrawl skills install`.
+
+Disabled hooks, managed-only policy and existing profile bindings are preserved.
+Codex must review the new **OpenCrawl search context** hook in `/hooks` or Settings
+> Hooks, then start a new session. Claude normally reloads changed hook settings;
+SessionStart requests a skill rescan when it refreshes guidance. Cursor watches
+hook settings; restart if they have not reloaded. Start a fresh Antigravity
+session: `/skills reload` refreshes skills, but live hook reload is unverified.
+Reconnect MCP if the new `opencrawl_search_v1` alias is missing, and verify an actual
+response's `searchContext.currentSessionStatus`. See
+[client activation details](../docs/search-context.md#client-attachment).
 
 Board discovery uses MCP `board_sync`/`board_topics`; expand a relevant reference
-with `board_fetch` or `opencrawl board fetch --workspace <id> --id <reference>
+with `board_fetch` or `opencrawl board fetch --id <reference>
 --json`. Add `--field latestAssistantMessage` to narrow a session, or page with
-`--offset`, `--length` and `--content-version`.
+`--offset`, `--length` and `--content-version`. The authenticated sign-in supplies
+the default workspace; an explicit `--workspace <id>` must be authorized by the deployment.
 
 Run `opencrawl board fetch --help` for the complete reference and output contract.
 Board message IDs use `message:1185`, not bare numbers. A single response puts
@@ -657,7 +702,7 @@ default to 4,000 UTF-16 units, with an 8,000-unit maximum.
 The ordinary fetch commands accept up to 40 independent references:
 
 ```sh
-opencrawl board fetch message:1185 message:1187 --workspace org_TEAM --json
+opencrawl board fetch message:1185 message:1187 --json
 opencrawl fetch sessions:RESULT_A sessions:RESULT_B --json
 ```
 

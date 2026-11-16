@@ -2,14 +2,17 @@ import {hasCompletedOnboarding} from '../onboarding-state.mjs';
 import {replicasSetupPrompt, replicasEnrollmentPrompt} from '../sessions/cloud-setup.mjs';
 import type {IncomingMessage} from 'node:http';
 import type {SourceCard, TeamReport, InvitationPolicy} from './types.mjs';
+import {errorInfo} from '../errors.mjs';
+import type {Log} from '../integrations/ports.mjs';
 
 export type Principal = {tenantId: string; userId: string};
-export type User = {id: string; email: string; firstName?: string | null; lastName?: string | null};
+export type User = {id: string; email: string; firstName?: string | null; lastName?: string | null; avatarUrl?: string | null};
 export type Membership = {userId: string; organizationId: string; status: string; role?: {slug: string}; roles?: Array<{slug: string}>; directoryManaged?:boolean};
 export type Organization = {id: string; name: string; metadata?: Record<string, string>};
 type Progress = {completed?: {observedAt?: string} | null; shared?: {observedAt?: string} | null};
 export interface ConsoleContext {principal: Principal; user: User; member: Membership; revalidate: () => Promise<boolean>; admitted?: boolean; cacheScope?: string}
 export interface ConsoleServices {
+  log?: Log;
   url: string;
   setupPrompt: string;
   setupStartCommand?: string;
@@ -33,11 +36,11 @@ export interface ConsoleServices {
   libraryFailure: (error: unknown) => {status: number; message: string};
 }
 const LIBRARY = /^\/api\/console\/library\/((?:sessions|memories)\/(?:list|read|visibility|delete))$/;
-export const consolePages = new Set(['/', '/usage', '/sessions', '/memories', '/sources', '/integrations', '/data', '/diagnostics', '/settings', '/setup', '/team', '/search', '/_/debug', '/_/debug/', '/onboarding', '/onboarding/sources', '/onboarding/invite']);
+export const consolePages = new Set(['/', '/usage', '/sessions', '/memories', '/sources', '/integrations', '/data', '/diagnostics', '/settings', '/settings/team', '/agent-setup', '/setup', '/team', '/search', '/_/debug', '/_/debug/', '/onboarding', '/onboarding/sources', '/onboarding/invite']);
 export function consoleRoute(method: string, path: string) {
   if (['/api/console/bootstrap','/api/console/sources','/api/console/usage','/api/console/team'].includes(path)) return {name:path, ...(method === 'GET' ? {} : {status:405})};
   if (['/api/console/replicas/setup','/api/console/team/invite','/api/console/team/role','/api/console/team/remove','/api/console/team/organization'].includes(path)) return {name:path, ...(method === 'POST' ? {} : {status:405})};
-  if (['/sources','/data','/diagnostics','/settings','/sessions','/memories'].includes(path)) return {name:path, ...(method === 'GET' ? {} : {status:405})};
+  if (['/sources','/data','/diagnostics','/settings', '/settings/team', '/agent-setup','/sessions','/memories'].includes(path)) return {name:path, ...(method === 'GET' ? {} : {status:405})};
   if (LIBRARY.test(path)) return {name:path, ...(method === 'POST' ? {} : {status:405})};
   return null;
 }
@@ -91,7 +94,7 @@ export function createConsoleApi(services: ConsoleServices, extensions: ConsoleE
       } else if (path === '/api/console/bootstrap') {
         const [organization, progress, extension] = await Promise.all([services.organization(principal.tenantId), services.progress(principal), extensions.bootstrap?.(context)]);
         const completed = hasCompletedOnboarding(progress);
-        body = {...extension,...(services.invitationPolicy?{invitationPolicy:services.invitationPolicy}:{}),cacheScope:context.cacheScope || [principal.tenantId,principal.userId,admin(member)?'admin':'member'].join(':'),workspace:{name:organization.name,userName:name(user),email:user.email,role:admin(member) ? 'admin' : 'member'}, mcpUrl:services.url + '/mcp',setupPrompt:services.setupPrompt,...(services.setupStartCommand?{setupStartCommand:services.setupStartCommand,setupCliCommand:services.setupCliCommand}:{}),...(admin(member)?{replicasSetupPrompt:replicasSetupPrompt(services.url),canInstallReplicas:Boolean(services.replicas)}:{}),canInvite:admin(member),onboarding:{completed,next:completed ? '/' : await services.next(principal)}};
+        body = {...extension,...(services.invitationPolicy?{invitationPolicy:services.invitationPolicy}:{}),cacheScope:context.cacheScope || [principal.tenantId,principal.userId,admin(member)?'admin':'member'].join(':'),workspace:{name:organization.name,userName:name(user),email:user.email,...(user.avatarUrl?{avatarUrl:user.avatarUrl}:{}),role:admin(member) ? 'admin' : 'member'}, mcpUrl:services.url + '/mcp',setupPrompt:services.setupPrompt,...(services.setupStartCommand?{setupStartCommand:services.setupStartCommand,setupCliCommand:services.setupCliCommand}:{}),...(admin(member)?{replicasSetupPrompt:replicasSetupPrompt(services.url),canInstallReplicas:Boolean(services.replicas)}:{}),canInvite:admin(member),onboarding:{completed,next:completed ? '/' : await services.next(principal)}};
       } else if (path === '/api/console/usage') {
         body = await services.usage(principal);
       } else if (path === '/api/console/sources') {
@@ -137,6 +140,7 @@ export function createConsoleApi(services: ConsoleServices, extensions: ConsoleE
     } catch (error) {
       const safe = error instanceof Error && 'expose' in error && error.expose === true;
       const status = safe && 'status' in error && typeof error.status === 'number' ? error.status : 503;
+      services.log?.('console.request.failed', {path, status, message: errorInfo(error).message});
       return {status,body:{error:{code:status === 403 ? 'WORKSPACE_ACCESS_DENIED' : 'CONSOLE_UNAVAILABLE',message:safe ? error.message : 'This information is temporarily unavailable. Please try again.'}}};
     }
   };

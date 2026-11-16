@@ -2,10 +2,10 @@ import {randomBytes} from 'node:crypto';
 import {z} from 'zod';
 import {sessionScope} from '../sessions/ingest.mjs';
 import {isSessionHarness} from '../sessions/types.mjs';
-import type {Principal,ObjectStore,SessionBatch,SessionEvent} from '../sessions/types.mjs';
+import type {Principal,SessionBatch,SessionEvent} from '../sessions/types.mjs';
 import type {createWorkspaceSearch} from '../search/workspace.mjs';
 import {SETUP_CLIENTS,SETUP_PLUGIN_STATES} from './types.mjs';
-import type {SetupStatus,SetupClientStatus,SetupInstallation,SetupProof,SetupHumanTask} from './types.mjs';
+import type {SetupStatus,SetupClientStatus,SetupProof,SetupHumanTask} from './types.mjs';
 
 const identifier=z.string().regex(/^[A-Za-z0-9_.:-]{1,200}$/);
 export const setupInstallationSchema=z.strictObject({installationId:identifier,machine:z.strictObject({id:identifier,label:z.string().trim().min(1).max(100)}),clients:z.array(z.strictObject({
@@ -16,17 +16,8 @@ export const setupInstallationSchema=z.strictObject({installationId:identifier,m
 export const setupVerifySchema=z.strictObject({installationId:identifier,client:z.enum(SETUP_CLIENTS)});
 export const setupMcpVerifySchema=setupVerifySchema.extend({proofId:z.string().regex(/^[a-f0-9]{32}$/)});
 type Selection=z.infer<typeof setupVerifySchema>;
-interface Evidence {
-  proof:SetupProof;
-  capture?:{sessionId:string;eventId:string;timestamp:string;observedAt:string};
-  mcpCall?:{receipt:string;issuedAt:string};
-  nativeCalls?:Array<{callId:string;sessionId:string}>;
-  nativeResults?:Array<{callId:string;sessionId:string;eventId:string;observedAt:string}>;
-  mcpNative?:{sessionId:string;eventId:string;observedAt:string};
-}
-interface StoredClient extends Omit<SetupClientStatus,'proof'|'humanTasks'|'mcp'> {evidence?:Evidence}
-interface StoredInstallation extends Omit<SetupInstallation,'clients'> {clients:StoredClient[]}
-interface StoredStatus extends Omit<SetupStatus,'installations'> {installations:StoredInstallation[]}
+import type {ApplicationState} from '../state/types.mjs';
+import {validateSetupState,type SetupEvidence as Evidence,type SetupStoredClient as StoredClient,type SetupStateRecord as StoredStatus} from './state.mjs';
 function fail(status:number,message:string):never {throw Object.assign(new Error(message),{status,expose:true});}
 const token=()=>randomBytes(16).toString('hex');
 const instant=(value:unknown)=>typeof value==='string'&&Number.isFinite(Date.parse(value))?Date.parse(value):NaN;
@@ -115,24 +106,22 @@ function nativeVerificationCall(block:Record<string,unknown>,proofId:string,inst
  * Configuration and history receipts cannot satisfy native capture/search proof.
  * Compare-and-set preserves simultaneous CLI progress and capture/MCP observations.
  */
-export function createSetupStatus({store,prefix='capture-v1',search,now=()=>new Date()}: {
-  store:Pick<ObjectStore,'readVersion'|'compareAndSet'>;prefix?:string;
+export function createSetupStatus({state,search,now=()=>new Date()}: {
+  state:Pick<ApplicationState,'setup'>;
   search:Pick<ReturnType<typeof createWorkspaceSearch>,'search'|'fetch'>;now?:()=>Date;
 }) {
-  function key(principal:Principal) {return `${prefix}/${sessionScope(principal)}/setup/status-v1.json`;}
   function admit(principal:Principal) {sessionScope(principal);if(principal.captureAccess!==undefined)fail(403,'Capture credentials cannot manage setup.');}
   async function load(principal:Principal) {
-    const stored=await store.readVersion(key(principal),{maxBytes:256*1024});
-    const data:StoredStatus=stored.data?JSON.parse(stored.data.toString()):{schemaVersion:1,scope:{tenantId:principal.tenantId,userId:principal.userId},firstWin:null,installations:[]};
-    if(data.schemaVersion!==1||data.scope?.tenantId!==principal.tenantId||data.scope?.userId!==principal.userId||!Array.isArray(data.installations))throw new Error('Invalid setup storage scope');
-    return {...stored,data};
+    const stored=await state.setup.read(principal);
+    const data:StoredStatus=stored.record?validateSetupState(stored.record,principal):{schemaVersion:1,scope:{tenantId:principal.tenantId,userId:principal.userId},firstWin:null,installations:[]};
+    return {version:stored.version,data};
   }
   async function update<T>(principal:Principal,apply:(data:StoredStatus)=>T):Promise<T> {
     for(let attempt=0;attempt<8;attempt++) {
       const {version,data}=await load(principal),result=apply(data);
       const bytes=Buffer.from(JSON.stringify(data));
       if(bytes.length>256*1024)fail(409,'Setup status limit reached. Remove unused local observations before adding more.');
-      if(await store.compareAndSet(key(principal),version,bytes))return result;
+      if(await state.setup.save(principal,version,data))return result;
     }
     fail(409,'Setup changed concurrently. Retry this operation.');
   }

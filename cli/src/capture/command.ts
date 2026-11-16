@@ -14,6 +14,7 @@ import {backfill,backfillPreview,selection,setupBackfill,reportBackfillProgress}
 import {approveCapture,excludeCapture,purgeLocalCapture} from './controls.ts';
 import {captureNoticeFor} from './policy.ts';
 import {agentSkills} from '../skills.ts';
+import {refreshManagedSkills} from '../skill-activation.ts';
 import {hasPluginContext, pluginHookContext, pluginRecordingEnabled, recordPluginActivation, type PluginHookContext} from '../setup/plugin-context.ts';
 /** With eager set, return as soon as a whole document has arrived: a runtime
  * may keep the pipe open after writing the payload. */
@@ -32,7 +33,7 @@ async function hookInput(eager=false) {
  * request in flight, so the process ends at five seconds, well inside the
  * installed hook timeout. The one thing it waits for is a sign-in renewal
  * already in flight: abandoning that would lose the sign-in. */
-async function cursorFormatHook(harness:'cursor'|'grok-bot',plugin:PluginHookContext|null) {
+async function cursorFormatHook(harness:'cursor'|'grok-bot',plugin:PluginHookContext|null,api:string) {
   let answered=false;
   const answer=(event:any)=>{if(!answered){answered=true;process.stdout.write(JSON.stringify(grokBotResponse(event))+'\n');}};
   const finish=()=>exitAfterCredentialRotation(0);
@@ -45,6 +46,7 @@ async function cursorFormatHook(harness:'cursor'|'grok-bot',plugin:PluginHookCon
     const event=await hookInput(true);
     answer(event);
     recordPluginActivation(plugin,event);
+    if(!plugin)await refreshManagedSkills(api,{hook:true});
     if(!plugin||pluginRecordingEnabled(plugin)){
       await bindHookIdentity(event);
       await captureHook(harness,event);
@@ -64,7 +66,7 @@ export function antigravityResponse(event:any,eventFlag?:string,notice?:string|n
   if(name==='SessionStart'&&notice)return {injectSteps:[{systemMessage:{systemMessage:notice,metadata:{user_markdown:notice}}}]};
   return {};
 }
-async function antigravityHook(eventFlag?:string,plugin:PluginHookContext|null=null) {
+async function antigravityHook(api:string,eventFlag?:string,plugin:PluginHookContext|null=null) {
   let answered=false;
   const answer=(event:any,notice?:string|null)=>{if(!answered){answered=true;process.stdout.write(JSON.stringify(antigravityResponse(event,eventFlag,notice))+'\n');}};
   const finish=()=>exitAfterCredentialRotation(0);
@@ -80,6 +82,7 @@ async function antigravityHook(eventFlag?:string,plugin:PluginHookContext|null=n
     const recording=!plugin||pluginRecordingEnabled(plugin);
     const notice=recording&&eventName==='SessionStart'?captureAttentionNotice():null;
     answer(event,notice);
+    if(!plugin)await refreshManagedSkills(api,{hook:true});
     if(recording){
       await bindHookIdentity(event);
       await captureHook('antigravity',event);
@@ -156,8 +159,8 @@ export async function collectCommand(action:string,api:string,values:any) {
         }
         return null;
       }
-      if(harness==='grok-bot'||harness==='cursor')return cursorFormatHook(harness,plugin);
-      if(harness==='antigravity')return antigravityHook(values.event,plugin);
+      if(harness==='grok-bot'||harness==='cursor')return cursorFormatHook(harness,plugin,api);
+      if(harness==='antigravity')return antigravityHook(api,values.event,plugin);
       // Only harness-managed async hooks may upload. Legacy sync hooks stay local.
       try {
         if(!['claude-code','codex'].includes(harness??''))throw new Error('Invalid harness');
@@ -168,6 +171,7 @@ export async function collectCommand(action:string,api:string,values:any) {
         if(typeof event?.cursor_version==='string')return null;
         recordPluginActivation(plugin,event);
         if(plugin&&!pluginRecordingEnabled(plugin))return null;
+        if(!plugin)await refreshManagedSkills(api,{hook:true});
         await captureHook(harness as any,event);
         // Async Claude Code hooks deliver this JSON on the next turn, so a
         // paused capture is visible to the person instead of failing silently.

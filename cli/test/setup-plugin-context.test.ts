@@ -210,3 +210,27 @@ test('Cursor first-tool startup confirms a search-only plugin without enabling r
   expect(existsSync(join(f.configHome,'opencrawl/capture/queue'))).toBe(false);expect(existsSync(join(f.configHome,'opencrawl/capture/worker.pid'))).toBe(false);expect(readFileSync(f.configFile,'utf8')).toBe(json(f.config));
  }finally{f.close();server.stop(true);}
 },10_000);
+
+
+test('search-only plugin carrier validates its current deployment before stdin and attaches actual native identity',async()=>{
+ for(const client of clients){const f=fixture(client);try{
+  const args=['search-context','--harness',client,'--api',f.binding.api];
+  const input={query:'isolated native identity',currentSession:{harness:'other',sessionId:'stale'},includeToolOutputs:true};
+  const native=client==='cursor'?{hook_event_name:'preToolUse',conversation_id:'selected-chat',tool_name:'MCP:opencrawl_search_v1',tool_input:input}
+   :client==='antigravity'?{hookEventName:'PreToolUse',conversationId:'selected-chat',toolCall:{name:'call_mcp_tool',args:{ServerName:f.binding.pluginName+'_opencrawl',ToolName:'opencrawl_search_v1',Arguments:input}}}
+   :{hook_event_name:'PreToolUse',session_id:'selected-chat',tool_name:client==='codex'?`mcp__${f.binding.pluginName}__opencrawl_search_v1`:`mcp__plugin_${f.binding.pluginName}_opencrawl__opencrawl_search_v1`,tool_input:input};
+  const before=readFileSync(f.configFile,'utf8');
+  const run=async(env:NodeJS.ProcessEnv,payload?:unknown)=>{
+   const child=Bun.spawn([process.execPath,cli,...args],{env,stdin:payload===undefined?'pipe':new Blob([JSON.stringify(payload)]),stdout:'pipe',stderr:'pipe'});
+   const timer=setTimeout(()=>child.kill(),3000);
+   try{const [code,out,err]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]);expect(code).toBe(0);expect(err).toBe('');return out;}finally{clearTimeout(timer);}
+  };
+  const output=JSON.parse(await run(f.env,native)),actual=client==='cursor'?output.updated_input:client==='antigravity'?output.overwrite.Arguments:output.hookSpecificOutput.updatedInput;
+  expect(actual).toEqual({...input,currentSession:{harness:client,sessionId:'selected-chat'}});
+  // Invalid API/profile checks must terminate even with stdin held open.
+  expect(await run({...f.env,OPENCRAWL_PLUGIN_API:'https://other.example'})).toBe('');
+  expect(await run({...f.env,OPENCRAWL_CONFIG_HOME:join(f.home,'unselected-profile')})).toBe('');
+  expect(readFileSync(f.configFile,'utf8')).toBe(before);expect(existsSync(f.activation)).toBe(false);
+  for(const name of ['queue','notices','daemon','last-error.json'])expect(existsSync(join(f.configHome,'opencrawl/capture',name))).toBe(false);
+ }finally{f.close();}}
+},15_000);

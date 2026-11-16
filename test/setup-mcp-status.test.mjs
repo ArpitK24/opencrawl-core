@@ -1,3 +1,4 @@
+import {stateFor} from './fixtures/memory-application-state.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
@@ -26,12 +27,12 @@ async function fixture(t,{clients=[observation(),observation('claude-code')],rea
   if(realSearch){
     const directory=await mkdtemp(join(tmpdir(),'opencrawl-mcp-setup-'));t.after(()=>rm(directory,{recursive:true,force:true}));
     const endpoint=pathToFileURL(join(directory,'search.sqlite')).href.replace('file:','sqlite:');
-    sessions=createSessionSearch({endpoint,store,prefix});search=createWorkspaceSearch({sessions});
+    sessions=createSessionSearch({state:stateFor(store),eventIdentities:stateFor(store).eventIdentities,endpoint,store,prefix});search=createWorkspaceSearch({sessions});
   }
-  const setup=createSetupStatus({store,prefix,search,now:()=>new Date(clock)});
+  const setup=createSetupStatus({state:stateFor(store),search,now:()=>new Date(clock)});
   await setup.installation(owner,registration(clients));
-  const pipeline=sessions?createSessionPipeline({store,prefix,search:sessions,resolvePrincipal:async({batch})=>batch.owner}):null;
-  const ingest=pipeline?createSessionIngest({store,prefix,onStored:setup.session,scheduleIndexing:async key=>{await pipeline.processObject({key});await sessions.refresh(owner);}}):null;
+  const pipeline=sessions?createSessionPipeline({state:stateFor(store),eventIdentities:stateFor(store).eventIdentities,store,prefix,search:sessions,resolvePrincipal:async({batch})=>batch.owner}):null;
+  const ingest=pipeline?createSessionIngest({state:stateFor(store),eventIdentities:stateFor(store).eventIdentities,store,prefix,onStored:setup.session,scheduleIndexing:async key=>{await pipeline.processObject({key});await sessions.refresh(owner);}}):null;
   const principals={owner,otherUser:{...owner,userId:'bob'},otherTenant:{...owner,tenantId:'other'},capture:{...owner,captureAccess:'write'}};
   let mcp;const server=createServer((req,res)=>mcp(req,res));await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   const origin='http://127.0.0.1:'+server.address().port;

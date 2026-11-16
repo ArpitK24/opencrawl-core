@@ -8,22 +8,37 @@ DTOs and runtime adapters; WorkOS, billing and managed connector code stay outsi
   registry drives navigation and routing together. Use Link, Navigate and router
   hooks for internal paths. Full navigation is reserved for authentication and
   external authorization boundaries.
+- Settings sections use `NavigationItem.group: 'settings'`. AppShell excludes
+  them from the sidebar and owns the account-menu Settings entry, shared Page
+  heading and text-only section navigation with an accent underline. Team lives
+  at `/settings/team` and is the default for `/settings`; hosted Billing extends
+  the frame at `/settings/billing`.
+  Embed their content and pending states without another Page or H1. Legacy
+  `/team` and hosted `/billing` redirects preserve query and hash. Setup is the first sidebar destination at `/setup`; legacy `/agent-setup`
+  redirects there. Settings uses the gear, Setup the terminal, and Message board
+  the speech bubble; keep them distinct.
 - Brand is the only mark/wordmark component. Use the static mark and lowercase
   opencrawl wordmark; never restore animated logo assets or hide the desktop
   wordmark. Workspace navigation lives in the persistent left sidebar with a lavender
   selected row. Match the supplied account-footer reference: a full-width docked
-  row below a divider, workspace icon, person above workspace, and one trailing
+  row below a divider, personal photo with an initials fallback, person above workspace, and one trailing
   account-menu chevron. Do not duplicate workspace context beneath Brand or make
-  the footer a floating card. Retain the content-aligned maximum width.
+  the footer a floating card. Use the shared 32px circular Avatar, retaining initials
+  while an image loads or when it fails. Photos are decorative beside the account
+  name, use no-referrer requests, and accept HTTPS or same-origin paths. Do not make
+  photo loading block account navigation. Retain the content-aligned maximum width.
+  The popover contains Settings and runtime account actions such as Sign out;
+  omit the static email/role summary and show no empty popover without actions.
 - Use the components exported from src/design/components.tsx. Never add a second
   native button, field, dialog or table implementation in a feature page. Add a
   shared primitive when an actual feature needs one. Native details/summary and
   semantic lists remain available for content.
 - Every sidebar destination uses Page with one shared PageHeader. Keep the 32px
   desktop / 28px mobile title, 8px description gap and 32px header-to-body gap.
-  Every sidebar page uses the default full-width body, including Integrations,
-  Team, Billing and Settings. Bound individual form rows with oc-form-measure
-  and prose with its shared measure; never narrow or recenter the whole page,
+  Every workspace page uses the default full-width body, including Integrations,
+  Setup and Settings with its Team and hosted Billing sections. Bound
+  individual form rows with oc-form-measure and prose with its shared measure;
+  never narrow or recenter the whole page,
   or add local title, width or top-inset rules.
   Loading, empty and error states retain the same Page frame. Library details
   and focused onboarding keep their documented presentation.
@@ -79,29 +94,56 @@ the card title. Unconnected sources use one primary Connect action, including
 sources that need configuration before sign-in. Search and state filters support a growing catalog.
 Shared dialogs retain setup, sign-in recovery, sync retries and confirmed deletion.
 
-Team administration uses the shared management-page and member-list patterns.
-Keep names and emails together, roles explicit, pending invitations in the same
-roster with a Pending state, and invitation controls in the member panel. Team
-updates automatically; preserve form input and focus and pause background reads
+Team administration uses the existing management cards and member-list patterns.
+Place the admin Organization name section above the Members card, using the same
+management-panel padding. Preserve the roster card, avatars, native role controls,
+member count beside the heading and Pending badges. Keep names and emails
+together and invitation controls below the roster inside the Members card.
+Keep the roster and its row separators at the full card width. Mark the current member with plain “You” text beside their
+name, and use the shared Field with a visible Email address label for invitations.
+Member rows share 40px avatar, flexible identity, 8rem role and 2.75rem action
+columns; reserve the action column for read-only and Pending rows too. Align
+read-only role text with select text and the Pending badge with the role column.
+At management-container widths of 600px and below, every role and action moves
+below its identity. Use 12px row padding and a 4px identity-to-role gap while
+retaining 44px interactive targets. Organization-name and invitation forms share
+`oc-management-form` with an 8rem button column so their input and button
+boundaries align; both stack at container widths of 400px and below.
+The optional hosted workspace switcher
+remains in the Team footer. Hosted Billing retains its existing management cards.
+Team updates automatically; preserve form input and focus and pause background reads
 while hidden or mutating. Do not add a normal-state Refresh button.
 Team activity rankings remain on Usage, without a Most sources connected tile. Do not add unsupported
 member actions or treat displayed roles as authorization. Distinguish a sent
 invitation from a failed refresh, and discard team data on access revocation.
 
-Diagnostics board views preserve the original forum structure through shared
-ForumPanel/ForumPost and Table: shaded title/count bands, a compact topic list,
-and an author rail beside full message text. Do not invent avatars or status
-icons. Label loaded message counts as “Showing N messages”; topic summary counts
-come from the adapter. Refresh automatically while visible, with one read at a
-time. Bridge new pages to the displayed newest post before prepending them;
+Message board uses AppShell's navigation render slot: one quiet Back control with
+the shared arrow and visible label, All topics, then #topic links. Preserve Brand,
+account footer and mobile drawer; Back restores workspace navigation. All topics
+is the default combined ascending stream. Topic views filter it without forum
+panels, count strips, author rails, avatars or a composer. In the combined view
+only, place the channel link above the bold author/time line. Use shared
+agentIdentityClass and the 36 ten-degree identity tokens; no inline color styles.
+Full names remain visible and colors carry no status or authorization meaning.
+Each group has one visible header; each article retains its accessible identity.
+Only dates are sticky. Align the initial recent view to a complete group header;
+normal manual scrolling can clip content. Preserve full text, links and permalinks.
+Keep permalink IDs in text flow at every width so long first lines wrap around
+them. Do not restore topic/message counts in the board header or navigation.
+Topic summaries use a separate scoped reader; sidebar refresh must not scan older
+permalink history. Refresh automatically while visible, with one read at a time.
+Bridge new pages to the displayed newest post before merging them;
 never merge a new head directly into stale paginated history. Validate overlapping
 page boundaries. Limit each chunk to five reads, plus at most one fresh-head read
 after a detected reset discards cached/staged posts. Preserve loaded
 older pages, keyboard focus and the reader's position inside the list. At the
-start of a list, let new posts appear naturally. Abort hidden/stale reads and
+latest edge, let new posts appear naturally. Abort hidden/stale reads and
 clear all cached/staged board data on access or unclassified failures.
 
-Search inspection uses source-specific rows and progressive raw-detail disclosures.
+Search playground lives separately at /search and uses the actual SearchInspector
+and scoped adapter, with no introduction above its query form. The legacy
+/diagnostics?view=search URL redirects there. Search inspection uses source-specific
+rows and progressive raw-detail disclosures.
 Preserve actual text and coverage. Never label returned window length as a total,
 turn an unavailable source into empty success, infer source URLs from IDs, or
 render highlighted/source text as HTML. Superseded/canceled requests and changed

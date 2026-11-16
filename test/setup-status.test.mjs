@@ -1,3 +1,4 @@
+import {stateFor} from './fixtures/memory-application-state.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
@@ -22,7 +23,7 @@ const registration=(clients=[observation()])=>({installationId:selection.install
 async function fixture() {
   const store=memorySessionStore();let time=Date.parse('2026-11-14T12:00:00Z'),hits=[],fetched,searches=0;
   const search={search:async()=>{searches++;return {results:hits};},fetch:async()=>fetched??hits[0]};
-  const setup=createSetupStatus({store,search,now:()=>new Date(time)});
+  const setup=createSetupStatus({state:stateFor(store),search,now:()=>new Date(time)});
   await setup.installation(owner,registration([observation(),observation('claude-code')]));
   const proof=(await setup.verify(owner,selection)).proof;time+=1000;
   const batch=(extra={})=>({schemaVersion:1,installationId:selection.installationId,sessionId:'native-session',harness:'codex',origin:'cli',captureMode:'live',owner,events:[{id:'native-message',nativeId:'native-message',kind:'message',timestamp:new Date(time).toISOString(),data:{role:'assistant',content:proof.marker}}],attachments:[],...extra});
@@ -41,7 +42,7 @@ test('setup records independent choices and fails closed on scope, capture-only 
   await assert.rejects(f.setup.installation(owner,registration([{...observation(),mcp:{state:'authenticated'}}])),{status:400});
   await assert.rejects(f.setup.installation(owner,{...registration(),machine:{id:'different',label:'Changed'}}),{status:409});
   await assert.rejects(f.setup.verify({...owner,userId:'bob'},selection),{status:404});
-  const restarted=createSetupStatus({store:f.store,search:{search:async()=>({results:[]}),fetch:async()=>null}});
+  const restarted=createSetupStatus({state:stateFor(f.store),search:{search:async()=>({results:[]}),fetch:async()=>null}});
   assert.equal((await restarted.read(owner)).installations[0].installationId,selection.installationId);
 });
 
@@ -404,13 +405,16 @@ test('portable setup HTTP authenticates scope, rejects browser writes and does n
 test('self-contained native ingestion → SQLite search/fetch → authenticated MCP result capture proves one client',async t=>{
   const directory=await mkdtemp(join(tmpdir(),'opencrawl-setup-proof-'));t.after(()=>rm(directory,{recursive:true,force:true}));
   const endpoint=pathToFileURL(join(directory,'search.sqlite')).href.replace('file:','sqlite:'),store=memorySessionStore(),prefix='sessions/setup';
-  const sessions=createSessionSearch({endpoint,store,prefix}),search=createWorkspaceSearch({sessions});
-  const setup=createSetupStatus({store,prefix,search}),pipeline=createSessionPipeline({store,prefix,search:sessions,resolvePrincipal:async({batch})=>batch.owner});
-  const ingest=createSessionIngest({store,prefix,onStored:setup.session,scheduleIndexing:async key=>{await pipeline.processObject({key});await sessions.refresh(owner);}});
+  const sessions=createSessionSearch({state:stateFor(store),eventIdentities:stateFor(store).eventIdentities,endpoint,store,prefix}),search=createWorkspaceSearch({sessions});
+  const setup=createSetupStatus({state:stateFor(store),search}),pipeline=createSessionPipeline({state:stateFor(store),eventIdentities:stateFor(store).eventIdentities,store,prefix,search:sessions,resolvePrincipal:async({batch})=>batch.owner});
+  const ingest=createSessionIngest({state:stateFor(store),eventIdentities:stateFor(store).eventIdentities,store,prefix,onStored:setup.session,scheduleIndexing:async key=>{await pipeline.processObject({key});await sessions.refresh(owner);}});
   await setup.installation(owner,registration());const proof=(await setup.verify(owner,selection)).proof;
   const native={schemaVersion:1,installationId:selection.installationId,sessionId:'real-native-session',harness:'codex',origin:'cli',captureMode:'live',owner,events:[{id:'native-answer',kind:'message',timestamp:new Date().toISOString(),data:{role:'assistant',content:`The requested result is ready. ${proof.marker}`}}],attachments:[]};
   await ingest.putBatch(owner,native);
-  assert.equal((await setup.verify(owner,selection)).proof.state,'verified');
+  const markerSearch={query:proof.marker,source:'sessions',match:'all',currentSession:{harness:'codex',sessionId:native.sessionId}};
+  assert.equal((await search.search(owner,markerSearch)).results.length,0,'ordinary search excludes its known current chat');
+  assert.ok((await search.search(owner,{...markerSearch,includeCurrentSession:true})).results.length);
+  assert.equal((await setup.verify(owner,selection)).proof.state,'verified','internal exact provenance verification is not an ordinary current-chat search');
   let mcp;const server=createServer((req,res)=>mcp(req,res));await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   const origin='http://127.0.0.1:'+server.address().port;
   mcp=createOpenCrawlMcp({origin,setup,search,authenticate:async req=>req.headers.authorization==='Bearer local-test'?owner:null});
@@ -423,6 +427,9 @@ test('self-contained native ingestion → SQLite search/fetch → authenticated 
     {id:'native-mcp-call',kind:'tool_call',timestamp:new Date().toISOString(),data:{name:'mcp__opencrawl__verify_installation',call_id:'native-call',arguments:JSON.stringify({...selection,proofId:proof.id})}},
     {id:'native-mcp-result',kind:'tool_result',timestamp:new Date().toISOString(),data:{call_id:'native-call',output:JSON.stringify(result.structuredContent)}},
   ]});
-  const checked=await setup.verify(owner,selection);assert.equal(checked.proof.state,'verified');assert.equal(checked.mcp.state,'authenticated');
+  const receiptSearch={query:result.structuredContent.receipt,source:'sessions',match:'all'};
+  assert.equal((await search.search(owner,receiptSearch)).results.length,0,'ordinary search still excludes tool-result receipts');
+  assert.ok((await search.search(owner,{...receiptSearch,includeToolOutputs:true})).results.length);
+  const checked=await setup.verify(owner,selection);assert.equal(checked.proof.state,'verified');assert.equal(checked.mcp.state,'authenticated','native receipt attribution uses the scoped captured batch, not broader search defaults');
   assert.equal((await setup.read({...owner,tenantId:'foreign'})).firstWin,null);
 });
