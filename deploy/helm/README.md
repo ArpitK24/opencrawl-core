@@ -188,11 +188,29 @@ database provisioning or automatic destructive cleanup is included in this v1.
 
 ## Maintainer releases
 
-The self-host image workflow publishes both architectures from the same Git revision,
-with SBOM and provenance attestations. After required CI and staging conformance pass,
-bump the chart version and run **Release self-host kit** on main with the tested
-full mainline SHA in `revision`. It refuses to package private, missing or
-single-architecture images, and downloads both architectures with an empty Docker
-credential configuration before publication. Release assets include the chart,
-complete installer kit, image digest receipt and SHA256SUMS. Chart and runtime releases
-do not deploy or update OpenCrawl Cloud.
+Relevant merges to `main` automatically publish the next Helm **patch** release
+after the exact source revision passes core CI, self-host upgrade checks, security,
+plugin checks and both image builds (plus CLI/chart checks when they run). The image
+workflow supplies amd64/arm64 images with SBOM and provenance attestations. A merge
+without an image-build run does not create a Helm release. Failed checks do not publish;
+rerunning the failed check retries automatic release selection after it passes.
+
+Versions advance from the highest published stable `helm-v*` release, independently
+of the runtime/npm/CLI versions. No version-bump commit is needed: packaging writes
+the selected version into the staged chart and `release.json`. For a minor or major
+release, run **Release self-host kit** on `main` with the full tested main commit SHA
+in `revision` and the next explicit `version`, for example `0.2.0` or `1.0.0`.
+Manual patch bumps and skipped minor/major versions are rejected. The following
+automatic release advances that new line's patch version.
+
+Release runs serialize version allocation. Duplicate completion events verify the
+existing release; late events cannot publish an older source over a newer release.
+Uploads remain drafts until every artifact hash matches. Rerun an interrupted release
+workflow to resume its reserved draft; a draft for another source blocks publication
+rather than being overwritten. Existing published versions are never replaced.
+
+Every new release reruns chart conformance and pulls both architectures with an empty
+Docker credential configuration. It verifies anonymous downloads after publishing the
+chart, complete installer kit, image digest receipt and SHA256SUMS. Operators choose
+when to upgrade their pinned installations. Releases do not deploy or update OpenCrawl
+Cloud, and Helm releases do not replace the repository's CLI latest-release marker.
