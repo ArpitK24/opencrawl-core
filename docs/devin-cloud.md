@@ -93,8 +93,8 @@ upload retry after restart, installation changes, consent revocation and a
 native CLI hook returning with stdin still open and the configuration lock
 held. These tests use a synthetic receiver. They do not prove Cloud supervision,
 production enrollment, first-turn completeness or native plugin acceptance.
-The operational installation must use the shared plugin-owned setup path;
-the existing generic capture installer is not yet a Devin Cloud onboarding
+The operational installation uses the shared plugin-owned setup path described
+below. The generic capture installer alone is not a Devin Cloud onboarding
 command.
 
 The shared worker launch command now pins the deployment and carries the selected
@@ -154,8 +154,9 @@ with no hosted credentials, and cover fresh sessions, revocation, scope denial,
 atomic installation writes and provider/installation namespace collisions.
 `OPENCRAWL_AUTH=devin-cloud` selects the official `devin-oidc` token helper in
 the CLI; tokens remain in memory. This is not a completed setup experience:
-the setup endpoint still returns a code, the operational plugin/bootstrap and
-hosted adapter are unfinished, and no real Cloud identity has been enrolled.
+the setup endpoint still returns a code, native operational plugin acceptance
+and hosted delivery remain unfinished, and no real Cloud identity has been
+enrolled in OpenCrawl.
 
 The same Cloud VM supplied a real signed identity through Cognition's official
 `setup-devin-oidc` helper. Signature verification against Devin's public JWKS,
@@ -200,7 +201,11 @@ not enroll an organization, store a token, configure a human credential, or
 install the OpenCrawl plugin. `post-build` checks that the executable is present
 without minting an identity during snapshot creation. Verify the pinned action
 in a successful snapshot build and then test renewal in a fresh Cloud session;
-the earlier manual installation is not evidence for either step.
+the earlier manual installation is not evidence for either step. A later fresh
+Ubuntu session did verify two signed 60-second identities with the second issued
+after the first expired. The helper matched the snapshot's recorded SHA-256 and
+the native session ID matched both signatures. Tokens stayed in memory. This
+verifies the provider prerequisite, not an OpenCrawl organization connection.
 
 Devin supports `uses` steps in `initialize` and `post-build`, not `maintenance`.
 Maintenance instructions are shown to the agent at session start and are not
@@ -237,8 +242,46 @@ and emits success only after confirmation. Both paths preserve the agent-chosen
 profile across resume and never treat requester metadata as identity or read a
 transcript path. Failure guidance does not request a human token or interactive
 sign-in. Cloud delivers startup context after the hook completes; this still does
-not prove first-turn capture or idle notification delivery. The Devin plugin-owned
-bootstrap and fresh native acceptance remain unfinished.
+not prove first-turn capture or idle notification delivery.
+
+### Cloud plugin bundle and shared setup
+
+Prepare a deployment-bound bundle with an explicit recording choice:
+
+```sh
+opencrawl workload bundle --api https://opencrawl.example \
+  --directory /absolute/export/opencrawl-devin \
+  --command /usr/local/bin/opencrawl \
+  --config-home /home/ubuntu/.config/opencrawl-cloud \
+  --recording on --json
+```
+
+Use `--recording off` for search and board access without new capture. The command
+exports only public settings, shared skills, a Cloud-only manifest, native hooks
+and a stdio MCP declaration. It does not install a plugin, include an enrollment
+code, copy the exporting machine's owner or installation, or grant access. The
+reviewed native executable at the specified Linux path and the official helper
+must already be available in each fresh Cloud environment. Install the reviewed
+bundle through Devin's supported plugin surface.
+
+The native SessionStart hook runs `workload start`; do not invoke it manually or
+manufacture native events. It verifies the exact session against the server's
+authenticated workload owner, then uses the existing `setup apply`/`resume`
+implementation, capture queue, supervisor and durable board bootstrap. There is
+no parallel installer or worker. A new VM gets its own installation. Resume
+preserves installation identity, pending data, recording opt-outs and deselected
+plugins. The bundle rejects ambient human tokens, binds an absolute command and
+profile, and verifies its complete file inventory before adoption. Owner changes
+during setup fail before capture configuration is created or rebound.
+
+Local regression tests exercise those paths with synthetic identity and HTTP
+services, including interrupted publication and resume. The existing Claude,
+Codex, Cursor and Antigravity bundles remain byte-identical against the frozen
+combined checkpoint. This is source validation. The generated plugin has not yet
+passed real Cloud installation, MCP path expansion, capture/index/search or
+supervisor lifecycle acceptance. Cloud starts SessionStart in the background;
+content hooks arriving before profile enrollment can still be missed. Do not
+describe this implementation as first-turn capture parity.
 
 ## Native MCP transport
 
@@ -248,6 +291,9 @@ can declare this native command with `OPENCRAWL_AUTH=devin-cloud`; there is no
 static bearer token to copy into a connection form. The CLI obtains and renews
 the provider identity on each HTTP exchange, reusing its in-memory token cache.
 It refuses redirects and destination changes and retries authentication once.
+Plugin-backed exchanges also recheck the bundle/profile binding before minting,
+before sending and before releasing the HTTP response. A changed bundle requires
+reconnecting the native MCP process.
 
 The bridge forwards the server's protocol messages and tool definitions. It
 does not recreate search or board tools. Stdio remains reserved for MCP, with
@@ -266,6 +312,32 @@ context participates in the query cursor and excludes only the same owner,
 harness and session. Explicit inclusion still works; ordinary human identities
 without native context retain the unavailable status. No requester metadata or
 caller-supplied tenant/user field can establish the context's ownership.
+
+## Board delivery while idle
+
+The fresh Cloud test session reported no output/completion notification option
+in its native `exec` schema. Its `get_output` and `wait` tools require an active
+call. No background command was run for this check, so this is a native-agent
+schema report, not an exercised proof that every possible push mechanism is
+unavailable. A detached `board watch` process alone does not establish delivery
+into an idle agent's context. Use the shared skill's work-boundary inbox fallback
+until a supported notification path passes live acceptance.
+
+Devin's [API index](https://docs.devin.ai/_llms/en/api.txt) documents that sending
+a session message resumes a suspended session. The
+[message endpoint](https://docs.devin.ai/api-reference/v3/sessions/post-organizations-sessions-messages)
+requires `ManageOrgSessions`. Its
+[authentication model](https://docs.devin.ai/api-reference/authentication) uses
+a service-user API key or a personal access token, separate from the workload
+OIDC identity used by this adapter. A service-user integration is a possible
+future delivery path, with a separate access grant and credential lifecycle;
+it is not installed or covered by the existing OIDC bootstrap. Do not request
+or store that credential in a plugin, VM snapshot, or captured chat.
+
+The organization Hooks editor and session-preferences screen exposed no visible
+blocking-startup control during inspection. The lifecycle documentation's
+organization `blocking` exception remains an unverified configuration path;
+do not add an undocumented JSON property or claim it closes the first-turn gap.
 
 ## Acceptance gates
 

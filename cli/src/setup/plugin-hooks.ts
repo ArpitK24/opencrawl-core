@@ -3,6 +3,7 @@ import {apiOrigin,CliError} from '../oauth.ts';
 import {GROK_BOT_HOOK_EVENTS} from '../capture/grok-bot.ts';
 import {pluginSearchContextMatcher,searchContextMarker} from '../search-context.ts';
 import type {PluginClient} from './plugins.ts';
+import {DEVIN_HOOK_EVENTS} from '../capture/devin.ts';
 
 export type PluginHookBinding={command:string[];configHome:string;api:string;pluginName:string};
 const json=(value:unknown)=>JSON.stringify(value,null,2)+'\n';
@@ -17,6 +18,7 @@ const literal=(value:string,windows:boolean)=>windows?'"'+value.replaceAll('%','
  * plugin cache. The guard verifies that root's marker and complete file hashes.
  */
 export function pluginHookFiles(client:PluginClient,binding:PluginHookBinding,platform=process.platform):Record<string,string>{
+ if(client==='devin'&&platform!=='linux')throw new CliError('INVALID_PLUGIN_BINDING','Devin Cloud bundles require a Linux native command.');
  const windows=platform==='win32',path=windows?win32:posix;
  const {command,configHome,pluginName}=binding,api=apiOrigin(binding.api);
  if(!command.length||!path.isAbsolute(command[0])||!path.isAbsolute(configHome)
@@ -25,16 +27,18 @@ export function pluginHookFiles(client:PluginClient,binding:PluginHookBinding,pl
   throw new CliError('INVALID_PLUGIN_BINDING','Plugin hooks need an absolute CLI and profile with a valid OpenCrawl plugin name.');
  const env:Record<string,string>={OPENCRAWL_CONFIG_HOME:configHome,OPENCRAWL_PLUGIN_API:api,OPENCRAWL_PLUGIN_NAME:pluginName,OPENCRAWL_PLUGIN_CLIENT:client};
  const runner=windows?'scripts/opencrawl-hook.cmd':'scripts/opencrawl-hook.sh';
+ const cloudGuard=client==='devin'?'[ -z "${OPENCRAWL_TOKEN-}${OPENCRAWL_SESSIONS_TOKEN-}" ] || exit 1\ncase "${OPENCRAWL_AUTH-devin-cloud}" in devin-cloud) ;; *) exit 1 ;; esac\n':'';
  const script=windows
   ?'@echo off\r\nsetlocal DisableDelayedExpansion\r\n'+ambientAuth.map(key=>'set "'+key+'="\r\n').join('')+Object.entries(env).map(([key,value])=>'set "'+key+'='+value.replaceAll('%','%%')+'"\r\n').join('')
    +'for %%I in ("%~dp0..") do set "OPENCRAWL_PLUGIN_ROOT=%%~fI"\r\n'+command.map(value=>literal(value,true)).join(' ')+' %*\r\n'
-  :'#!/bin/sh\n'+'unset '+ambientAuth.join(' ')+'\n'+Object.entries(env).map(([key,value])=>'export '+key+'='+literal(value,false)+'\n').join('')
+  :'#!/bin/sh\n'+cloudGuard+'unset '+ambientAuth.join(' ')+'\n'+Object.entries(env).map(([key,value])=>'export '+key+'='+literal(value,false)+'\n').join('')
+   +(client==='devin'?"export OPENCRAWL_AUTH='devin-cloud'\nexport PATH='/usr/local/bin:/usr/bin:/bin'\n":'')
    +'OPENCRAWL_PLUGIN_ROOT=$(CDPATH= cd -- "${0%/*}/.." && pwd -P) || exit 0\nexport OPENCRAWL_PLUGIN_ROOT\nexec '+command.map(value=>literal(value,false)).join(' ')+' "$@"\n';
  // Codex 0.166 uses the session's Windows shell (PowerShell by default);
  // it does not support Claude's per-handler shell override.
  // Use process environment expansion, not inline path substitution: quotes,
  // dollars and percent signs in native cache paths must remain path characters.
- const root=client==='codex'?'PLUGIN_ROOT':client==='claude-code'?'CLAUDE_PLUGIN_ROOT':'CURSOR_PLUGIN_ROOT';
+ const root=client==='codex'||client==='devin'?'PLUGIN_ROOT':client==='claude-code'?'CLAUDE_PLUGIN_ROOT':'CURSOR_PLUGIN_ROOT';
  const invocation=windows
   ?client==='claude-code'||client==='codex'?{command:'& "$env:'+root+'\\scripts\\opencrawl-hook.cmd"',...(client==='claude-code'?{shell:'powershell' as const}:{})}
    :{command:client==='antigravity'?'".\\scripts\\opencrawl-hook.cmd"':'"%'+root+'%\\scripts\\opencrawl-hook.cmd"'}
@@ -49,6 +53,12 @@ export function pluginHookFiles(client:PluginClient,binding:PluginHookBinding,pl
   return {type:'command',...invocation,command:invocation.command+' '+args(['collect','hook','--harness',client,'--api',api,...(client==='antigravity'?['--event',event]:[])]),
    timeout:daemon?10:managed?120:client==='codex'?3:30,statusMessage:captureMarker,...(managed||daemon?{async:true}:{})};
  };
+ if(client==='devin'){
+  const hooks=Object.fromEntries(DEVIN_HOOK_EVENTS.map(event=>[event,[{hooks:[event==='SessionStart'
+   ?{type:'command',command:invocation.command+' '+args(['workload','start','--api',api]),timeout:120}
+   :{type:'command',command:capture(event).command,timeout:5}]}]]));
+  return {[runner]:script,'hooks.json':json(hooks)};
+ }
  if(client==='cursor'){
   const hooks:Record<string,unknown[]>=Object.fromEntries(GROK_BOT_HOOK_EVENTS.map(event=>{const entry=capture(event);return [event,[{command:entry.command,timeout:entry.timeout}]];}));
   (hooks.preToolUse??=[]).unshift({matcher:searchMatcher,command:search.command,timeout:search.timeout});

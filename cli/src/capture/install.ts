@@ -171,7 +171,7 @@ function defaultHarnesses(home:string):Harness[] {
   if(process.env.CLAUDE_CODE_REMOTE==='true')return ['claude-code'];
   return antigravityDetected(home)?['claude-code','codex','antigravity']:['claude-code','codex'];
 }
-export async function installCapture(api:string,{background=false,deferAuth=false,daemon=false,daemonService=true,backgroundStartup,home=homedir(),command=commandForSelf(),harnesses:requestedHarnesses,selectionMode='add',historyHarnesses=[],expectedOwner,expectedConfig,hookOwnership='global',deferPluginOwnership=false}:{expectedConfig?:CaptureConfig|null;hookOwnership?:'global'|'plugin';deferPluginOwnership?:boolean;background?:boolean;deferAuth?:boolean;daemon?:boolean;daemonService?:boolean;backgroundStartup?:boolean;home?:string;command?:string[];harnesses?:Harness[];selectionMode?:'add'|'replace';historyHarnesses?:TranscriptHarness[];expectedOwner?:{tenantId:string;userId:string}}={}) {
+export async function installCapture(api:string,{background=false,deferAuth=false,daemon=false,daemonService=true,backgroundStartup,home=homedir(),command=commandForSelf(),harnesses:requestedHarnesses,selectionMode='add',historyHarnesses=[],expectedOwner,expectedConfig,validatePrincipal,hookOwnership='global',deferPluginOwnership=false}:{validatePrincipal?:(principal:unknown)=>void;expectedConfig?:CaptureConfig|null;hookOwnership?:'global'|'plugin';deferPluginOwnership?:boolean;background?:boolean;deferAuth?:boolean;daemon?:boolean;daemonService?:boolean;backgroundStartup?:boolean;home?:string;command?:string[];harnesses?:Harness[];selectionMode?:'add'|'replace';historyHarnesses?:TranscriptHarness[];expectedOwner?:{tenantId:string;userId:string}}={}) {
   let harnesses=(requestedHarnesses?requestedHarnesses.map(h=>normalizeHarness(h) as Harness):defaultHarnesses(home));
   workspaceIdentityEnabled(); // Reject mixed credentials even during image preparation.
   const receiverToken=environmentToken('OPENCRAWL_SESSIONS_TOKEN',api);
@@ -186,6 +186,7 @@ export async function installCapture(api:string,{background=false,deferAuth=fals
   }
   if(!principal?.tenantId || !principal?.userId)throw new CliError('CAPTURE_IDENTITY_MISSING','Deployment does not supply capture identity');
   if(expectedOwner&&(expectedOwner.tenantId!==principal.tenantId||expectedOwner.userId!==principal.userId))throw new CliError('SETUP_SCOPE_CHANGED','Capture credentials resolve to a different account or workspace. No recording choices were applied.');
+  validatePrincipal?.(principal);
   const installed=await withSessionLock('capture:configuration',async()=>{
   const previous=readCaptureConfig();
   if(expectedConfig!==undefined&&!isDeepStrictEqual(previous,expectedConfig))throw new CliError('CAPTURE_CONFIG_CHANGED','The local collector changed during setup. No recording configuration was replaced; review its current state before retrying.');
@@ -203,7 +204,8 @@ export async function installCapture(api:string,{background=false,deferAuth=fals
       cursor:!harnesses.includes('cursor')&&previous?.roots.cursor||process.env.CURSOR_CONFIG_DIR||join(home,'.cursor'),
       codex:!harnesses.includes('codex')&&previous?.roots.codex||process.env.CODEX_HOME||join(home,'.codex'),
       'grok-bot':!harnesses.includes('grok-bot')&&previous?.roots['grok-bot']||join(home,'.cursor'),
-      antigravity:!harnesses.includes('antigravity')&&previous?.roots.antigravity||process.env.ANTIGRAVITY_HOME||join(home,'.gemini')},
+      antigravity:!harnesses.includes('antigravity')&&previous?.roots.antigravity||process.env.ANTIGRAVITY_HOME||join(home,'.gemini'),
+      ...(harnesses.includes('devin')||previous?.roots.devin?{devin:previous?.roots.devin||join(home,'.devin')}:{})},
     claudeDesktopSessionsRoot:previous?.claudeDesktopSessionsRoot??defaultClaudeDesktopSessionsRoot(home),command:retainLegacyOwnership?previous.command:command};
   const enrolled=config.harnesses!;
   const removed=selectionMode==='replace'?(previous?.harnesses??[]).filter(h=>!enrolled.includes(h)):[];
