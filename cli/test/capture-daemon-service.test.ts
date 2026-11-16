@@ -44,6 +44,48 @@ test('supervisor commands preserve literal paths and never serialize credentials
   expect(()=>windowsTaskScript({...config,command:['C:\\custom.cmd']})).toThrow('native executable');
 }));
 
+const windowsRecoveryCases:{name:string,changes:Partial<CaptureConfig>,supervised:boolean,recovery:boolean}[]=[
+  {name:'capture-on',changes:{},supervised:true,recovery:true},
+  {name:'startup-only',changes:{disabled:true,harnesses:[],backgroundStartup:true},supervised:true,recovery:true},
+  {name:'fully paused',changes:{disabled:true,backgroundStartup:false},supervised:false,recovery:false},
+  {name:'queue-only drain',changes:{harnesses:[],backgroundStartup:false},supervised:true,recovery:false},
+];
+for(const {name,changes,supervised,recovery} of windowsRecoveryCases)test(`Windows recovery respects ${name} consent and retains queued data`,()=>fixture(async f=>{
+  const config={...f.config,...changes,command:['C:\\Owned path\\opencrawl.exe']};atomicJson(join(captureDir(),'config.json'),config);
+  const queued=join(captureDir(),'queue','retained.json'),saved=join(configDir(),'setup.json');mkdirSync(dirname(queued),{recursive:true});
+  writeFileSync(queued,'retained');writeFileSync(saved,JSON.stringify({selections:[{client:'claude-code',plugin:true,forward:name==='capture-on',history:false}]}));
+  const configBefore=readFileSync(join(captureDir(),'config.json'),'utf8'),setupBefore=readFileSync(saved,'utf8');
+  // A paused reconfiguration must remove this same task, not create a recovery trigger.
+  atomicJson(f.receipt,{kind:'task-scheduler',status:'installed',label:f.label});
+  const scripts:string[]=[];
+  const run=runner((command,args)=>{expect(command).toBe('powershell.exe');scripts.push(args.at(-1)!);return outcome();});
+  const result=await installCaptureDaemon(config,{home:f.root,platform:'win32',run});
+  expect(result.supervised).toBe(supervised);expect(scripts).toHaveLength(1);
+  const script=scripts[0]!;
+  if(supervised){
+    expect(script).toContain('New-ScheduledTaskTrigger -AtLogOn -User $user');
+    expect(script).toContain("-Execute 'C:\\Owned path\\opencrawl.exe'");
+    expect(script).toContain('-LogonType Interactive -RunLevel Limited');
+    expect(script).toContain('-MultipleInstances IgnoreNew');
+    expect(script).toContain("Description -ne $description");
+    expect(script).not.toContain('-RepetitionDuration');
+    const recurring='$triggers+=New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(1)) -RepetitionInterval (New-TimeSpan -Minutes 1)';
+    expect(script.includes(recurring)).toBe(recovery);
+    if(recovery)expect(script).toContain('-Trigger $triggers -Settings $settings');
+    expect(script.match(/New-ScheduledTaskTrigger/g)?.length).toBe(recovery?2:1);
+    uninstallCaptureDaemon(f.root,{platform:'win32',run});
+  }else{
+    expect(result).toMatchObject({kind:'not-required',queuedDataPreserved:true});
+    expect(script).not.toContain('New-ScheduledTaskTrigger');
+  }
+  expect(scripts.at(-1)).toContain('Capture task ownership changed');
+  expect(scripts.at(-1)).toContain('Unregister-ScheduledTask');
+  expect(existsSync(f.receipt)).toBe(false);
+  expect(readFileSync(join(captureDir(),'config.json'),'utf8')).toBe(configBefore);
+  expect(readFileSync(saved,'utf8')).toBe(setupBefore);
+  expect(readFileSync(queued,'utf8')).toBe('retained');
+}));
+
 test('worker environment rejects wrong commands, secrets and relative paths without mutation',()=>fixture(()=>{
   const before={...process.env};
   for(const args of [
