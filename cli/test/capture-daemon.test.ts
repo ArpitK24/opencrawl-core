@@ -234,6 +234,30 @@ isolatedTest('offline upload does not stop recording; restart preserves retry by
   expect(new Set(f.batches.flatMap((b:any)=>b.events).map((e:any)=>e.nativeId))).toEqual(new Set(['one','while-offline']));
 }));
 
+isolatedTest('a queue making no upload progress backs off across restart and drains after its exclusion is removed',async()=>fixture(async f=>{
+  const config=readCaptureConfig()!;
+  await captureTranscript(config,'claude-code',f.path,{session_id:'session',cwd:f.dir});
+  writeFileSync(join(captureDir(),'config.json'),JSON.stringify({...config,exclusions:{projects:[],sessions:['session']}}));
+  await f.start({retryMs:1000});
+  const retryFile=join(daemonDir(),'retry.json');
+  await until(()=>existsSync(retryFile));
+  const firstRetry=JSON.parse(readFileSync(retryFile,'utf8')),requests=f.requests;
+  const pending=()=>readdirSync(join(captureDir(),'queue')).sort().map(name=>readFileSync(join(captureDir(),'queue',name),'utf8'));
+  const bytes=pending();expect(bytes.length).toBeGreaterThan(0);expect(firstRetry.attempt).toBe(1);
+  await sleep(150);expect(f.requests).toBe(requests);expect(f.raws).toHaveLength(0);
+  await f.stop();await f.start({retryMs:1000});await sleep(150);
+  expect(f.requests).toBe(requests);expect(pending()).toEqual(bytes);
+  expect(JSON.parse(readFileSync(retryFile,'utf8'))).toEqual(firstRetry);
+  await until(()=>JSON.parse(readFileSync(retryFile,'utf8')).attempt===2);
+  const secondRetry=JSON.parse(readFileSync(retryFile,'utf8'));
+  expect(secondRetry.dueAt-firstRetry.dueAt).toBeGreaterThanOrEqual(1900);
+  expect(f.raws).toHaveLength(0);expect(pending()).toEqual(bytes);
+  writeFileSync(join(captureDir(),'config.json'),JSON.stringify(config));
+  await until(()=>f.batches.length>0&&pending().length===0);
+  expect(f.batches.flatMap((batch:any)=>batch.events).map((event:any)=>event.nativeId)).toEqual(['one']);
+  await until(()=>!existsSync(retryFile));
+}));
+
 isolatedTest('a saved registration cannot cross destinations before the first upload',async()=>fixture(async f=>{
   f.event();
   const file=join(captureDir(),'config.json'),original=readCaptureConfig()!;

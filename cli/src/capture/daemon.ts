@@ -236,9 +236,18 @@ export async function runCaptureDaemon({signal,flushMs=10_000,reconcileMs=30_000
         if(Date.now()<readyAt){await wait('upload',readyAt-Date.now());continue;}
         try{
           const result=await flushCaptures({wait:false,concurrency:1,maxBatches:8});counters.uploads+=result.uploaded;
+          const pending=queued();
+          // Excluded/unsupported batches and another flush owner can leave a
+          // successful pass with no progress. Keep their bytes, but back off
+          // just as durably as a network failure instead of authenticating
+          // every second forever. A successful upload resets this delay.
+          if(!result.uploaded&&pending){
+            retry={attempt:retry.attempt+1,dueAt:Date.now()+Math.min(60_000,Math.max(flushMs,retryMs)*2**Math.min(retry.attempt,6))};
+            atomicJson(retryFile,retry);dueAt=retry.dueAt;continue;
+          }
           retry={attempt:0,dueAt:0};remove(retryFile);
           const since=pendingLiveSince(captureDir());
-          dueAt=queued()?(result.uploaded>0&&since===undefined?Date.now():Math.max(Date.now()+Math.min(flushMs,1000),since===undefined?0:since+flushMs)):0;
+          dueAt=pending?(result.uploaded>0&&since===undefined?Date.now():Math.max(Date.now()+Math.min(flushMs,1000),since===undefined?0:since+flushMs)):0;
         }catch(error){
           recordError(error);retry={attempt:retry.attempt+1,dueAt:Date.now()+Math.min(60_000,retryMs*2**Math.min(retry.attempt,6))};atomicJson(retryFile,retry);dueAt=queued()?retry.dueAt:0;
         }
