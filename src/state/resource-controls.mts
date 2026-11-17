@@ -1,3 +1,4 @@
+import {scanTargetInventoryIn,targetInventoryFailure,type OnlineOwnedInventoryItem} from './online-target-inventory-support.mjs';
 import type {PoolClient} from 'pg';
 import {isDeepStrictEqual} from 'node:util';
 import type {ApplicationDatabase} from './postgres.mjs';
@@ -33,6 +34,8 @@ export function resourceControlIdentity(owner:Principal,kind:ControlKind,harness
  * be reverse-mapped to original IDs, and migration must never invent those IDs. */
 export function createPostgresControls(database:ApplicationDatabase):ResourceControls&{
   ready():Promise<void>; importControl(identity:ResourceControlIdentity,value:ResourceControl):Promise<void>;
+  readIn(client:PoolClient,identity:ResourceControlIdentity):Promise<ResourceControl|null>;
+  projectIn(client:PoolClient,identity:ResourceControlIdentity,value:ResourceControl|null):Promise<void>;
 } {
   let preparing:Promise<void>|undefined;
   function args(identity:ResourceControlIdentity){
@@ -77,6 +80,16 @@ export function createPostgresControls(database:ApplicationDatabase):ResourceCon
           CHECK((deletion_session_id IS NULL AND deletion_state IS NULL) OR (deletion_session_id IS NOT NULL AND deletion_state IS NOT NULL AND deleted_at IS NOT NULL)))`);
       });})().catch(error=>{preparing=undefined;throw error;});await preparing;
     },
+    readIn:read,
+    async projectIn(client,identity,value){
+      // Only the migration projector calls this with its caller-owned transaction.
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[JSON.stringify(['resource-control',...args(identity)])]);
+      if(value===null)return fail('Online projection cannot erase a privacy control',409);
+      checked(value);const previous=await read(client,identity);
+      if(previous?.deletedAt&&value.deletedAt!==previous.deletedAt)fail('A deleted resource cannot be restored by changing its control',403);
+      if(previous?.deletion?.state==='complete'&&value.deletion?.state!=='complete')fail('A completed deletion cannot return to pending',403);
+      await write(client,identity,value);
+    },
     readIdentity:identity=>read(database.pool,identity),
     read:(owner,kind,harness,name)=>read(database.pool,resourceControlIdentity(owner,kind,harness,name)),
     readSource:source=>read(database.pool,{...source,kind:'sessions',resourceHash:source.sessionHash}),
@@ -107,4 +120,13 @@ export function createPostgresControls(database:ApplicationDatabase):ResourceCon
       });
     },
   };
+}
+
+export async function* inventoryControlTargetsIn(database:ApplicationDatabase,client:PoolClient):AsyncGenerator<OnlineOwnedInventoryItem>{
+ const repo=createPostgresControls(database);
+ for await(const row of scanTargetInventoryIn(client,'SELECT tenant_hash,owner_hash,kind,harness,resource_hash FROM opencrawl_resource_controls WHERE namespace=$1 ORDER BY tenant_hash COLLATE "C",owner_hash COLLATE "C",kind COLLATE "C",harness COLLATE "C",resource_hash COLLATE "C"',[database.namespace])){
+  const identity:ResourceControlIdentity={tenantHash:String(row.tenant_hash),userHash:String(row.owner_hash),kind:row.kind as ControlKind,harness:String(row.harness),resourceHash:String(row.resource_hash)},value=await repo.readIn(client,identity);if(!value)targetInventoryFailure('control owner disappeared');
+  if(value.deletion&&(identity.kind!=='sessions'||digest(value.deletion.sessionId)!==identity.resourceHash))targetInventoryFailure('control deletion identity differs');
+  yield {kind:'target',domains:['resource-controls'],identity:[identity.tenantHash,identity.userHash,identity.kind,identity.harness,identity.resourceHash],value,maxBytes:65536};
+ }
 }

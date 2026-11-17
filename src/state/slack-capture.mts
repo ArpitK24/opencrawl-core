@@ -1,3 +1,5 @@
+import {createHash} from 'node:crypto';
+import {scanTargetInventoryIn,assertTargetInventoryBoundIn,targetInventoryFailure,targetInventoryValueBytes,type OnlineOwnedInventoryItem} from './online-target-inventory-support.mjs';
 import {isDeepStrictEqual} from 'node:util';
 import {z} from 'zod';
 import type {PoolClient} from 'pg';
@@ -11,6 +13,7 @@ export type SlackCaptureKind='files-v1'|'messages-v1'|'message-references-v1';
 export type SlackCatalogKind='files-v1'|'messages-v1';
 export interface SlackCheckpoints {'files-v1':FileCheckpoint;'messages-v1':MessageCheckpoint;'message-references-v1':ReferenceCheckpoint}
 export interface SlackCatalogs {'files-v1':FileCatalog;'messages-v1':MessageCatalog}
+export type SlackLegacyValue=FileCatalog|MessageCatalog|FileCheckpoint|MessageCheckpoint|ReferenceCheckpoint;
 export interface SlackCaptureState {
  readCatalog<K extends SlackCatalogKind>(binding:ConnectorBinding,kind:K):Promise<SlackCatalogs[K]|null>;
  mergeCatalog<K extends SlackCatalogKind>(binding:ConnectorBinding,kind:K,value:SlackCatalogs[K]):Promise<void>;
@@ -88,11 +91,36 @@ function joinCheckpoint(kind:SlackCaptureKind,metadata:Record<string,unknown>,it
  return validateCheckpoint(kind,value);
 }
 
+export function slackCaptureLegacyIdentity(key:string){
+ const match=/^(raw\/v1\/source=slack\/workspace=[A-Za-z0-9_:-]{1,200}\/connection=[A-Za-z0-9_:-]{1,200}\/)capture\/(files-v1|messages-v1|message-references-v1)\/(?:(catalog\.json)|([A-Za-z0-9_-]{1,150})\/state\.json)$/.exec(key);
+ if(!match||match[3]&&match[2]==='message-references-v1')throw new Error('Invalid legacy Slack capture state key');
+ return {prefix:match[1],kind:match[2] as SlackCaptureKind,catalog:Boolean(match[3]),runId:match[4]};
+}
+function validateSlackLegacyValue(key:string,parsed:unknown):SlackLegacyValue{
+ const source=slackCaptureLegacyIdentity(key),value=source.catalog?catalogSchemas[source.kind as SlackCatalogKind].parse(parsed):validateCheckpoint(source.kind,parsed);
+ if(!source.catalog&&(value as FileCheckpoint|MessageCheckpoint|ReferenceCheckpoint).runId!==source.runId)throw scopeError();
+ return value;
+}
+export function validateSlackCaptureLegacy(key:string,bytes:Uint8Array):SlackLegacyValue{return validateSlackLegacyValue(key,JSON.parse(Buffer.from(bytes).toString()));}
+/** Catalog arrays are sets of observed identities, not progress cursors. Old
+ * concurrent runs may publish a different order without losing history. */
+export function normalizeSlackCaptureProjection(key:string,input:unknown):SlackLegacyValue{
+ const source=slackCaptureLegacyIdentity(key),value=validateSlackLegacyValue(key,input);
+ if(!source.catalog)return value;
+ const catalog=value as FileCatalog|MessageCatalog;
+ const ordered=(values:string[])=>{if(new Set(values).size!==values.length)throw new Error('Online Slack catalog contains duplicate revocation identities');return [...values].sort();};
+ return 'files' in catalog?{scope:catalog.scope,channels:ordered(catalog.channels),files:Object.fromEntries(Object.entries(catalog.files).map(([file,channels])=>[file,ordered(channels)]))}:{scope:catalog.scope,channels:ordered(catalog.channels)};
+}
+
+
 /** Capture metadata is relational: one row per target, comment, share and error.
  * The scalar run record is bounded; a large catalog never rewrites one object.
  * Revision checks reject late activities, and pacing spans every run/worker. */
 export function createPostgresSlackCapture(database:ApplicationDatabase):SlackCaptureState&{
- ready():Promise<void>;validateLegacy(key:string,bytes:Uint8Array):unknown;importLegacy(key:string,bytes:Uint8Array):Promise<void>;exportLegacy(key:string,scope?:string):Promise<unknown>;
+ ready():Promise<void>;validateLegacy(key:string,bytes:Uint8Array):SlackLegacyValue;importLegacy(key:string,bytes:Uint8Array):Promise<void>;exportLegacy(key:string,scope?:string):Promise<unknown>;
+ exportLegacyIn(client:PoolClient,key:string,scope?:string):Promise<SlackLegacyValue|null>;
+ readProjectedLegacyIn(client:PoolClient,key:string,scope:string):Promise<SlackLegacyValue|null>;
+ projectLegacyIn(client:PoolClient,key:string,value:SlackLegacyValue,binding:ConnectorBinding):Promise<void>;
 }{
  let preparing:Promise<void>|undefined;
  const parameters=(identity:Identity)=>[database.namespace,identity.prefix,identity.scope];
@@ -103,20 +131,31 @@ export function createPostgresSlackCapture(database:ApplicationDatabase):SlackCa
  }
  async function check(client:Pick<PoolClient,'query'>,identity:Identity){const {rows}=await client.query('SELECT scope_hash FROM opencrawl_slack_scopes WHERE namespace=$1 AND raw_prefix=$2 AND scope_hash=$3',parameters(identity));if(rows[0]&&rows[0].scope_hash!==identity.scope)throw scopeError();return Boolean(rows.length);}
  async function readCatalog<K extends SlackCatalogKind>(identity:Identity,kind:K):Promise<SlackCatalogs[K]|null>{
-  return database.transaction(async client=>{
-   await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+  return database.transaction(async client=>{await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');return readCatalogIn(client,identity,kind);});
+ }
+ async function readCatalogIn<K extends SlackCatalogKind>(client:PoolClient,identity:Identity,kind:K):Promise<SlackCatalogs[K]|null>{
    if(!await check(client,identity))return null;
    if(!(await client.query('SELECT 1 FROM opencrawl_slack_catalogs WHERE namespace=$1 AND raw_prefix=$2 AND scope_hash=$3 AND kind=$4',[...parameters(identity),kind])).rowCount)return null;
-   const {rows}=await client.query<{item_kind:string;item_key:string;value:unknown}>('SELECT item_kind,item_key,value FROM opencrawl_slack_catalog_items WHERE namespace=$1 AND raw_prefix=$2 AND scope_hash=$3 AND kind=$4 ORDER BY ordinal,item_key',[...parameters(identity),kind]);
+   const {rows}=await client.query<{item_kind:string;item_key:string;ordinal:number;value:unknown}>('SELECT item_kind,item_key,ordinal,value FROM opencrawl_slack_catalog_items WHERE namespace=$1 AND raw_prefix=$2 AND scope_hash=$3 AND kind=$4 ORDER BY ordinal,item_key',[...parameters(identity),kind]);
+   for(const row of rows){
+    integer.parse(row.ordinal);
+    if(row.item_kind==='channel'||row.item_kind==='file'){
+     id.parse(row.item_key);if(row.value!==null||kind==='messages-v1'&&row.item_kind!=='channel')throw new Error('Invalid normalized Slack catalog item');
+    }else if(row.item_kind==='file-share'&&kind==='files-v1'){
+     const share=z.strictObject({file:id,channel:id}).parse(row.value);if(row.item_key!==JSON.stringify([share.file,share.channel]))throw new Error('Invalid normalized Slack catalog share');
+    }else throw new Error('Invalid normalized Slack catalog item');
+   }
    const result:FileCatalog={scope:identity.scope,channels:[],files:{}};
    for(const row of rows){if(row.item_kind==='channel')result.channels.push(row.item_key);if(row.item_kind==='file')result.files[row.item_key]=[];}
    for(const row of rows)if(row.item_kind==='file-share'){const share=row.value as {file:string;channel:string};if(!result.files[share.file])throw new Error('Slack catalog share has no file');result.files[share.file].push(share.channel);}
-   return (kind==='files-v1'?result:{scope:result.scope,channels:result.channels}) as SlackCatalogs[K];
-  });
+   return catalogSchemas[kind].parse(kind==='files-v1'?result:{scope:result.scope,channels:result.channels}) as SlackCatalogs[K];
  }
  async function mergeCatalog<K extends SlackCatalogKind>(identity:Identity,kind:K,input:SlackCatalogs[K]){
   const value=catalogSchemas[kind].parse(input);if(value.scope!==identity.scope)throw scopeError();
-  await database.transaction(async client=>{
+  return database.transaction(client=>mergeCatalogIn(client,identity,kind,value as SlackCatalogs[K]));
+ }
+ async function mergeCatalogIn<K extends SlackCatalogKind>(client:PoolClient,identity:Identity,kind:K,input:SlackCatalogs[K]){
+  const value=catalogSchemas[kind].parse(input);if(value.scope!==identity.scope)throw scopeError();
    await lock(client,identity);
    await client.query('INSERT INTO opencrawl_slack_catalogs(namespace,raw_prefix,scope_hash,kind) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING',[...parameters(identity),kind]);
    const items:Item[]=value.channels.map((key,ordinal)=>({kind:'channel',key,ordinal,value:null}));
@@ -130,24 +169,29 @@ export function createPostgresSlackCapture(database:ApplicationDatabase):SlackCa
     SELECT $1,$2,$3,$4,x.kind,x.key,x.ordinal+coalesce((SELECT max(ordinal)+1 FROM opencrawl_slack_catalog_items WHERE namespace=$1 AND raw_prefix=$2 AND scope_hash=$3 AND kind=$4 AND item_kind=x.kind),0),x.value
     FROM jsonb_to_recordset($5::jsonb) AS x(kind text,key text,ordinal integer,value jsonb)
     ON CONFLICT(namespace,raw_prefix,scope_hash,kind,item_kind,item_key) DO NOTHING`,[...parameters(identity),kind,JSON.stringify(items)]);
-  });
  }
  async function readCheckpoint<K extends SlackCaptureKind>(identity:Identity,kind:K,runId:string):Promise<{value:SlackCheckpoints[K];revision:string}|null>{
+  runIdSchema.parse(runId);return database.transaction(async client=>{await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');return readCheckpointIn(client,identity,kind,runId);});
+ }
+ async function readCheckpointIn<K extends SlackCaptureKind>(client:PoolClient,identity:Identity,kind:K,runId:string):Promise<{value:SlackCheckpoints[K];revision:string}|null>{
   runIdSchema.parse(runId);
-  return database.transaction(async client=>{
-   await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
    if(!await check(client,identity))return null;
    const args=[...parameters(identity),kind,runId],{rows}=await client.query<CheckpointRow>('SELECT metadata,revision::text FROM opencrawl_slack_runs WHERE namespace=$1 AND raw_prefix=$2 AND scope_hash=$3 AND kind=$4 AND run_id=$5',args);
    if(!rows[0])return null;
    const items=(await client.query<Item>('SELECT item_kind kind,item_key key,ordinal,value FROM opencrawl_slack_run_items WHERE namespace=$1 AND raw_prefix=$2 AND scope_hash=$3 AND kind=$4 AND run_id=$5 ORDER BY ordinal,item_key',args)).rows;
-   return {value:joinCheckpoint(kind,rows[0].metadata,items) as SlackCheckpoints[K],revision:rows[0].revision};
-  });
+   const value=joinCheckpoint(kind,rows[0].metadata,items) as SlackCheckpoints[K];
+   if(value.scope!==identity.scope||value.runId!==runId)throw scopeError();
+   return {value,revision:rows[0].revision};
  }
  async function saveCheckpoint<K extends SlackCaptureKind>(identity:Identity,kind:K,runId:string,input:SlackCheckpoints[K],revision:string|null){
   const value=validateCheckpoint(kind,input);if(value.scope!==identity.scope||value.runId!==runId)throw scopeError();
   if(revision!==null&&!/^[1-9][0-9]*$/.test(revision))throw conflict();
+  return database.transaction(client=>saveCheckpointIn(client,identity,kind,runId,value,revision));
+ }
+ async function saveCheckpointIn<K extends SlackCaptureKind>(client:PoolClient,identity:Identity,kind:K,runId:string,input:SlackCheckpoints[K],revision:string|null){
+  const value=validateCheckpoint(kind,input);if(value.scope!==identity.scope||value.runId!==runId)throw scopeError();
+  if(revision!==null&&!/^[1-9][0-9]*$/.test(revision))throw conflict();
   const {metadata,items}=splitCheckpoint(value),args=[...parameters(identity),kind,runId];
-  return database.transaction(async client=>{
    await lock(client,identity);
    const result=revision===null
     ?await client.query<{revision:string}>('INSERT INTO opencrawl_slack_runs(namespace,raw_prefix,scope_hash,kind,run_id,metadata) VALUES($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT DO NOTHING RETURNING revision::text',[...args,JSON.stringify(metadata)])
@@ -161,18 +205,47 @@ export function createPostgresSlackCapture(database:ApplicationDatabase):SlackCa
     DELETE FROM opencrawl_slack_run_items old WHERE namespace=$1 AND raw_prefix=$2 AND scope_hash=$3 AND kind=$4 AND run_id=$5
      AND NOT EXISTS(SELECT 1 FROM input x WHERE x.kind=old.item_kind AND x.key=old.item_key)`,[...args,JSON.stringify(items)]);
    return result.rows[0].revision;
-  });
  }
  const methodSchema=z.string().regex(/^(conversations\.(list|history|replies|info)|files\.(list|info))$/);
- async function defer(identity:Identity,method:string,due:number){
-  methodSchema.parse(method);integer.parse(due);
-  await database.transaction(async client=>{await lock(client,identity);await client.query(`INSERT INTO opencrawl_slack_pacing(namespace,raw_prefix,scope_hash,method,next_due) VALUES($1,$2,$3,$4,$5)
-   ON CONFLICT(namespace,raw_prefix,scope_hash,method) DO UPDATE SET next_due=greatest(opencrawl_slack_pacing.next_due,excluded.next_due)`,[...parameters(identity),method,due]);});
+ async function defer(identity:Identity,method:string,due:number){methodSchema.parse(method);integer.parse(due);return database.transaction(client=>deferIn(client,identity,method,due));}
+ async function deferIn(client:PoolClient,identity:Identity,method:string,due:number){
+  methodSchema.parse(method);integer.parse(due);await lock(client,identity);
+  await client.query(`INSERT INTO opencrawl_slack_pacing(namespace,raw_prefix,scope_hash,method,next_due) VALUES($1,$2,$3,$4,$5)
+   ON CONFLICT(namespace,raw_prefix,scope_hash,method) DO UPDATE SET next_due=greatest(opencrawl_slack_pacing.next_due,excluded.next_due)`,[...parameters(identity),method,due]);
  }
- function legacyIdentity(key:string){
-  const match=/^(raw\/v1\/source=slack\/workspace=[A-Za-z0-9_:-]{1,200}\/connection=[A-Za-z0-9_:-]{1,200}\/)capture\/(files-v1|messages-v1|message-references-v1)\/(?:(catalog\.json)|([A-Za-z0-9_-]{1,150})\/state\.json)$/.exec(key);
-  if(!match||match[3]&&match[2]==='message-references-v1')throw new Error('Invalid legacy Slack capture state key');
-  return {prefix:match[1],kind:match[2] as SlackCaptureKind,catalog:Boolean(match[3]),runId:match[4]};
+ async function exportLegacyIn(client:PoolClient,key:string,expectedScope?:string):Promise<SlackLegacyValue|null>{
+  if(expectedScope!==undefined)hash.parse(expectedScope);
+  const source=slackCaptureLegacyIdentity(key),{rows}=await client.query<{scope_hash:string}>('SELECT scope_hash FROM opencrawl_slack_scopes WHERE namespace=$1 AND raw_prefix=$2 AND ($3::text IS NULL OR scope_hash=$3) LIMIT 2',[database.namespace,source.prefix,expectedScope??null]);
+  if(rows.length>1)throw new Error('Explicit Slack capture binding required for a shared source prefix');
+  if(!rows[0])return null;const identity={prefix:source.prefix,scope:rows[0].scope_hash};
+  if(source.catalog)return readCatalogIn(client,identity,source.kind as SlackCatalogKind);
+  return (await readCheckpointIn(client,identity,source.kind,source.runId!))?.value??null;
+ }
+ async function readProjectedLegacyIn(client:PoolClient,key:string,scope:string):Promise<SlackLegacyValue|null>{
+  const value=await exportLegacyIn(client,key,scope);return value===null?null:normalizeSlackCaptureProjection(key,value);
+ }
+ /** The caller owns the replay transaction and its checkpoint. No runtime
+  * admission, pool query, nested transaction, or source I/O occurs here. */
+ async function projectLegacyIn(client:PoolClient,key:string,input:SlackLegacyValue,binding:ConnectorBinding){
+  const source=slackCaptureLegacyIdentity(key),identity=bindingIdentity(binding),value=normalizeSlackCaptureProjection(key,input);
+  if(source.prefix!==identity.prefix||value.scope!==identity.scope)throw scopeError();
+  await lock(client,identity);
+  if(source.catalog){
+   const kind=source.kind as SlackCatalogKind,next=value as FileCatalog|MessageCatalog,prior=await readCatalogIn(client,identity,kind);
+   const retains=(before:string[],after:string[])=>{const retained=new Set(after);return before.every(entry=>retained.has(entry));};
+   if(new Set(next.channels).size!==next.channels.length||prior&&!retains(prior.channels,next.channels))throw new Error('Online Slack catalog cannot erase revocation history');
+   if(kind==='files-v1'){
+    const files=(next as FileCatalog).files,old=(prior as FileCatalog|null)?.files??{};
+    if(Object.values(files).some(channels=>new Set(channels).size!==channels.length)||Object.entries(old).some(([id,channels])=>!Object.hasOwn(files,id)||!retains(channels,files[id])))throw new Error('Online Slack catalog cannot erase revocation history');
+   }
+   await mergeCatalogIn(client,identity,kind,next);
+  }else{
+   const checkpoint=value as FileCheckpoint|MessageCheckpoint|ReferenceCheckpoint,prior=await readCheckpointIn(client,identity,source.kind,source.runId!);
+   if(!prior||!isDeepStrictEqual(canonical(prior.value),canonical(checkpoint)))await saveCheckpointIn(client,identity,source.kind,source.runId!,checkpoint,prior?.revision??null);
+   if(typeof checkpoint.nextDue==='number')for(const method of ['conversations.list','files.list','files.info'])await deferIn(client,identity,method,checkpoint.nextDue);
+   else for(const [method,due] of Object.entries(checkpoint.nextDue))await deferIn(client,identity,method,due);
+  }
+  if(!isDeepStrictEqual(canonical(await readProjectedLegacyIn(client,key,identity.scope)),canonical(value)))throw new Error('Online Slack typed readback differs from source');
  }
  const api={
   async ready(){
@@ -217,14 +290,10 @@ export function createPostgresSlackCapture(database:ApplicationDatabase):SlackCa
     await client.query('INSERT INTO opencrawl_slack_pacing(namespace,raw_prefix,scope_hash,method,next_due) VALUES($1,$2,$3,$4,$5) ON CONFLICT(namespace,raw_prefix,scope_hash,method) DO UPDATE SET next_due=excluded.next_due',[...parameters(identity),method,now+interval]);return {reserved:true,waitMs:0};});
   },
   defer:(binding:ConnectorBinding,method:string,due:number)=>defer(bindingIdentity(binding),method,due),
-  validateLegacy(key:string,bytes:Uint8Array){
-   const source=legacyIdentity(key),parsed:unknown=JSON.parse(Buffer.from(bytes).toString());
-   const value=source.catalog?catalogSchemas[source.kind as SlackCatalogKind].parse(parsed):validateCheckpoint(source.kind,parsed);
-   if(!source.catalog&&(value as FileCheckpoint|MessageCheckpoint|ReferenceCheckpoint).runId!==source.runId)throw scopeError();
-   return value;
-  },
+  validateLegacy:validateSlackCaptureLegacy,
+  exportLegacyIn,readProjectedLegacyIn,projectLegacyIn,
   async importLegacy(key:string,bytes:Uint8Array){
-   const source=legacyIdentity(key),value=api.validateLegacy(key,bytes),identity={prefix:source.prefix,scope:value.scope};
+   const source=slackCaptureLegacyIdentity(key),value=api.validateLegacy(key,bytes),identity={prefix:source.prefix,scope:value.scope};
    const prior=await api.exportLegacy(key,value.scope);
    if(prior!==null&&!isDeepStrictEqual(canonical(prior),canonical(value)))throw new Error('Legacy Slack capture state differs from initialized PostgreSQL state');
    if(source.catalog){if(prior===null)await mergeCatalog(identity,source.kind as SlackCatalogKind,value as FileCatalog|MessageCatalog);}
@@ -237,13 +306,78 @@ export function createPostgresSlackCapture(database:ApplicationDatabase):SlackCa
    if(!isDeepStrictEqual(canonical(await api.exportLegacy(key,value.scope)),canonical(value)))throw new Error('Slack capture import verification failed');
   },
   async exportLegacy(key:string,expectedScope?:string):Promise<unknown>{
-   if(expectedScope!==undefined)hash.parse(expectedScope);
-   const source=legacyIdentity(key),{rows}=await database.pool.query<{scope_hash:string}>('SELECT scope_hash FROM opencrawl_slack_scopes WHERE namespace=$1 AND raw_prefix=$2 AND ($3::text IS NULL OR scope_hash=$3) LIMIT 2',[database.namespace,source.prefix,expectedScope??null]);
-   if(rows.length>1)throw new Error('Explicit Slack capture binding required for a shared source prefix');
-   if(!rows[0])return null;const identity={prefix:source.prefix,scope:rows[0].scope_hash};
-   if(source.catalog)return readCatalog(identity,source.kind as SlackCatalogKind);
-   return (await readCheckpoint(identity,source.kind,source.runId!))?.value??null;
+   return database.transaction(async client=>{await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');return exportLegacyIn(client,key,expectedScope);});
   },
  };
  return api;
+}
+
+export interface OnlineSlackPacingProof {epoch:string;sourceId:string;bindingHash:string;sourceKey:string;revision:string;operationId:string|null;sourceVersion:string;sourceHash:string;targetHash:string;sequence:string;}
+const pacingProofHash=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
+export async function prepareOnlineSlackPacingSchemaIn(client:PoolClient){
+ await client.query("SELECT pg_advisory_xact_lock(hashtextextended('opencrawl:online-slack-pacing:schema',0))");
+ await client.query(`CREATE TABLE IF NOT EXISTS opencrawl_online_slack_pacing_proofs(namespace text NOT NULL,epoch uuid NOT NULL,raw_prefix text NOT NULL,scope_hash text NOT NULL,method text NOT NULL,next_due bigint NOT NULL CHECK(next_due>=0),source_id text NOT NULL,binding_hash text NOT NULL,source_key text NOT NULL,revision bigint NOT NULL CHECK(revision>=0),operation_id uuid,source_version text NOT NULL,source_hash text NOT NULL,target_hash text NOT NULL,sequence bigint NOT NULL CHECK(sequence>=0),proof_hash text NOT NULL,PRIMARY KEY(namespace,epoch,raw_prefix,scope_hash,method),CHECK((revision=0 AND sequence=0 AND operation_id IS NULL) OR (revision>0 AND sequence>0 AND operation_id IS NOT NULL)))`);
+}
+function pacingContributions(key:string,value:SlackLegacyValue){
+ const identity=slackCaptureLegacyIdentity(key);if(identity.catalog)return [];
+ const checkpoint=value as FileCheckpoint|MessageCheckpoint|ReferenceCheckpoint;
+ return typeof checkpoint.nextDue==='number'?['conversations.list','files.list','files.info'].map(method=>[method,checkpoint.nextDue] as const):Object.entries(checkpoint.nextDue);
+}
+function pacingProof(namespace:string,prefix:string,scope:string,method:string,nextDue:number,proof:OnlineSlackPacingProof){return {namespace,epoch:proof.epoch,prefix,scope,method,nextDue,sourceId:proof.sourceId,bindingHash:proof.bindingHash,sourceKey:proof.sourceKey,revision:proof.revision,operationId:proof.operationId,sourceVersion:proof.sourceVersion,sourceHash:proof.sourceHash,targetHash:proof.targetHash,sequence:proof.sequence};}
+/** No adoption of an unexplained existing maximum. A later genuine contribution
+ * can establish a new maximum; until then final inventory reports unproved. */
+export async function recordOnlineSlackPacingIn(database:ApplicationDatabase,client:PoolClient,key:string,value:SlackLegacyValue,proof:OnlineSlackPacingProof){
+ const source=slackCaptureLegacyIdentity(key);if(proof.sourceKey!==key)targetInventoryFailure('pacing source differs');
+ for(const [method,due] of pacingContributions(key,value)){
+  const nextDue=integer.parse(due),params=[database.namespace,proof.epoch,source.prefix,value.scope,method];
+  const actual=(await client.query('SELECT next_due::text FROM opencrawl_slack_pacing WHERE namespace=$1 AND raw_prefix=$2 AND scope_hash=$3 AND method=$4',[database.namespace,source.prefix,value.scope,method])).rows[0];
+  if(!actual||BigInt(actual.next_due)<BigInt(nextDue))targetInventoryFailure('pacing contribution missing');
+  const old=(await client.query('SELECT next_due::text FROM opencrawl_online_slack_pacing_proofs WHERE namespace=$1 AND epoch=$2 AND raw_prefix=$3 AND scope_hash=$4 AND method=$5',params)).rows[0];
+  if(old&&BigInt(old.next_due)>BigInt(actual.next_due))targetInventoryFailure('certified pacing decreased');
+  if(BigInt(actual.next_due)!==BigInt(nextDue))continue;
+  const hash=pacingProofHash(pacingProof(database.namespace,source.prefix,value.scope,method,nextDue,proof));
+  await client.query(`INSERT INTO opencrawl_online_slack_pacing_proofs VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+   ON CONFLICT(namespace,epoch,raw_prefix,scope_hash,method) DO UPDATE SET next_due=EXCLUDED.next_due,source_id=EXCLUDED.source_id,binding_hash=EXCLUDED.binding_hash,source_key=EXCLUDED.source_key,revision=EXCLUDED.revision,operation_id=EXCLUDED.operation_id,source_version=EXCLUDED.source_version,source_hash=EXCLUDED.source_hash,target_hash=EXCLUDED.target_hash,sequence=EXCLUDED.sequence,proof_hash=EXCLUDED.proof_hash WHERE opencrawl_online_slack_pacing_proofs.next_due<EXCLUDED.next_due`,[...params,nextDue,proof.sourceId,proof.bindingHash,key,proof.revision,proof.operationId,proof.sourceVersion,proof.sourceHash,proof.targetHash,proof.sequence,hash]);
+ }
+}
+export async function* inventorySlackTargetsIn(database:ApplicationDatabase,client:PoolClient,epoch:string):AsyncGenerator<OnlineOwnedInventoryItem>{
+ const ns=database.namespace,repo=createPostgresSlackCapture(database),tables=['scopes','catalogs','catalog_items','runs','run_items','pacing'] as const;
+ const owners=tables.map(name=>`SELECT raw_prefix,scope_hash FROM opencrawl_slack_${name} WHERE namespace=$1`).join(' UNION ');
+ for await(const row of scanTargetInventoryIn(client,`SELECT raw_prefix,scope_hash FROM (${owners}) owners ORDER BY raw_prefix COLLATE "C",scope_hash COLLATE "C"`,[ns])){
+  const prefix=String(row.raw_prefix),scope=hash.parse(row.scope_hash),params=[ns,prefix,scope];
+  if(!(await client.query('SELECT 1 FROM opencrawl_slack_scopes WHERE namespace=$1 AND raw_prefix=$2 AND scope_hash=$3',params)).rows.length)targetInventoryFailure('Slack child has no scope');
+  let records=0;
+  const keys=`SELECT kind,true is_catalog,'catalog'::text run_id FROM opencrawl_slack_catalogs WHERE namespace=$1 AND raw_prefix=$2 AND scope_hash=$3 UNION SELECT kind,true is_catalog,'catalog'::text run_id FROM opencrawl_slack_catalog_items WHERE namespace=$1 AND raw_prefix=$2 AND scope_hash=$3 UNION SELECT kind,false is_catalog,run_id FROM opencrawl_slack_runs WHERE namespace=$1 AND raw_prefix=$2 AND scope_hash=$3 UNION SELECT kind,false is_catalog,run_id FROM opencrawl_slack_run_items WHERE namespace=$1 AND raw_prefix=$2 AND scope_hash=$3`;
+  for await(const identity of scanTargetInventoryIn(client,`SELECT kind,is_catalog,run_id FROM (${keys}) owners ORDER BY kind COLLATE "C",is_catalog,run_id COLLATE "C"`,params)){
+   const catalog=identity.is_catalog===true,key=prefix+'capture/'+String(identity.kind)+'/'+(catalog?'catalog.json':String(identity.run_id)+'/state.json');
+   slackCaptureLegacyIdentity(key);
+   const parent=catalog?'catalogs':'runs',children=catalog?'catalog_items':'run_items',filter='namespace=$1 AND raw_prefix=$2 AND scope_hash=$3 AND kind=$4'+(catalog?'':' AND run_id=$5'),args=[...params,identity.kind,...(catalog?[]:[identity.run_id])];
+   await assertTargetInventoryBoundIn(client,`SELECT coalesce(sum(bytes),0)::text bytes,count(*)::text rows FROM (SELECT octet_length(to_jsonb(p)::text) bytes FROM opencrawl_slack_${parent} p WHERE ${filter} UNION ALL SELECT octet_length(to_jsonb(c)::text) FROM opencrawl_slack_${children} c WHERE ${filter}) bounded`,args);
+   const value=await repo.readProjectedLegacyIn(client,key,scope);if(value===null)targetInventoryFailure('Slack child has no catalog/run');targetInventoryValueBytes(value,16*1024*1024);
+   // Exact split/join roundtrip catches normalized keys/ordinals that the logical
+   // decoder can otherwise ignore or collapse.
+   if(!catalog){const expected=splitCheckpoint(value as FileCheckpoint|MessageCheckpoint|ReferenceCheckpoint),actual=(await client.query(`SELECT metadata FROM opencrawl_slack_runs WHERE ${filter}`,args)).rows[0];if(!isDeepStrictEqual(actual.metadata,expected.metadata))targetInventoryFailure('Slack scalar metadata differs');
+    const items=new Map(expected.items.map(item=>[JSON.stringify([item.kind,item.key]),item]));for await(const child of scanTargetInventoryIn(client,`SELECT item_kind,item_key,ordinal,value FROM opencrawl_slack_run_items WHERE ${filter} ORDER BY item_kind COLLATE "C",item_key COLLATE "C"`,args)){const id=JSON.stringify([child.item_kind,child.item_key]),item=items.get(id);if(!item||child.ordinal!==item.ordinal||!isDeepStrictEqual(child.value,item.value))targetInventoryFailure('Slack normalized run item differs');items.delete(id);}if(items.size)targetInventoryFailure('Slack run item missing');
+   }
+   records++;yield {kind:'target',domains:['slack-capture'],identity:[prefix,scope,String(identity.kind),String(identity.run_id)],sourceKey:key,value,maxBytes:16*1024*1024};
+  }
+  if(!records)targetInventoryFailure('Slack scope has no retained target');
+  for await(const pace of scanTargetInventoryIn(client,'SELECT method,next_due::text FROM opencrawl_slack_pacing WHERE namespace=$1 AND raw_prefix=$2 AND scope_hash=$3 ORDER BY method COLLATE "C"',params)){
+   const method=String(pace.method),due=Number(pace.next_due);if(!/^(conversations\.(list|history|replies|info)|files\.(list|info))$/.test(method)||!Number.isSafeInteger(due)||due<0)targetInventoryFailure('invalid Slack pacing row');
+   const receipt=(await client.query('SELECT *,revision::text,sequence::text,next_due::text FROM opencrawl_online_slack_pacing_proofs WHERE namespace=$1 AND epoch=$2 AND raw_prefix=$3 AND scope_hash=$4 AND method=$5',[ns,epoch,prefix,scope,method])).rows[0];let proved=false;
+   if(receipt){const proof:OnlineSlackPacingProof={epoch,sourceId:receipt.source_id,bindingHash:receipt.binding_hash,sourceKey:receipt.source_key,revision:receipt.revision,operationId:receipt.operation_id,sourceVersion:receipt.source_version,sourceHash:receipt.source_hash,targetHash:receipt.target_hash,sequence:receipt.sequence};
+    if(receipt.next_due!==pace.next_due||receipt.proof_hash!==pacingProofHash(pacingProof(ns,prefix,scope,method,due,proof)))targetInventoryFailure('Slack pacing proof changed');
+    const bound=(await client.query('SELECT binding_hash FROM opencrawl_online_projection_bindings WHERE namespace=$1 AND epoch=$2 AND source_id=$3',[ns,epoch,proof.sourceId])).rows[0];
+    const head=(await client.query('SELECT domain,revision::text,deleted FROM opencrawl_online_projection_heads WHERE namespace=$1 AND epoch=$2 AND source_id=$3 AND source_key=$4',[ns,epoch,proof.sourceId,proof.sourceKey])).rows[0];
+    if(bound?.binding_hash!==proof.bindingHash||!head||head.domain!=='slack-capture'||head.deleted||BigInt(head.revision)<BigInt(proof.revision))targetInventoryFailure('Slack pacing publisher changed');
+    const identity=slackCaptureLegacyIdentity(proof.sourceKey);if(identity.prefix!==prefix||identity.catalog)targetInventoryFailure('Slack pacing owner changed');
+    if(proof.revision==='0'){if(proof.sequence!=='0'||proof.operationId!==null)targetInventoryFailure('invalid baseline pacing provenance');}
+    else{const j=(await client.query('SELECT source_key,revision::text,sequence::text,kind,state,payload_hash,result_version FROM opencrawl_online_migration_journal WHERE namespace=$1 AND epoch=$2 AND source_id=$3 AND operation_id=$4',[ns,epoch,proof.sourceId,proof.operationId])).rows[0];if(!j||j.source_key!==proof.sourceKey||j.revision!==proof.revision||j.sequence!==proof.sequence||j.kind!=='put'||j.state!=='applied'||j.payload_hash!==proof.sourceHash||j.result_version!==proof.sourceVersion)targetInventoryFailure('Slack pacing journal provenance differs');}
+    proved=true;
+   }
+   yield {kind:'auxiliary',owner:'slack-pacing',identity:[prefix,scope,method],proved};
+  }
+ }
+ // A receipt without its runtime maximum cannot be hidden by the runtime scan.
+ if((await client.query('SELECT 1 FROM opencrawl_online_slack_pacing_proofs p LEFT JOIN opencrawl_slack_pacing v USING(namespace,raw_prefix,scope_hash,method) WHERE p.namespace=$1 AND p.epoch=$2 AND v.method IS NULL LIMIT 1',[ns,epoch])).rows.length)targetInventoryFailure('orphan Slack pacing proof');
 }

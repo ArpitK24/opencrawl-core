@@ -1,3 +1,4 @@
+import {scanTargetInventoryIn,targetInventoryFailure,type OnlineOwnedInventoryItem} from './online-target-inventory-support.mjs';
 import {randomBytes,randomUUID} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {z} from 'zod';
@@ -29,6 +30,11 @@ const roleSchema=roleWriteSchema;
 export type RoleWriteRecord=z.infer<typeof roleSchema>;
 const conflict=()=>Object.assign(new Error('Application-state import conflicts with existing data'),{status:409});
 const unavailable=()=>Object.assign(new Error('Team changes need a workspace operator check before continuing.'),{status:503,expose:true});
+export type OnlineAccountProjection=
+ |{kind:'credential';id:string;purpose:CredentialPurpose;value:CaptureCredentialRecord|null}
+ |{kind:'generation';owner:string;purpose:CredentialPurpose;value:{generation:string}|null}
+ |{kind:'onboarding';owner:string;receiptKind:OnboardingKind;value:OnboardingReceipt|null}
+ |{kind:'role';organizationId:string;value:RoleWriteRecord|null};
 export interface AccountState {
   credentials:{
     create(record:CaptureCredentialRecord,purpose?:CredentialPurpose):Promise<void>;
@@ -61,6 +67,8 @@ async function credentialUpgrade(client:PoolClient,table:string,key:string){
  * on the owner, so a concurrent issue cannot escape a revocation accidentally. */
 export function createAccountState(database:ApplicationDatabase):AccountState&{
   ready():Promise<void>;
+  readIn(client:PoolClient,record:OnlineAccountProjection):Promise<unknown>;
+  projectIn(client:PoolClient,record:OnlineAccountProjection):Promise<void>;
   exportCredential(id:string,purpose?:CredentialPurpose):Promise<CaptureCredentialRecord|null>;
   exportGeneration(ownerScope:string,purpose?:CredentialPurpose):Promise<{generation:string}|null>;
   exportRole(organizationId:string):Promise<RoleWriteRecord|null>;
@@ -80,7 +88,43 @@ export function createAccountState(database:ApplicationDatabase):AccountState&{
     async write(owner,kind,value){scope.parse(owner);receiptKind.parse(kind);receiptSchema.parse(value);await database.pool.query(`INSERT INTO opencrawl_onboarding_receipts(namespace,owner_scope,kind,receipt) VALUES($1,$2,$3,$4::jsonb)
       ON CONFLICT(namespace,owner_scope,kind) DO UPDATE SET receipt=EXCLUDED.receipt`,[ns,owner,kind,JSON.stringify(value)]);},
   };
+  async function readIn(client:PoolClient,input:OnlineAccountProjection):Promise<unknown>{
+    if(input.kind==='credential'){hash.parse(input.id);purposeSchema.parse(input.purpose);const row=(await client.query('SELECT record FROM opencrawl_capture_credentials WHERE namespace=$1 AND purpose=$2 AND credential_id=$3',[ns,input.purpose,input.id])).rows[0];return row?captureCredentialSchema.parse(row.record):null;}
+    if(input.kind==='generation'){scope.parse(input.owner);purposeSchema.parse(input.purpose);const row=(await client.query('SELECT generation FROM opencrawl_capture_generations WHERE namespace=$1 AND purpose=$2 AND owner_scope=$3',[ns,input.purpose,input.owner])).rows[0];return row?{generation:hash.parse(row.generation)}:null;}
+    if(input.kind==='onboarding'){scope.parse(input.owner);receiptKind.parse(input.receiptKind);const row=(await client.query('SELECT receipt FROM opencrawl_onboarding_receipts WHERE namespace=$1 AND owner_scope=$2 AND kind=$3',[ns,input.owner,input.receiptKind])).rows[0];return row?receiptSchema.parse(row.receipt):null;}
+    org.parse(input.organizationId);const row=(await client.query('SELECT record FROM opencrawl_role_writes WHERE namespace=$1 AND organization_id=$2',[ns,input.organizationId])).rows[0];return row?roleSchema.parse(row.record):null;
+  }
+  async function projectIn(client:PoolClient,input:OnlineAccountProjection){
+    if(input.kind==='credential'){
+      hash.parse(input.id);purposeSchema.parse(input.purpose);const value=input.value===null?null:captureCredentialSchema.parse(input.value);
+      if(value&&value.id!==input.id)throw conflict();
+      const prior=await readIn(client,input) as CaptureCredentialRecord|null,owner=value?sessionScope(value.principal):prior?sessionScope(prior.principal):null;
+      if(owner)await lock(client,owner,input.purpose);
+      const current=await readIn(client,input) as CaptureCredentialRecord|null;
+      if(current&&value&&(sessionScope(current.principal)!==owner||current.revoked&&!value.revoked))throw conflict();
+      if(value===null)await client.query('DELETE FROM opencrawl_capture_credentials WHERE namespace=$1 AND purpose=$2 AND credential_id=$3',[ns,input.purpose,input.id]);
+      else await client.query('INSERT INTO opencrawl_capture_credentials(namespace,purpose,credential_id,owner_scope,record) VALUES($1,$2,$3,$4,$5::jsonb) ON CONFLICT(namespace,purpose,credential_id) DO UPDATE SET record=EXCLUDED.record',[ns,input.purpose,input.id,owner,JSON.stringify(value)]);
+      return;
+    }
+    if(input.kind==='generation'){
+      scope.parse(input.owner);purposeSchema.parse(input.purpose);if(input.value===null)throw new Error('Online projection cannot erase a credential revocation generation');
+      const value=z.object({generation:hash}).strict().parse(input.value);await lock(client,input.owner,input.purpose);
+      await client.query('INSERT INTO opencrawl_capture_generations(namespace,purpose,owner_scope,generation) VALUES($1,$2,$3,$4) ON CONFLICT(namespace,purpose,owner_scope) DO UPDATE SET generation=EXCLUDED.generation',[ns,input.purpose,input.owner,value.generation]);return;
+    }
+    if(input.kind==='onboarding'){
+      scope.parse(input.owner);receiptKind.parse(input.receiptKind);
+      if(input.value===null)await client.query('DELETE FROM opencrawl_onboarding_receipts WHERE namespace=$1 AND owner_scope=$2 AND kind=$3',[ns,input.owner,input.receiptKind]);
+      else{const value=receiptSchema.parse(input.value);await client.query('INSERT INTO opencrawl_onboarding_receipts(namespace,owner_scope,kind,receipt) VALUES($1,$2,$3,$4::jsonb) ON CONFLICT(namespace,owner_scope,kind) DO UPDATE SET receipt=EXCLUDED.receipt',[ns,input.owner,input.receiptKind,JSON.stringify(value)]);}return;
+    }
+    org.parse(input.organizationId);const value=input.value===null?null:roleSchema.parse(input.value);if(value?.state==='held'&&value.organizationId!==input.organizationId)throw conflict();
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[JSON.stringify([ns,'role-write',input.organizationId])]);
+    const prior=await readIn(client,input) as RoleWriteRecord|null;
+    if(prior?.state==='held'&&(!value||value.operationId!==prior.operationId||value.state==='held'&&!isDeepStrictEqual(prior,value)))throw unavailable();
+    if(value===null)await client.query('DELETE FROM opencrawl_role_writes WHERE namespace=$1 AND organization_id=$2',[ns,input.organizationId]);
+    else await client.query('INSERT INTO opencrawl_role_writes(namespace,organization_id,record) VALUES($1,$2,$3::jsonb) ON CONFLICT(namespace,organization_id) DO UPDATE SET record=EXCLUDED.record',[ns,input.organizationId,JSON.stringify(value)]);
+  }
   return {
+    readIn,projectIn,
     exportCredential:readCredential,
     async exportGeneration(owner,purpose='capture'){scope.parse(owner);purposeSchema.parse(purpose);const {rows}=await database.pool.query('SELECT generation FROM opencrawl_capture_generations WHERE namespace=$1 AND owner_scope=$2 AND purpose=$3',[ns,owner,purpose]);return rows[0]?{generation:hash.parse(rows[0].generation)}:null;},
     async exportRole(organizationId){org.parse(organizationId);const {rows}=await database.pool.query('SELECT record FROM opencrawl_role_writes WHERE namespace=$1 AND organization_id=$2',[ns,organizationId]);return rows[0]?roleSchema.parse(rows[0].record):null;},
@@ -130,4 +174,24 @@ export function createAccountState(database:ApplicationDatabase):AccountState&{
     async importReceipt(owner,kind,input){scope.parse(owner);receiptKind.parse(kind);const value=receiptSchema.parse(input);await database.pool.query('INSERT INTO opencrawl_onboarding_receipts(namespace,owner_scope,kind,receipt) VALUES($1,$2,$3,$4::jsonb) ON CONFLICT DO NOTHING',[ns,owner,kind,JSON.stringify(value)]);const actual=await onboarding.read(owner,kind);if(!isDeepStrictEqual(value,actual))throw conflict();return actual!;},
     async importRole(organizationId,input){org.parse(organizationId);const value=roleSchema.parse(input);if(value.state==='held'&&value.organizationId!==organizationId)throw conflict();await database.pool.query('INSERT INTO opencrawl_role_writes(namespace,organization_id,record) VALUES($1,$2,$3::jsonb) ON CONFLICT DO NOTHING',[ns,organizationId,JSON.stringify(value)]);const {rows}=await database.pool.query('SELECT record FROM opencrawl_role_writes WHERE namespace=$1 AND organization_id=$2',[ns,organizationId]);if(!isDeepStrictEqual(rows[0].record,value))throw conflict();return value;},
   };
+}
+
+/** Read every actual account owner independently of migration heads. */
+export async function* inventoryAccountTargetsIn(database:ApplicationDatabase,client:PoolClient):AsyncGenerator<OnlineOwnedInventoryItem>{
+ const ns=database.namespace,repo=createAccountState(database);
+ for(const table of ['credentials','generations','onboarding','roles'] as const){
+  const query=table==='credentials'?"SELECT purpose,credential_id,owner_scope,octet_length(record::text) bytes FROM opencrawl_capture_credentials WHERE namespace=$1 ORDER BY purpose COLLATE \"C\",credential_id COLLATE \"C\"":table==='generations'?"SELECT purpose,owner_scope FROM opencrawl_capture_generations WHERE namespace=$1 ORDER BY purpose COLLATE \"C\",owner_scope COLLATE \"C\"":table==='onboarding'?"SELECT owner_scope,kind,octet_length(receipt::text) bytes FROM opencrawl_onboarding_receipts WHERE namespace=$1 ORDER BY owner_scope COLLATE \"C\",kind COLLATE \"C\"":"SELECT organization_id,octet_length(record::text) bytes FROM opencrawl_role_writes WHERE namespace=$1 ORDER BY organization_id COLLATE \"C\"";
+  for await(const row of scanTargetInventoryIn(client,query,[ns])){
+   if(row.bytes!==undefined&&(!Number.isSafeInteger(row.bytes)||Number(row.bytes)>131072))targetInventoryFailure('oversized account row');
+   let record:OnlineAccountProjection,domain:string,identity:string[];
+   if(table==='credentials'){const purpose=purposeSchema.parse(row.purpose),id=hash.parse(row.credential_id);record={kind:'credential',purpose,id,value:null};domain='capture-credentials';identity=[purpose,id];}
+   else if(table==='generations'){const purpose=purposeSchema.parse(row.purpose),owner=scope.parse(row.owner_scope);record={kind:'generation',purpose,owner,value:null};domain='credential-generations';identity=[purpose,owner];}
+   else if(table==='onboarding'){const owner=scope.parse(row.owner_scope),kind=receiptKind.parse(row.kind);record={kind:'onboarding',owner,receiptKind:kind,value:null};domain='onboarding';identity=[owner,kind];}
+   else{const organizationId=org.parse(row.organization_id);record={kind:'role',organizationId,value:null};domain='role-writes';identity=[organizationId];}
+   const value=await repo.readIn(client,record);if(value===null)targetInventoryFailure('account owner disappeared');
+   if(record.kind==='credential'){const parsed=captureCredentialSchema.parse(value);if(parsed.id!==record.id||sessionScope(parsed.principal)!==row.owner_scope)targetInventoryFailure('credential normalized owner differs');}
+   if(record.kind==='role'){const parsed=roleSchema.parse(value);if(parsed.state==='held'&&parsed.organizationId!==record.organizationId)targetInventoryFailure('role owner differs');}
+   yield {kind:'target',domains:[domain],identity,value,maxBytes:65536};
+  }
+ }
 }
