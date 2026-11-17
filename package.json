@@ -1,7 +1,7 @@
 {
   "name": "@getopencrawl/opencrawl-core",
-  "version": "0.4.1",
-  "opencrawlCliVersion": "0.4.73",
+  "version": "0.5.0",
+  "opencrawlCliVersion": "0.4.94",
   "type": "module",
   "license": "Apache-2.0",
   "exports": {
@@ -115,6 +115,7 @@
     "./state": "./dist/src/state/application.mjs",
     "./state/types": "./dist/src/state/types.mjs",
     "./state/postgres": "./dist/src/state/postgres.mjs",
+    "./state/board": "./dist/src/state/board.mjs",
     "./state/settings": "./dist/src/state/settings.mjs",
     "./state/migration": "./dist/src/state/migrate.mjs",
     "./state/migration-engine": "./dist/src/state/migration-engine.mjs",
