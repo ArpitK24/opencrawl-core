@@ -1,3 +1,5 @@
+import {scanTargetInventoryIn,assertTargetInventoryBoundIn,targetInventoryFailure,targetInventoryValueBytes,type OnlineOwnedInventoryItem} from './online-target-inventory-support.mjs';
+import type {PoolClient} from 'pg';
 import {randomUUID} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {ensureSchemaIndex,type ApplicationDatabase} from './postgres.mjs';
@@ -14,7 +16,12 @@ export interface WorkloadState<Challenge extends WorkloadChallenge> {
 const checkCode=(value:string)=>{if(!/^[a-f0-9]{64}$/.test(value))throw new Error('Invalid workload setup hash');};
 /** Organization ownership and its installations commit together. Tenant lists use
  * a database index, so no independently written index can become authoritative. */
-export function createWorkloadState<Challenge extends WorkloadChallenge>(database:ApplicationDatabase,provider:WorkloadProvider,challengeSchema:z.ZodType<Challenge>):WorkloadState<Challenge>&{ready():Promise<void>;importConnection(value:unknown):Promise<WorkloadConnection>;importSetup(codeHash:string,value:unknown):Promise<Challenge>}{
+export function createWorkloadState<Challenge extends WorkloadChallenge>(database:ApplicationDatabase,provider:WorkloadProvider,challengeSchema:z.ZodType<Challenge>):WorkloadState<Challenge>&{ready():Promise<void>;
+  readConnectionIn(client:PoolClient,organizationId:string):Promise<Versioned<WorkloadConnection>>;
+  readSetupIn(client:PoolClient,codeHash:string):Promise<Versioned<Challenge>>;
+  projectConnectionIn(client:PoolClient,organizationId:string,value:WorkloadConnection|null):Promise<void>;
+  projectSetupIn(client:PoolClient,codeHash:string,value:Challenge|null):Promise<void>;
+  importConnection(value:unknown):Promise<WorkloadConnection>;importSetup(codeHash:string,value:unknown):Promise<Challenge>}{
   if(provider!=='replicas'&&provider!=='devin')throw new Error('Unknown workload provider');
   const connectionSchema=workloadConnectionSchema(provider),label=workloadLabel(provider);
   const checkOrg=(value:string)=>workloadOrganizationSchema(provider).parse(value);
@@ -38,7 +45,7 @@ export function createWorkloadState<Challenge extends WorkloadChallenge>(databas
       return true;
     });
   }
-  async function readSetup(codeHash:string):Promise<Versioned<Challenge>>{checkCode(codeHash);const {rows}=await query(`SELECT record,revision FROM opencrawl_${provider}_setup WHERE namespace=$1 AND code_hash=$2`,[ns,codeHash]);return rows[0]?{record:challengeSchema.parse(rows[0].record),version:rows[0].revision}:{record:null,version:null};}
+  async function readSetup(codeHash:string,client:Pick<PoolClient,'query'>=database.pool):Promise<Versioned<Challenge>>{checkCode(codeHash);const {rows}=await client.query(`SELECT record,revision FROM opencrawl_${provider}_setup WHERE namespace=$1 AND code_hash=$2`,[ns,codeHash]);return rows[0]?{record:challengeSchema.parse(rows[0].record),version:rows[0].revision}:{record:null,version:null};}
   async function saveSetup(codeHash:string,version:string|null,input:Challenge){checkCode(codeHash);const record=challengeSchema.parse(input),params=[ns,codeHash,JSON.stringify(record),randomUUID()];
     const {rowCount}=version===null?await query(`INSERT INTO opencrawl_${provider}_setup(namespace,code_hash,record,revision) VALUES($1,$2,$3::jsonb,$4) ON CONFLICT DO NOTHING`,params):await query(`UPDATE opencrawl_${provider}_setup SET record=$3::jsonb,revision=$4 WHERE namespace=$1 AND code_hash=$2 AND revision=$5`,[...params,version]);return rowCount===1;}
   return {
@@ -48,8 +55,41 @@ export function createWorkloadState<Challenge extends WorkloadChallenge>(databas
       await ensureSchemaIndex(client,{table:`opencrawl_${provider}_connections`,name:`opencrawl_${provider}_connections_tenant`,keys:['namespace','tenant_id','organization_id']});
       });})().catch(error=>{preparing=undefined;throw error;});await preparing;},
     readConnection,saveConnection,readSetup,saveSetup,
+    readConnectionIn:connection,readSetupIn:(client,key)=>readSetup(key,client),
+    async projectConnectionIn(client,org,input){checkOrg(org);const value=input===null?null:connectionSchema.parse(input),current=(await connection(client,org)).record;
+      if(value===null){await client.query(`DELETE FROM opencrawl_${provider}_connections WHERE namespace=$1 AND organization_id=$2`,[ns,org]);return;}
+      if(value.organizationId!==org||value.installations.some(i=>i.tenantId!==value.tenantId)||current&&current.tenantId!==value.tenantId)throw new Error(label+' connection scope is invalid');
+      if(current?.revokedAt&&value.revokedAt===null&&Date.parse(value.approvedAt)<=Date.parse(current.revokedAt))throw new Error(label+' reapproval must follow the original revocation');
+      const {installations,...record}=value;await client.query(`INSERT INTO opencrawl_${provider}_connections(namespace,organization_id,tenant_id,record,revision) VALUES($1,$2,$3,$4::jsonb,$5) ON CONFLICT(namespace,organization_id) DO UPDATE SET record=EXCLUDED.record,revision=EXCLUDED.revision`,[ns,org,value.tenantId,JSON.stringify(record),randomUUID()]);
+      await client.query(`DELETE FROM opencrawl_${provider}_installations WHERE namespace=$1 AND organization_id=$2`,[ns,org]);
+      for(const [index,item] of installations.entries())await client.query(`INSERT INTO opencrawl_${provider}_installations(namespace,organization_id,user_id,ordinal,record) VALUES($1,$2,$3,$4,$5::jsonb)`,[ns,org,item.userId,index,JSON.stringify(item)]);
+    },
+    async projectSetupIn(client,key,input){checkCode(key);const value=input===null?null:challengeSchema.parse(input),current=(await readSetup(key,client)).record;
+      if(value===null){await client.query(`DELETE FROM opencrawl_${provider}_setup WHERE namespace=$1 AND code_hash=$2`,[ns,key]);return;}
+      if(current&&(current.tenantId!==value.tenantId||current.userId!==value.userId||current.issuedAt!==value.issuedAt||current.expiresAt!==value.expiresAt||current.claim!==null&&!isDeepStrictEqual(current.claim,value.claim)))throw new Error(label+' setup scope is invalid');
+      await client.query(`INSERT INTO opencrawl_${provider}_setup(namespace,code_hash,record,revision) VALUES($1,$2,$3::jsonb,$4) ON CONFLICT(namespace,code_hash) DO UPDATE SET record=EXCLUDED.record,revision=EXCLUDED.revision`,[ns,key,JSON.stringify(value),randomUUID()]);
+    },
     async listConnections(tenant){if(!/^[A-Za-z0-9_.:-]{1,200}$/.test(tenant))throw new Error('Invalid workspace');const {rows}=await query(`SELECT c.record,COALESCE((SELECT jsonb_agg(i.record ORDER BY i.ordinal) FROM opencrawl_${provider}_installations i WHERE i.namespace=c.namespace AND i.organization_id=c.organization_id),'[]'::jsonb) AS installations FROM opencrawl_${provider}_connections c WHERE namespace=$1 AND tenant_id=$2 ORDER BY organization_id`,[ns,tenant]);return rows.map(row=>connectionSchema.parse({...row.record,installations:row.installations}));},
     async importConnection(input){const value=connectionSchema.parse(input);await saveConnection(value.organizationId,null,value);const actual=(await readConnection(value.organizationId)).record;if(!isDeepStrictEqual(value,actual))throw new Error(label+' connection import conflicts with existing data');return actual!;},
     async importSetup(codeHash,input){const value=challengeSchema.parse(input);await saveSetup(codeHash,null,value);const actual=(await readSetup(codeHash)).record;if(!isDeepStrictEqual(value,actual))throw new Error(label+' setup import conflicts with existing data');return actual!;},
   };
+}
+
+/** Provider is the owning finite table selector, never an arbitrary SQL name. */
+export async function* inventoryWorkloadTargetsIn<Challenge extends WorkloadChallenge>(database:ApplicationDatabase,client:PoolClient,provider:WorkloadProvider,challengeSchema:z.ZodType<Challenge>):AsyncGenerator<OnlineOwnedInventoryItem>{
+ if(provider!=='replicas')targetInventoryFailure('no retained online workload owner for provider');
+ const repo=createWorkloadState(database,provider,challengeSchema),ns=database.namespace;
+ for await(const row of scanTargetInventoryIn(client,`SELECT organization_id FROM (SELECT organization_id FROM opencrawl_replicas_connections WHERE namespace=$1 UNION SELECT organization_id FROM opencrawl_replicas_installations WHERE namespace=$1) owners ORDER BY organization_id COLLATE "C"`,[ns])){
+  const org=String(row.organization_id);
+  await assertTargetInventoryBoundIn(client,`SELECT coalesce(sum(bytes),0)::text bytes,count(*)::text rows FROM (SELECT octet_length(record::text) bytes FROM opencrawl_replicas_connections WHERE namespace=$1 AND organization_id=$2 UNION ALL SELECT octet_length(record::text) FROM opencrawl_replicas_installations WHERE namespace=$1 AND organization_id=$2) bounded`,[ns,org]);
+  const value=(await repo.readConnectionIn(client,org)).record;if(!value||value.organizationId!==org)targetInventoryFailure('workload child has no canonical owner');targetInventoryValueBytes(value,65536);
+  const parent=(await client.query('SELECT tenant_id FROM opencrawl_replicas_connections WHERE namespace=$1 AND organization_id=$2',[ns,org])).rows[0];if(parent?.tenant_id!==value.tenantId)targetInventoryFailure('workload normalized tenant differs');
+  let ordinal=0;for await(const child of scanTargetInventoryIn(client,'SELECT user_id,ordinal,record FROM opencrawl_replicas_installations WHERE namespace=$1 AND organization_id=$2 ORDER BY ordinal',[ns,org])){
+   const item=value.installations[ordinal];if(!item||child.ordinal!==ordinal||child.user_id!==item.userId||item.tenantId!==value.tenantId||!isDeepStrictEqual(child.record,item))targetInventoryFailure('workload normalized installation differs');ordinal++;
+  }
+  if(ordinal!==value.installations.length)targetInventoryFailure('workload installation coverage differs');yield {kind:'target',domains:['replicas-connections'],identity:[org],value,maxBytes:65536};
+ }
+ for await(const row of scanTargetInventoryIn(client,'SELECT code_hash,octet_length(record::text) bytes FROM opencrawl_replicas_setup WHERE namespace=$1 ORDER BY code_hash COLLATE "C"',[ns])){
+  if(!Number.isSafeInteger(row.bytes)||Number(row.bytes)>131072)targetInventoryFailure('oversized workload challenge');const key=String(row.code_hash),value=(await repo.readSetupIn(client,key)).record;if(!value)targetInventoryFailure('workload challenge disappeared');yield {kind:'target',domains:['replicas-setup'],identity:[key],value,maxBytes:65536};
+ }
 }
