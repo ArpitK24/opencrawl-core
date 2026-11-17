@@ -7,47 +7,57 @@ test.beforeEach(async({page,request})=>{
   await request.post('/__test/reset',{data:{}});
   await page.route('**/api/console/sources',route=>route.fulfill({json:{items:sources}}));
 });
-for(const width of [1440,600,390,320]) test(`uniform cards disclose complete stats and support search at ${width}px`,async({page})=>{
+for(const width of [1440,600,390,320]) test(`available tiles precede connected cards and support search at ${width}px`,async({page})=>{
   await page.setViewportSize({width,height:900});
   await page.goto('/integrations-fixture');
   const cards=page.getByRole('article');
   await expect(cards).toHaveCount(24);
-  expect(await cards.evaluateAll(es=>es.map(e=>e.getAttribute('aria-label')))).toEqual([...sources].reverse().map(s=>s.name));
-  expect(await cards.evaluateAll(es=>[...new Set(es.map(e=>e.getBoundingClientRect().height))])).toEqual([226]);
-  if(width<=600) {
-    const footers=await cards.locator('.oc-connector-footer').evaluateAll(elements=>elements.map(footer=>{
-      const action=footer.querySelector('button')!.getBoundingClientRect();
-      const status=footer.querySelector('span')!.getBoundingClientRect();
-      const bounds=footer.getBoundingClientRect();
-      return {height:action.height,above:action.top-bounds.top,below:bounds.bottom-action.bottom,gap:action.left-status.right};
-    }));
-    for(const footer of footers) {
-      expect(footer.height).toBeGreaterThanOrEqual(44);
-      expect(footer.above).toBeGreaterThanOrEqual(8);
-      expect(footer.below).toBeGreaterThanOrEqual(8);
-      expect(footer.gap).toBeGreaterThanOrEqual(8);
-    }
-  }
-  const first=cards.first();
-  await expect(first.locator('.oc-connector-headline')).toContainText('100');
-  const more=first.locator('.oc-connector-more');
-  await more.focus();
-  await more.press('Enter');
-  await expect(more).toHaveAttribute('aria-expanded','true');
-  await expect(first.locator('.oc-source-counts')).toBeVisible();
-  await expect(first.locator('.oc-source-counts dd')).toHaveText(['100','150','0']);
-  expect(await cards.nth(1).evaluate(e=>e.getBoundingClientRect().height)).toBe(226);
-  await more.press('Space');
-  await expect(more).toHaveAttribute('aria-expanded','false');
-  await expect(more).toBeFocused();
+  const available=page.getByRole('region',{name:'Available',exact:true});
+  const connected=page.getByRole('region',{name:'Connected',exact:true});
+  const connectedCards=connected.getByRole('article');
+  const sorted=[...sources].reverse();
+  expect(await cards.evaluateAll(es=>es.map(e=>e.getAttribute('aria-label')))).toEqual([...sorted.filter(s=>s.state==='disconnected'),...sorted.filter(s=>s.state!=='disconnected')].map(s=>s.name));
+  await expect(available.getByRole('article')).toHaveCount(6);
+  await expect(available.getByRole('article').locator('p, footer, dl')).toHaveCount(0);
+  await expect(available.getByRole('article').locator('.oc-integration-logo')).toHaveCount(6);
+  expect(await available.getByRole('article').evaluateAll(es=>es.every(e=>e.getBoundingClientRect().height<120))).toBe(true);
+  expect(await connectedCards.evaluateAll(es=>[...new Set(es.map(e=>e.getBoundingClientRect().height))])).toEqual([288]);
+  await expect(connectedCards.locator('.oc-integration-header p')).toHaveCount(0);
+  if(width<=600) expect(await connectedCards.locator('footer button').evaluateAll(es=>es.every(e=>e.getBoundingClientRect().height>=44))).toBe(true);
+  const first=connectedCards.first();
+  await expect(first.locator('.oc-integration-metrics li > span:last-child')).toHaveText(['100','150','0']);
+  await expect(first.getByRole('button',{name:/Show/})).toHaveCount(0);
+  await expect(first.locator('.oc-integration-breakdown')).not.toHaveAttribute('tabindex','0');
   await page.getByRole('searchbox',{name:'Search integrations'}).fill('connector 19');
   await expect(cards).toHaveCount(1);
   await expect(cards).toHaveAttribute('aria-label','Example connector 19');
   await page.getByRole('searchbox').fill('');
-  await page.getByRole('tab',{name:'Available 6'}).click();
-  await expect(cards).toHaveCount(6);
+  await expect(cards).toHaveCount(24);
+  await expect(page.getByRole('tablist')).toHaveCount(0);
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
-  expect(await page.locator('.oc-connector-dot').evaluateAll(es=>es.every(e=>getComputedStyle(e).width==='8px'&&getComputedStyle(e).boxShadow==='none'))).toBe(true);
+  await expect(connectedCards.locator('.oc-status-pill')).toHaveCount(0);
+  await expect(connectedCards.locator('footer .oc-button.secondary')).toHaveCount(18);
+});
+
+test('small catalogs use only sections and hidden search cannot keep filtering',async({page})=>{
+  await page.clock.install();
+  let items=sources.slice(0,14);
+  await page.route('**/api/console/sources',route=>route.fulfill({json:{items}}));
+  await page.goto('/integrations-fixture');
+  await expect(page.getByRole('article')).toHaveCount(14);
+  await expect(page.getByRole('searchbox')).toHaveCount(0);
+  await expect(page.getByRole('tablist')).toHaveCount(0);
+  await expect(page.getByRole('region',{name:'Available',exact:true})).toBeVisible();
+  await expect(page.getByRole('region',{name:'Connected',exact:true})).toBeVisible();
+  items=sources.slice(0,15);
+  await page.clock.runFor(30_001);
+  await page.getByRole('searchbox',{name:'Search integrations'}).fill('does not exist');
+  await expect(page.getByRole('heading',{name:'No matching integrations'})).toBeVisible();
+  items=sources.slice(0,6);
+  await page.clock.runFor(30_001);
+  await expect(page.getByRole('searchbox')).toHaveCount(0);
+  await expect(page.getByRole('article')).toHaveCount(6);
+  await expect(page.getByRole('heading',{name:'No matching integrations'})).toHaveCount(0);
 });
 
 test('recovery dialogs preserve sign-in, sync and removal actions and member permissions',async({page})=>{
@@ -77,26 +87,55 @@ test('recovery dialogs preserve sign-in, sync and removal actions and member per
   await expect(page.getByRole('button',{name:/Restart sign-in|Retry|Disconnect/})).toHaveCount(0);
 });
 
-test('cards keep account context in Manage and use primary Connect for both connection paths',async({page})=>{
+test('cards keep account context in Manage and directly open OAuth or required setup',async({page,context})=>{
   const connected={...source(1),name:'Connected source',account:'Example account',connectedBy:'admin@example.com'};
-  const direct={...source(4),name:'Direct source'};
+  const direct={...source(4),provider:'linear',name:'Linear'};
   const setup:SourceCard={...source(8),name:'Setup source',state:'setup-required',setup:{title:'Set up source',body:'Ask your administrator to configure this source.'}};
   await page.route('**/api/console/sources',route=>route.fulfill({json:{items:[connected,direct,setup]}}));
   await page.goto('/integrations-fixture');
   const card=page.getByRole('article',{name:'Connected source',exact:true});
   await expect(card).not.toContainText('Example account');
-  await expect(page.locator('.oc-connector-heading p')).toHaveCount(0);
+  await expect(page.locator('.oc-integration-header p')).toHaveCount(0);
   await card.getByRole('button',{name:'Manage Connected source'}).click();
   await expect(page.getByRole('dialog')).toContainText('Example account');
   await expect(page.getByRole('dialog')).toContainText('Connected by admin@example.com');
   await page.keyboard.press('Escape');
-  for(const name of ['Direct source','Setup source']) await expect(page.getByRole('button',{name:`Connect ${name}`,exact:true})).toHaveClass(/\bprimary\b/);
-  await page.getByRole('button',{name:'Connect Direct source',exact:true}).click();
-  await expect(page.getByRole('dialog',{name:'Connect Direct source'})).toContainText('Workspace connection');
-  await expect(page.getByRole('button',{name:'Continue to Direct source'})).toBeVisible();
-  await page.keyboard.press('Escape');
+  for(const name of ['Linear','Setup source']) await expect(page.getByRole('button',{name:`Connect ${name}`,exact:true})).toHaveClass(/\bprimary\b/);
+  let connects=0;
+  await page.route('**/api/integrations/linear/connect',route=>{connects++;return route.fulfill({json:{redirectUrl:'https://linear.example/authorize'}});});
+  await context.route('https://linear.example/authorize',route=>route.fulfill({contentType:'text/plain',body:'Linear authorization fixture'}));
+  const popupPromise=page.waitForEvent('popup');
+  await page.getByRole('button',{name:'Connect Linear',exact:true}).click();
+  const popup=await popupPromise;
+  await expect(popup).toHaveURL('https://linear.example/authorize');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  expect(connects).toBe(1);
+  await popup.close();
   await page.getByRole('button',{name:'Connect Setup source',exact:true}).click();
   await expect(page.getByRole('dialog')).toContainText('Ask your administrator to configure this source.');
+});
+
+test('direct connect preserves busy state, closes a failed popup and allows retry',async({page})=>{
+  const linear={...source(4),provider:'linear',name:'Linear'};
+  await page.route('**/api/console/sources',route=>route.fulfill({json:{items:[linear]}}));
+  let release:()=>void=()=>{};
+  const blocked=new Promise<void>(resolve=>{release=resolve;});
+  await page.route('**/api/integrations/linear/connect',async route=>{await blocked;await route.fulfill({status:503,json:{error:'Sign-in is temporarily unavailable. Try again.'}});});
+  await page.goto('/integrations-fixture');
+  const button=page.getByRole('button',{name:'Connect Linear',exact:true});
+  const popupPromise=page.waitForEvent('popup');
+  await button.focus();
+  await button.press('Enter');
+  const popup=await popupPromise;
+  await expect(button).toBeDisabled();
+  await expect(button).toHaveAttribute('aria-busy','true');
+  await expect(button).toHaveText('Connecting…');
+  release();
+  await expect(page.getByRole('alert')).toContainText('Sign-in is temporarily unavailable. Try again.');
+  await expect.poll(()=>popup.isClosed()).toBe(true);
+  await expect(button).toBeEnabled();
+  await expect(button).toHaveText('Connect');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
 });
 
 test('cold status stays unknown and failed refreshes label retained measurements',async({page})=>{
@@ -108,12 +147,12 @@ test('cold status stays unknown and failed refreshes label retained measurements
   await page.goto('/integrations-fixture');
   const cold=page.getByRole('article',{name:'Cold connection'}),stale=page.getByRole('article',{name:'Delayed refresh'});
   await expect(cold).toContainText('Checking sync status…');
-  await expect(cold.locator('.oc-connector-headline')).toHaveCount(0);
+  await expect(cold.locator('.oc-integration-metrics')).toHaveCount(0);
   await expect(stale).toContainText('Status unavailable');
-  await expect(stale.locator('.oc-connector-footer')).not.toContainText('Synced');
-  await expect(stale.locator('.oc-connector-headline')).toContainText('200');
-  await stale.getByRole('button',{name:'Show 2 more stats for Delayed refresh'}).click();
-  await expect(stale.locator('.oc-source-counts')).toContainText('Last measured');
+  await expect(stale.locator('.oc-integration-footer')).not.toContainText('Synced');
+  await expect(stale.locator('.oc-integration-metrics')).toContainText('200');
+  await expect(stale.locator('.oc-integration-metrics')).toBeVisible();
+  await expect(stale.locator('.oc-integration-metrics')).toContainText('Last measured');
   await page.getByRole('button',{name:'Manage Delayed refresh'}).click();
   await expect(page.getByRole('dialog')).toContainText('Showing the last measurement.');
 });
@@ -127,6 +166,39 @@ test('the first background measurement appears without waiting for the normal po
   await page.goto('/integrations-fixture');
   const card=page.getByRole('article',{name:'Example connector 01'});
   await expect(card).toContainText('Checking sync status…');
-  await expect(card.locator('.oc-connector-headline')).toContainText('100',{timeout:5000});
+  await expect(card.locator('.oc-integration-metrics')).toContainText('100',{timeout:5000});
+  await expect(card.locator('.oc-integration-metrics')).toBeVisible();
   expect(reads).toBe(2);
+});
+
+for(const width of [1440,320]) test(`shared Usage and integration cards keep long metrics inside equal tiles at ${width}px`,async({page})=>{
+  await page.setViewportSize({width,height:900});
+  const rows=Array.from({length:20},(_,i)=>({label:`Collection ${i+1}`,count:i,done:true}));
+  const items=[{...source(1),name:'Long breakdown',rows},{...source(2),name:'Short breakdown',rows:[rows[0]!]}];
+  await page.route('**/api/console/sources',route=>route.fulfill({json:{items}}));
+  await page.goto('/integrations-fixture');
+  const imported=page.getByRole('article',{name:'Long breakdown'});
+  const scroll=imported.getByRole('region',{name:'Long breakdown imported data',exact:true});
+  await expect(scroll).toHaveAttribute('tabindex','0');
+  await imported.scrollIntoViewIfNeeded();
+  const height=await imported.evaluate(e=>e.getBoundingClientRect().height);
+  const footerInset=await imported.evaluate(e=>e.querySelector('footer')!.getBoundingClientRect().top-e.getBoundingClientRect().top);
+  await scroll.focus();
+  await scroll.press('End');
+  await expect.poll(()=>scroll.evaluate(e=>e.scrollTop)).toBeGreaterThan(0);
+  await expect(scroll.getByRole('listitem').last()).toBeInViewport();
+  expect(await imported.evaluate(e=>e.querySelector('footer')!.getBoundingClientRect().top-e.getBoundingClientRect().top)).toBe(footerInset);
+  expect(await page.getByRole('article',{name:'Short breakdown'}).evaluate(e=>e.getBoundingClientRect().height)).toBe(height);
+  await scroll.press('Tab');
+  await expect(imported.getByRole('button',{name:'Manage Long breakdown'})).toBeFocused();
+  await page.route('**/api/console/usage',route=>route.fulfill({json:{workspace:'Example',days:30,generatedAt:new Date().toISOString(),members:[],agents:null,ingestion:{index:null,sources:items.map(item=>({name:item.name,icon:'/assets/connectors/slack.svg',account:'Hidden account subtitle',state:'synced',records:999,rows:[{label:'Importer-only count',count:999}],indexedSpecies:item.rows?.map(row=>({name:row.label,count:row.count})),lastSyncedAt:'2026-11-17T12:00:00Z'}))}}}));
+  await page.goto('/usage');
+  const indexed=page.getByRole('article',{name:'Long breakdown'});
+  await expect(indexed).toHaveClass('oc-integration-card');
+  expect(await indexed.evaluate(e=>e.getBoundingClientRect().height)).toBe(height);
+  await expect(indexed.getByRole('region',{name:'Content in Long breakdown',exact:true})).toHaveAttribute('tabindex','0');
+  await expect(indexed).not.toContainText('Hidden account subtitle');
+  await expect(indexed).not.toContainText('Importer-only count');
+  await expect(indexed.locator('.oc-integration-metrics li')).toHaveCount(20);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
 });

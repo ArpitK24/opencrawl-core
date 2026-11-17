@@ -1,5 +1,5 @@
 import {useEffect, useRef, useState, type FormEvent} from 'react';
-import {Button, Dialog, EmptyState, Field, Icon, Input, LoadingState, Notice, Page, Tabs, Navigate} from '../index.ts';
+import {Button, Dialog, EmptyState, Field, Icon, Input, LoadingState, Notice, Page, Section, Navigate} from '../index.ts';
 import {ConsoleApiError, externalTarget, failureMessage} from './errors.ts';
 import type {SourceCard, SourcesAdapter} from './api.ts';
 import {useResource} from './resource';
@@ -17,7 +17,6 @@ export function SourcesPage({adapter, canConfigure = false}: {adapter: SourcesAd
 }
 function AdminSourcesPage({adapter}:{adapter:SourcesAdapter}) {
   const canConfigure = true;
-  const [filter, setFilter] = useState('all');
   const [query, setQuery] = useState('');
   const [pending, setPending] = useState<string | null>(null);
   const {data, error, loading, reload, invalidate} = useResource(adapter.sources, {autoRefreshMilliseconds:refreshInterval, paused:pending !== null});
@@ -130,8 +129,10 @@ function AdminSourcesPage({adapter}:{adapter:SourcesAdapter}) {
   }
 
   const sources = alphabeticalSources(data?.items ?? []);
-  const counts = {all:sources.length, connected:sources.filter(sourceConnected).length, available:sources.filter(source=>!sourceConnected(source)).length, attention:sources.filter(source=>source.state==='error').length};
-  const visible = sources.filter(source=>`${source.name} ${source.description ?? ''}`.toLowerCase().includes(query.trim().toLowerCase())).filter(source=>filter==='all'||(filter==='connected'&&sourceConnected(source))||(filter==='available'&&!sourceConnected(source))||(filter==='attention'&&source.state==='error'));
+  const showSearch = sources.length >= 15;
+  const searchQuery = showSearch ? query.trim().toLowerCase() : '';
+  const visible = sources.filter(source=>`${source.name} ${source.description ?? ''}`.toLowerCase().includes(searchQuery));
+  const groups = [{title:'Available', items:visible.filter(source=>!sourceConnected(source))}, {title:'Connected', items:visible.filter(sourceConnected)}];
   const unlock = data?.items.find(source => source.state === 'setup-required' && source.setup?.credential)?.setup?.credential;
   return <Page bodyClassName="oc-connections" id="data-controls" title="Integrations" description="Connect your tools and OpenCrawl keeps their content in sync for your agents.">
     {error && <Notice tone="danger">{data ? 'Connection status couldn’t update. We’ll try again automatically while you’re viewing this page.' : error}</Notice>}
@@ -140,11 +141,13 @@ function AdminSourcesPage({adapter}:{adapter:SourcesAdapter}) {
 
     {success && <Notice tone="success">{success}</Notice>}
     {!data ? loading ? <LoadingState label="Loading integrations" /> : <EmptyState title="Integrations couldn’t load" description="Try again to see your connections." action={<Button onClick={() => void reload()}>Try again</Button>} /> : <>
-      <div className="oc-source-toolbar"><Tabs label="Filter integrations" value={filter} onChange={setFilter} items={[{value:'all',label:`All ${counts.all}`},{value:'connected',label:`Connected ${counts.connected}`},{value:'available',label:`Available ${counts.available}`},...(counts.attention || filter==='attention' ? [{value:'attention',label:`Needs attention ${counts.attention}`}] : [])]}/><div className="oc-source-search"><Icon name="search" size={16}/><Input type="search" aria-label="Search integrations" placeholder="Search integrations" value={query} onChange={event=>setQuery(event.target.value)}/></div></div>
-      <div className="oc-source-grid" aria-label="Integrations">
-      {visible.map(source => <SourceRow key={source.provider} source={source} canManage={canConfigure || source.scope === 'user'} pending={pending !== null} active={pending === source.provider} connect={() => connect(source)} setUp={() => {setActionError(''); setSetupSource(source);}} retry={() => void run(source.provider, async request => {await adapter.retry(source.provider, request.signal); if (current(request)) setSuccess(source.recoveryAction === 'disconnect' ? `${source.name} removal completed and its imported data deleted.` : `${source.name} sync requested.`);})} disconnect={() => {setActionError(''); setConfirmation(source);}} />)}
-      </div>
-      {sources.length > 0 && !visible.length && <EmptyState title="No matching integrations" description="Try another name or clear your filters." action={<Button onClick={()=>{setQuery('');setFilter('all');}}>Clear filters</Button>}/>}
+      {showSearch && <div className="oc-source-toolbar"><div className="oc-source-search"><Icon name="search" size={16}/><Input type="search" aria-label="Search integrations" placeholder="Search integrations" value={query} onChange={event=>setQuery(event.target.value)}/></div></div>}
+      {groups.filter(group=>group.items.length>0).map(group=><Section key={group.title} title={group.title} className="oc-source-section">
+        <div className={group.title === 'Available' ? 'oc-source-grid' : 'oc-integration-grid'}>
+          {group.items.map(source => <SourceRow key={source.provider} source={source} canManage={canConfigure || source.scope === 'user'} pending={pending !== null} active={pending === source.provider} connect={() => connect(source)} setUp={() => {setActionError(''); setSetupSource(source);}} retry={() => void run(source.provider, async request => {await adapter.retry(source.provider, request.signal); if (current(request)) setSuccess(source.recoveryAction === 'disconnect' ? `${source.name} removal completed and its imported data deleted.` : `${source.name} sync requested.`);})} disconnect={() => {setActionError(''); setConfirmation(source);}} />)}
+        </div>
+      </Section>)}
+      {sources.length > 0 && !visible.length && <EmptyState title="No matching integrations" description="Try another name or clear your search." action={<Button onClick={()=>setQuery('')}>Clear search</Button>}/>}
       {!data.items.length && <EmptyState title="No integrations available" description="Available connections will appear here." />}
     </>}
     <Dialog open={confirmation !== null} onClose={() => {if (!pending) setConfirmation(null);}} title={`Disconnect ${confirmation?.name ?? 'source'}?`} description={confirmation ? disconnectDescription(confirmation) : undefined} actions={<><Button disabled={pending !== null} onClick={() => setConfirmation(null)}>Cancel</Button><Button variant="danger" disabled={pending !== null} onClick={remove}>{pending ? 'Disconnecting…' : 'Disconnect and delete'}</Button></>}>
@@ -161,7 +164,7 @@ function AdminSourcesPage({adapter}:{adapter:SourcesAdapter}) {
   </Page>;
 }
 
-/** Compatibility export: every integration uses the same card template. */
+/** Available connectors start setup directly; connected cards retain management. */
 export function SourceRow({source, canManage = false, pending, active, connect, retry, disconnect, setUp}: {source: SourceCard; canManage?: boolean; pending: boolean; active: boolean; connect: () => void; retry: () => void; disconnect: () => void; setUp?: () => void}) {
   const [open, setOpen] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false);
@@ -172,14 +175,13 @@ export function SourceRow({source, canManage = false, pending, active, connect, 
   function invoke(callback: () => void) {setOpen(false); callback();}
   function show() {
     if (source.state === 'setup-required' && source.setup) {(setUp ?? (()=>setSetupOpen(true)))();return;}
-    if (source.state === 'disconnected' && canManage && source.auth === 'api-key') {connect();return;}
+    if (source.state === 'disconnected' && canManage) {connect();return;}
     setOpen(true);
   }
   return <>
-    <ConnectorCard source={source} primaryMetric={source.primaryMetric} action={action} pending={pending} onAction={show}/>
+    <ConnectorCard source={source} action={action} pending={pending} busy={active} onAction={show}/>
     <Dialog open={open} onClose={()=>{if(!pending)setOpen(false);}} title={`${action} ${source.name}`} description={source.help ?? source.description} actions={canManage ? <>
       {sourceDeletable(source) && <Button variant="danger" aria-label={`Disconnect ${source.name}`} disabled={pending} onClick={()=>invoke(disconnect)}>Disconnect</Button>}
-      {source.state === 'disconnected' && <Button variant="primary" disabled={pending} onClick={()=>invoke(connect)}>Continue to {source.name}</Button>}
       {['connected','synced'].includes(source.state) && <Button disabled={pending} onClick={()=>invoke(retry)}>Sync now</Button>}
       {restart && <Button variant="primary" disabled={pending} onClick={()=>invoke(connect)}>{active ? 'Connecting…' : 'Restart sign-in'}</Button>}
       {retryable && <Button disabled={pending} onClick={()=>invoke(retry)}>{active ? 'Retrying…' : source.recoveryAction === 'disconnect' ? 'Retry removal' : 'Retry sync'}</Button>}
