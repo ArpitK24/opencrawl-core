@@ -1,3 +1,4 @@
+import {profileSetupCommand} from '../src/setup/invocation.ts';
 import {sessionStart} from '../src/session-start.ts';
 import {test,expect} from 'bun:test';
 import {createServer} from 'node:http';
@@ -170,11 +171,11 @@ test('setup plans, handoffs and sign-in keep the selected launcher and saved sea
   if(!result||!('agentPrompt' in result)||!('nextStep' in result))throw Error('Expected an agent handoff');
   const handoff=result;
   expect(handoff.agentPrompt).toContain('in this conversation');
-  expect(handoff.agentPrompt).toContain('Use `'+formatSetupCommand([],command)+'` for every OpenCrawl command');
-  expect(handoff.agentPrompt).toContain('Start with `'+formatSetupCommand(['setup','status','--local','--api',api,'--json'],command)+'`');
+  expect(handoff.agentPrompt).toContain('Use `'+formatSetupCommand([],profileSetupCommand(command,join(dir,'config')))+'` for every OpenCrawl command');
+  expect(handoff.agentPrompt).toContain('Start with `'+formatSetupCommand(['setup','status','--local','--api',api,'--json'],profileSetupCommand(command,join(dir,'config')))+'`');
   expect(handoff.agentPrompt).toContain('recording off (forward=false)');
   expect(handoff.agentPrompt).toContain('without requiring a new session capture');
-  expect(handoff.nextStep).toContain(formatSetupCommand(['setup','status','--local','--api',api,'--json'],command));
+  expect(handoff.nextStep).toContain(formatSetupCommand(['setup','status','--local','--api',api,'--json'],profileSetupCommand(command,join(dir,'config'))));
  }
  delete process.env.OPENCRAWL_TOKEN;
  const login=await setupCommand('run',api,{json:true},{command,interactive:false}) as {humanTasks:{instruction:string}[]};
@@ -190,7 +191,7 @@ test('prepared plugin handoff reconciles only selected activations with ready su
   const dependencies={...setupCodex,command,installPlugins:async()=>{installs++;return {results:[{client,status}],humanTasks:[]};},...(scenario==='worker-pending'?{installDaemon:async()=>({kind:'external',status:'required',supervised:false,command:['/owned/worker'],reason:'No systemd user manager'})}:{})};
   const applied=await setupCommand('apply',api,{yes:true,plugins:'codex',forward:'none',history:'none'},dependencies);
   if(!applied||!('agentPrompt' in applied))throw Error('Expected an agent handoff');
-  const resumeCommand=formatSetupCommand(['setup','resume','--api',api,'--json'],command);
+  const resumeCommand=formatSetupCommand(['setup','resume','--api',api,'--json'],profileSetupCommand(command,join(dir,'config')));
   expect(applied.agentPrompt.includes('`'+resumeCommand+'` once')).toBe(scenario==='prepared');
   expect(installs).toBe(1);
   const saved=readSetupState({api,tenantId:'tenant',userId:'user'});
@@ -413,7 +414,7 @@ test('manual Cursor MCP can enroll through normal setup without replacing connec
  expect(state.selections).toMatchObject({plugins:{cursor:true,codex:false,'claude-code':false},forward:{cursor:true,codex:false,'claude-code':false},history:{cursor:false,codex:false,'claude-code':false}});
  expect(state.historyJob).toBeUndefined();expect(readCaptureConfig()).toMatchObject({api,hookOwnership:'plugin',captureWorker:'daemon-v1',harnesses:['cursor'],command});
  expect(JSON.parse(readFileSync(join(plugin,'mcp.json'),'utf8'))).toEqual({mcpServers:{opencrawl:{url:api+'/mcp'}}});
- expect(existsSync(join(plugin,'hooks','hooks.json'))).toBe(true);expect(existsSync(join(cursorRoot,'hooks.json'))).toBe(false);
+ expect(existsSync(join(plugin,'hooks','hooks.json'))).toBe(false);expect(existsSync(join(cursorRoot,'hooks.json'))).toBe(true);
  expect(result).toMatchObject({status:'needs_attention'});expect(state.pluginResults).toEqual([expect.objectContaining({client:'cursor',status:'prepared'})]);expect(readFileSync(mcpFile,'utf8')).toBe(manual);
  await setupCommand('resume',api,{json:true},dependencies);
  expect(readSetupState(state.scope)?.installationId).toBe(state.installationId);expect(readSetupState(state.scope)?.selections).toEqual(state.selections);expect(readFileSync(mcpFile,'utf8')).toBe(manual);

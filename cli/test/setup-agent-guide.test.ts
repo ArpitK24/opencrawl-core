@@ -1,6 +1,8 @@
 import {test,expect} from 'bun:test';
 import {setupAgentGuide} from '../src/setup/agent-guide.ts';
-import {formatSetupCommand} from '../src/setup/invocation.ts';
+import {configDir} from '../src/session.ts';
+import {dirname} from 'node:path';
+import {profileSetupCommand,setupCommandForSelf,formatSetupCommand} from '../src/setup/invocation.ts';
 import {skillFiles} from '../src/skills.ts';
 import {setupPluginFiles,setupPluginIdentity} from '../src/setup/plugins.ts';
 
@@ -44,16 +46,16 @@ test('the condensed general skill points to native setup without embedding a che
 });
 
 test('every native plugin retains its client-bound setup guide beside the single-file general skill',()=>{
- const api='https://selected.example';
+ const api='https://selected.example',command=profileSetupCommand(setupCommandForSelf(),dirname(configDir()));
  for(const client of ['claude-code','codex','cursor','antigravity'] as const){
   const files=setupPluginFiles(client,api),guide=files['skills/opencrawl-setup/SKILL.md'];
-  expect(guide).toStartWith(setupAgentGuide(client,api,undefined,process.platform,client==='codex'?{name:setupPluginIdentity(api).name,url:api+'/mcp'}:undefined));
+  expect(guide).toStartWith(setupAgentGuide(client,api,command,process.platform,client==='codex'?{name:setupPluginIdentity(api).name,url:api+'/mcp'}:undefined));
   expect(guide).toContain(setupPluginIdentity(api).name);
   expect(Object.keys(files).filter(name=>name.startsWith('skills/opencrawl/'))).toEqual(['skills/opencrawl/SKILL.md']);
   expect(files['skills/opencrawl/SKILL.md']).toBe(skillFiles()['SKILL.md']);
-  expect(guide).toContain('`'+formatSetupCommand(['verify-installation','--client',client,'--json','--api',api])+'`');
+  expect(guide).toContain('`'+formatSetupCommand(['verify-installation','--client',client,'--json','--api',api],command)+'`');
   expect(guide).not.toMatch(/`opencrawl (setup|verify-installation)/);
-  const hookCommand='`'+formatSetupCommand(['setup','hooks','--json','--api',api])+'`';
+  const hookCommand='`'+formatSetupCommand(['setup','hooks','--json','--api',api],command)+'`';
   if(client==='codex')expect(guide).toContain(hookCommand);else expect(guide).not.toContain(hookCommand);
  }
 });
@@ -65,6 +67,6 @@ test('Codex names the exact deployment MCP connection without changing other har
  expect(codex).toContain('A manual `opencrawl` server or another deployment');
  expect(codex).toContain('do not use it for this installation');
  for(const client of ['claude-code','cursor','antigravity'] as const){
-  expect(setupPluginFiles(client,api)['skills/opencrawl-setup/SKILL.md']).toBe(setupAgentGuide(client,api)+`\nThis plugin is \`${identity.name}\`, bound to ${api}. Use this plugin's native MCP namespace for setup and search; preserve other OpenCrawl deployments.\n`);
+  expect(setupPluginFiles(client,api)['skills/opencrawl-setup/SKILL.md']).toBe(setupAgentGuide(client,api,profileSetupCommand(setupCommandForSelf(),dirname(configDir())))+`\nThis plugin is \`${identity.name}\`, bound to ${api}. Use this plugin's native MCP namespace for setup and search; preserve other OpenCrawl deployments.\n`);
  }
 });

@@ -1,3 +1,4 @@
+import {homedir} from 'node:os';
 import {posix,win32} from 'node:path';
 import {apiOrigin,CliError} from '../oauth.ts';
 import {GROK_BOT_HOOK_EVENTS} from '../capture/grok-bot.ts';
@@ -5,7 +6,7 @@ import {pluginSearchContextMatcher,searchContextMarker} from '../search-context.
 import type {PluginClient} from './plugins.ts';
 import {DEVIN_HOOK_EVENTS} from '../capture/devin.ts';
 
-export type PluginHookBinding={command:string[];configHome:string;api:string;pluginName:string};
+export type PluginHookBinding={command:string[];configHome:string;api:string;pluginName:string;env?:NodeJS.ProcessEnv};
 const json=(value:unknown)=>JSON.stringify(value,null,2)+'\n';
 const captureMarker='OpenCrawl session capture',startupMarker='OpenCrawl session startup';
 const ambientAuth=['OPENCRAWL_TOKEN','OPENCRAWL_SESSIONS_TOKEN','OPENCRAWL_AUTH','OPENCRAWL_API_URL'];
@@ -25,7 +26,7 @@ export function pluginHookFiles(client:PluginClient,binding:PluginHookBinding,pl
    ||!/^opencrawl(?:-[a-z0-9]+)?$/.test(pluginName)
    ||[...command,configHome,pluginName,api].some(value=>/[\x00-\x1f\x7f]/.test(value)||windows&&value.includes('"')))
   throw new CliError('INVALID_PLUGIN_BINDING','Plugin hooks need an absolute CLI and profile with a valid OpenCrawl plugin name.');
- const env:Record<string,string>={OPENCRAWL_CONFIG_HOME:configHome,OPENCRAWL_PLUGIN_API:api,OPENCRAWL_PLUGIN_NAME:pluginName,OPENCRAWL_PLUGIN_CLIENT:client};
+ const env:Record<string,string>={OPENCRAWL_CONFIG_HOME:configHome,...(client==='devin'?{}:{XDG_DATA_HOME:path.resolve(binding.env?.XDG_DATA_HOME??process.env.XDG_DATA_HOME??path.join(homedir(),'.local','share')),XDG_CACHE_HOME:path.resolve(binding.env?.XDG_CACHE_HOME??process.env.XDG_CACHE_HOME??path.join(homedir(),'.cache'))}),OPENCRAWL_PLUGIN_API:api,OPENCRAWL_PLUGIN_NAME:pluginName,OPENCRAWL_PLUGIN_CLIENT:client};
  const runner=windows?'scripts/opencrawl-hook.cmd':'scripts/opencrawl-hook.sh';
  const cloudGuard=client==='devin'?'[ -z "${OPENCRAWL_TOKEN-}${OPENCRAWL_SESSIONS_TOKEN-}" ] || exit 1\ncase "${OPENCRAWL_AUTH-devin-cloud}" in devin-cloud) ;; *) exit 1 ;; esac\n':'';
  const script=windows
