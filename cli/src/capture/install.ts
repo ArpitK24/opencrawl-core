@@ -1,3 +1,4 @@
+import {removeCursorSetupHooks} from '../setup/cursor-native-hooks.ts';
 import {readFileSync, existsSync, mkdirSync, writeFileSync, copyFileSync, unlinkSync, readdirSync, renameSync, statSync, chmodSync} from 'node:fs';
 import {join, dirname, resolve} from 'node:path';
 import {homedir} from 'node:os';
@@ -296,6 +297,7 @@ export async function uninstallCapture(home=homedir()) {
   for(const harness of ['cursor','grok-bot'] as const)if(config.harnesses?.includes(harness))modifyCursorFormatHooks(hookFile(config,harness),null,harness);
   if(config.harnesses?.includes('antigravity'))modifyAntigravityHooks(hookFile(config,'antigravity'),null);
   }
+  if(config.hookOwnership==='plugin')await removeCursorSetupHooks(config.api,config.roots.cursor);
   uninstallCaptureDaemon(home);
   // Stopping collection preserves queued data for an authenticated retry.
   atomicJson(join(captureDir(),'config.json'),{...config,disabled:true,backgroundStartup:false});

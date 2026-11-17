@@ -76,3 +76,17 @@ a usable supervisor retain fallback capture rather than reporting an installed
 daemon. `opencrawl collect status --json` reports the selected capture worker.
 
 [Website](https://getopencrawl.com) · [Documentation](https://github.com/getopencrawl/opencrawl-core#readme) · [Issues](https://github.com/getopencrawl/opencrawl-core/issues)
+
+### Cursor setup hooks
+
+CLI-managed Cursor setup installs deployment-specific hooks in the native user
+`hooks.json`. Its local plugin supplies MCP, skills and rules without duplicate
+executable plugin hooks. This does not require enabling Cursor's broad third-party
+imports. Setup preserves other deployments, unrelated hooks, and disabled hook
+choices. Recording still requires the saved forward-recording selection. Resume
+updates owned entries; deselection or `collect uninstall` removes only those
+entries and preserves queued data. Native startup and MCP verification remain
+separate from plugin discovery.
+
+Generated setup guides and handoffs use the installation's owned launcher, which
+binds its configuration, data and cache directories without copying credentials.

@@ -30,7 +30,7 @@ export async function proveOnlinePluginFallback(config:CaptureConfig,pluginRoots
           const records=harness==='claude-code'?[{type:'assistant',sessionId:session,uuid:session,message:{role:'assistant',content:[{type:'text',text}]}}]:[{type:'session_meta',payload:{id:session}},{type:'response_item',payload:{type:'message',role:'assistant',content:[{type:'output_text',text}]}}];
           writeFileSync(path,records.map(row=>JSON.stringify(row)).join('\n')+'\n');payload={session_id:session,hook_event_name:'Stop',transcript_path:path};
         }
-        const directory=pluginRoots.get(harness)!,hooks=JSON.parse(readFileSync(join(directory,'hooks/hooks.json'),'utf8')).hooks;
+        const directory=pluginRoots.get(harness)!,hooks=JSON.parse(readFileSync(harness==='cursor'?join(config.roots.cursor!,'hooks.json'):join(directory,'hooks/hooks.json'),'utf8')).hooks;
         const entries=hooks[harness==='cursor'?'afterAgentResponse':'Stop'].flatMap((row:any)=>row.hooks??[row]);
         const hook=entries.find((row:any)=>row.command.includes('collect hook'));assert(hook);if(harness!=='cursor')assert.equal(hook.async,true);
         const env={...process.env,CLAUDE_PLUGIN_ROOT:directory,PLUGIN_ROOT:directory,CURSOR_PLUGIN_ROOT:directory};

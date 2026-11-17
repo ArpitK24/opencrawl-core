@@ -9,7 +9,8 @@ import {version} from '../distribution.ts';
 import {setupAgentGuide} from './agent-guide.ts';
 import {skillFiles} from '../skills.ts';
 import {retrievalInstruction} from '../retrieval-instruction.ts';
-import {setupCommandForSelf} from './invocation.ts';
+import {setupCommandForSelf,profileSetupCommand} from './invocation.ts';
+import {reconcileCursorNativeHooks} from './cursor-native-hooks.ts';
 import {pluginHookFiles} from './plugin-hooks.ts';
 import {pluginActivationMatches,verifyPluginBundle} from './plugin-context.ts';
 
@@ -40,15 +41,15 @@ export function setupPluginIdentity(api:string) {
   const origin=apiOrigin(api),key=hash(origin).slice(0,12);
   return {api:origin,key,name:'opencrawl-'+key,marketplace:'opencrawl-cli-'+key};
 }
-type BundleOptions={command?:string[];configHome?:string;recording?:boolean};
+type BundleOptions={command?:string[];configHome?:string;env?:NodeJS.ProcessEnv;recording?:boolean};
 /** Bundled in the executable: native plugins own hooks, MCP and agent guidance. */
 export function setupPluginFiles(client:PluginClient,api:string,options:BundleOptions={}):Record<string,string> {
   const identity=setupPluginIdentity(api),origin=identity.api,url=origin+'/mcp';
   const command=options.command??setupCommandForSelf(),configHome=(client==='devin'?posix: {resolve}).resolve(options.configHome??process.env.OPENCRAWL_CONFIG_HOME??process.env.XDG_CONFIG_HOME??join(homedir(),'.config'));
   const base={name:identity.name,version,description:'Search knowledge and finish OpenCrawl setup at '+origin+'.',author:{name:'OpenCrawl'},license:'MIT'};
-  const guideCommand=client==='devin'?['/usr/bin/env','OPENCRAWL_AUTH=devin-cloud','OPENCRAWL_CONFIG_HOME='+configHome,'OPENCRAWL_API_URL='+origin,'PATH=/usr/local/bin:/usr/bin:/bin',...command]:command;
+  const guideCommand=client==='devin'?['/usr/bin/env','OPENCRAWL_AUTH=devin-cloud','OPENCRAWL_CONFIG_HOME='+configHome,'OPENCRAWL_API_URL='+origin,'PATH=/usr/local/bin:/usr/bin:/bin',...command]:profileSetupCommand(command,configHome,options.env);
   const guide=setupAgentGuide(client,origin,guideCommand,client==='devin'?'linux':process.platform,['codex','devin'].includes(client)?{name:identity.name,url}:undefined)+`\nThis plugin is \`${identity.name}\`, bound to ${origin}. Use this plugin's native MCP namespace for setup and search; preserve other OpenCrawl deployments.\n`;
-  const files:Record<string,string>={...Object.fromEntries(Object.entries(skillFiles()).map(([name,content])=>['skills/opencrawl/'+name,content])),'skills/opencrawl-setup/SKILL.md':guide,'README.md':'# OpenCrawl\n\nContinue setup at '+origin+' with this plugin. The CLI owns saved choices and history workers; this native plugin delivers startup and capture hooks.\n'};
+  const files:Record<string,string>={...Object.fromEntries(Object.entries(skillFiles()).map(([name,content])=>['skills/opencrawl/'+name,content])),'skills/opencrawl-setup/SKILL.md':guide,'README.md':'# OpenCrawl\n\nContinue setup at '+origin+' with this plugin. The CLI owns saved choices and history workers; native startup and capture use this deployment’s owned hooks.\n'};
   if(client==='codex') {
     // Codex 0.166 discovers both MCP and hooks through its supported compatibility layout.
     // A portable root without its schema silently loads skills but drops MCP.
@@ -91,7 +92,14 @@ unless requested.
     files['plugin.json']=json({...base,$schema:'https://antigravity.google/schemas/v1/plugin.json',displayName:'OpenCrawl ('+new URL(origin).host+')',suggestedPrompts:['Continue my OpenCrawl setup at '+origin+'.']});
     files['mcp_config.json']=json({mcpServers:{opencrawl:{url}}});
   }
-  return {...files,...pluginHookFiles(client,{command,configHome,api:origin,pluginName:identity.name},client==='devin'?'linux':process.platform)};
+  const hookFiles=pluginHookFiles(client,{command,configHome,api:origin,pluginName:identity.name,env:options.env},client==='devin'?'linux':process.platform);
+  if(client==='cursor'){
+    hookFiles['scripts/cursor-native-hooks.json']=hookFiles['hooks/hooks.json']!;delete hookFiles['hooks/hooks.json'];
+    // Old in-memory plugin callbacks must not execute the new user-hook runner.
+    const old=process.platform==='win32'?'scripts/opencrawl-hook.cmd':'scripts/opencrawl-hook.sh';
+    hookFiles[old.replace('opencrawl-hook','opencrawl-cursor-native')]=hookFiles[old]!;delete hookFiles[old];
+  }
+  return {...files,...hookFiles};
 }
 
 /** Export only public configuration. Every fresh Cloud VM binds its own owner
@@ -199,12 +207,13 @@ export async function installSetupPlugins(api:string,selected:string[],options:P
   const configHome=resolve(env.OPENCRAWL_CONFIG_HOME||env.XDG_CONFIG_HOME||join(home,'.config')),root=join(configHome,'opencrawl','setup-plugins');
   const command=options.command??setupCommandForSelf(),results:PluginResult[]=[],humanTasks:PluginHumanTask[]=[];
   const perform=async()=>{
+    profileSetupCommand(command,configHome,env,true);
     for(const client of [...new Set(selected)] as PluginClient[]) {
       if(client==='devin'){
         const result=await (await import('./devin-plugin.ts')).adoptDevinPlugin(origin,{configHome,env});
         results.push(result);continue;
       }
-      const bundle=setupPluginFiles(client,origin,{command,configHome});
+      const bundle=setupPluginFiles(client,origin,{command,configHome,env});
       const marketRoot=join(root,client,identity.key),pathRoot=client==='cursor'?resolve(env.CURSOR_CONFIG_DIR||join(home,'.cursor')):configHome;
       const directory=client==='cursor'?join(pathRoot,'plugins','local',identity.name):join(marketRoot,identity.name);
       const receipt=join(marketRoot,'installed.json'),digest=hash(json(bundle)),saved=read(receipt);
@@ -232,11 +241,13 @@ export async function installSetupPlugins(api:string,selected:string[],options:P
           if(native)loadedRoot=nativeRoot(native,client,cachePath);
         }
         const unchanged=bundleMatches(directory,bundle,digest,client,origin,identity.name,configHome);
+        if(client==='cursor')await reconcileCursorNativeHooks(pathRoot,directory,join(marketRoot,'native-hooks.json'),bundle['scripts/cursor-native-hooks.json'],true);
         if(!unchanged)writeBundle(directory,bundle,client,origin,identity.name,configHome,pathRoot);
         if(client==='cursor') {
           // Supported persistent local discovery; policy can still prevent loading.
-          // Activation is observed from this bundle's native hook, not inferred
+          // Activation is observed from this deployment's native user hook, not inferred
           // from files or an unrelated marketplace plugin with another name.
+          await reconcileCursorNativeHooks(pathRoot,directory,join(marketRoot,'native-hooks.json'),bundle['scripts/cursor-native-hooks.json']);
           loadedRoot=directory;
         } else {
           if(!binary){results.push({client,status:'pending',message:labels[client]+"'s native plugin installer is unavailable.",directory});humanTasks.push({id:client+':plugin_install',kind:'plugin_install',client,title:'Install '+labels[client]+' plugin support',instruction:'Install or update the native client CLI, then resume setup. Preserve existing plugins and authentication.'});continue;}
