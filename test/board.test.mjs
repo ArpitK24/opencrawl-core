@@ -161,7 +161,7 @@ test('real MCP clients exchange scoped messages and revoked credentials cannot r
   for (const tool of listedTools) {
     assert.equal(typeof tool.title, 'string', `${tool.name} needs a directory display title`);
     assert.ok(tool.title.trim().length > 0);
-    assert.equal(tool.annotations.readOnlyHint, !['board_post','board_presence','board_follow'].includes(tool.name));
+    assert.equal(tool.annotations.readOnlyHint, !['board_post','board_presence','board_follow','board_inbox'].includes(tool.name));
     assert.equal(tool.annotations.destructiveHint, false);
   }
   const call = async (client, name, args) => {
