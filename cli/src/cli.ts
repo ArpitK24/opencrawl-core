@@ -255,6 +255,8 @@ export async function loginIdentity(api:string,options:{organizationId?:string;n
 const hasLocalFlag=(args:string[])=>args.some(arg=>arg==='--local'||arg.startsWith('--local='));
 
 export async function main(args = process.argv.slice(2)) {
+  if(args[0]==='privacy-hook')return (await import('./incognito.ts')).privacyHook(args.slice(1));
+  if(args[0]==='incognito')return (await import('./incognito.ts')).privacyCommand(args.slice(1));
   if(args[0]==='plugin-hook'){try{return await main((await import('./setup/plugin-entrypoint.ts')).pluginInvocation(args.slice(1)));}catch{return 0;}}
   if(args[0]==='workload'){applyDaemonEnvironment(args);return (await import('./workload-enrollment.ts')).workloadCommand(args.slice(1));}
   if(args[0]==='mcp'){applyDaemonEnvironment(args);return (await import('./mcp.ts')).mcpCommand(args.slice(1));}

@@ -8,6 +8,7 @@ import type {PackageRelease,ArchivePin,PluginRelease} from './plugin-release.ts'
 
 const invalid=()=>new CliError('PLUGIN_PACKAGE_INVALID','The pinned plugin archive could not be verified. Existing plugins were preserved.');
 const manifests:Partial<Record<PackageRelease['harness'],string>>={'claude-code':'.claude-plugin/plugin.json',codex:'.codex-plugin/plugin.json',cursor:'.cursor-plugin/plugin.json',antigravity:'.antigravity-plugin/plugin.json'};
+const privateSkills=['oc-incognito','oc-private','opencrawl-private','oc-readonly'].map(name=>'skills/'+name+'/SKILL.md');
 const baseFiles=['.mcp.json','mcp.json','LICENSE','README.md','capabilities.json','skills/opencrawl/SKILL.md'];
 const runtimeFiles=['auth.mjs','capture.mjs','io.mjs','lifecycle.mjs','main.mjs','redact.mjs','THIRD_PARTY_NOTICES.txt'].map(name=>'runtime/'+name);
 const maxArchive=160*1024*1024;
@@ -16,12 +17,14 @@ export function validateArtifact(value:unknown,entry:PackageRelease,platform:str
  const data=value as {schemaVersion?:unknown;harness?:unknown;name?:unknown;version?:unknown;platform?:unknown;filename?:unknown;sha256?:unknown;executable?:unknown;source?:unknown};
  const executable=platform.startsWith('win32-')?'bin/opencrawl-hook.exe':'bin/opencrawl-hook';
  const manifest=manifests[entry.harness];
+ const incognito=Array.isArray(data?.source)&&data.source.includes('runtime/privacy.mjs');
+ const sourceFiles=incognito?[...runtimeFiles,'runtime/privacy.mjs']:runtimeFiles;
  if(!data||!manifest||!['darwin-arm64','darwin-x64','linux-arm64','linux-x64','win32-x64'].includes(platform)||
   data.schemaVersion!==1||data.harness!==entry.harness||data.name!==entry.name||data.version!==entry.version||data.platform!==platform||
   data.filename!==`${entry.name}-${entry.version}-${platform}.zip`||data.sha256!==pin.sha256||data.executable!==executable||
-  !Array.isArray(data.source)||JSON.stringify([...data.source].sort())!==JSON.stringify([...runtimeFiles].sort()))throw invalid();
+  !Array.isArray(data.source)||JSON.stringify([...data.source].sort())!==JSON.stringify([...sourceFiles].sort()))throw invalid();
  const nativeFiles=entry.harness==='antigravity'?['hooks.json','mcp_config.json']:['hooks/hooks.json'];
- return {executable,manifest,allowed:new Set([manifest,...baseFiles,...nativeFiles,...runtimeFiles,executable])};
+ return {executable,manifest,allowed:new Set([manifest,...baseFiles,...nativeFiles,...sourceFiles,...(incognito?privateSkills:[]),...(incognito&&entry.harness==='codex'?privateSkills.map(path=>path.replace('SKILL.md','agents/openai.yaml')):[]),executable])};
 }
 
 /** Read regular allowlisted files into memory; never extract paths or run ZIP content. */

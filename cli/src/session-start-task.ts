@@ -135,6 +135,7 @@ function validateTask(value:unknown):asserts value is SessionStartTask {
 export async function processSessionStartTask(config:CaptureConfig,task:unknown,fetcher=fetch):Promise<void> {
   validateTask(task);
   const binding:Binding={api:task.api,installationId:task.installationId,owner:{...task.owner},harness:task.harness,sessionId:task.sessionId};
+  if((await import('./incognito-state.ts')).sessionPrivate(config,binding))return;
   const guard=()=>assertCurrent(binding,config);guard();
   const result:unknown=await boardRequest(task.api,'bootstrap',{session:task.sessionId,harness:task.harness,workspace:task.owner.tenantId},fetcher,
     {signal:AbortSignal.timeout(10_000),expectedOwner:task.owner,validateBinding:guard});

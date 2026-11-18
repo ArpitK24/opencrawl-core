@@ -667,7 +667,7 @@ export async function captureHook(harness:Harness,event:any) {
     if(config.authPending)return;
     if(!config.harnesses?.includes(harness))return;
     const session=harness==='devin'?devinSession(event):harness==='cursor'?cursorSession(event):grokBotSession(event,at);
-    if(captureExcluded(config,{sessionId:session.sessionId,cwd:session.cwd??undefined}))return;
+    if(captureExcluded(config,{harness,sessionId:session.sessionId,cwd:session.cwd??undefined}))return;
     // Hook payloads carry no time or order. Microseconds since the epoch keep
     // events from separate hook processes in the order they were recorded.
     let sequence=Math.round((performance.timeOrigin+performance.now())*1000);
@@ -683,13 +683,13 @@ export async function captureHook(harness:Harness,event:any) {
     if(!event||typeof event!=='object'||Array.isArray(event))throw new CliError('CAPTURE_EVENT_INVALID','Hook payload is not an object');
     const {sessionId,cwd}=antigravityHookFields(event);
     if(typeof sessionId!=='string' || !/^[\w.:-]{1,200}$/.test(sessionId))throw new CliError('CAPTURE_SESSION_UNKNOWN','Hook missing session ID');
-    if(captureExcluded(config,{sessionId,cwd}))return;
+    if(captureExcluded(config,{harness,sessionId,cwd}))return;
     atomicJson(join(captureDir(),'notices',id+'.json'),{id,at,harness,event});
     return;
   }
   const sessionId=event?.session_id;
   if(typeof sessionId!=='string' || !/^[\w.:-]{1,200}$/.test(sessionId))throw new CliError('CAPTURE_SESSION_UNKNOWN','Hook missing session ID');
-  if(captureExcluded(config,{sessionId,cwd:event.cwd}))return;
+  if(captureExcluded(config,{harness,sessionId,cwd:event.cwd}))return;
   atomicJson(join(captureDir(),'notices',id+'.json'),{id,at,harness,event});
   // Synchronous hooks (Grok Bot, Cursor, Antigravity) give up on a held lock rather than queue behind it.
   },harness==='grok-bot'||harness==='cursor'||harness==='antigravity'||harness==='devin'?2000:Infinity);
@@ -937,6 +937,7 @@ async function reconcileSources(config:CaptureConfig,seen:Map<string,string>,unt
     if(Date.now()>=until)break;
     visited=name;
     const sourceFile=join(captureDir(),'sources',name),source=read(sourceFile);
+    if(captureExcluded(config,source))continue;
     const rawPath=source.path || findTranscript(config,source.harness,source.sessionId);
     const path=source.harness==='antigravity'&&rawPath?resolveAntigravityTranscript(rawPath):rawPath;
     if(!path || !existsSync(path))continue;
@@ -1070,6 +1071,7 @@ async function flushDaemonQueue({retryRejected=false,paused=false}:{retryRejecte
 /** Explicit flush waits for capture and upload ownership, then fences current sources. */
 export async function flushCaptureWork({retryRejected=false}: {retryRejected?:boolean}={}) {
   const config=readCaptureConfig();if(!config)throw new CliError('CAPTURE_NOT_INSTALLED','Run opencrawl collect install');
+  await (await import('../incognito.ts')).retryPrivacy(config);
   if(captureDaemonEnabled(config))return flushDaemonQueue({retryRejected});
   if(!config.disabled){if(config.authPending)await refreshCaptureIdentity(config);await drainCaptureNotices(config);await reconcileSources(config,new Map());}
   return flushCaptures({retryRejected});

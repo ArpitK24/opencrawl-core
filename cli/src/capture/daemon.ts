@@ -5,6 +5,7 @@ import {join,dirname,basename} from 'node:path';
 import {setImmediate as yieldToOwner} from 'node:timers/promises';
 import {atomicJson,syncDirectory,withSessionLock} from '../session.ts';
 import {captureDir,readCaptureConfig,captureTranscript,flushCaptures,refreshCaptureIdentity,recordError,captureDaemonEnabled,captureDaemonHarnesses,captureCursorNotice,spoolDaemonEvent,resolveAntigravityTranscript,type CaptureConfig} from './runtime.ts';
+import {privacyRoot,sessionPrivate,pendingPrivacy} from '../incognito-state.ts';
 import {captureExcluded} from './policy.ts';
 import {hash,readsTranscript,HARNESSES} from './parse.ts';
 import {recordNativeDaemonHook,daemonRegistration,daemonSubagent,daemonPathAllowed,sameDaemonBinding,daemonSession,type DaemonRegistration,type DaemonNotice} from './daemon-handoff.ts';
@@ -81,7 +82,7 @@ export async function runCaptureDaemon({signal,flushMs=10_000,reconcileMs=30_000
     const persist=(registration:Registration)=>atomicJson(join(daemonDir(),'sessions',key(registration)+'.json'),registration);
     // One damaged local record must not prevent healthy sessions from capturing.
     // Preserve its bytes for inspection; explicit purge removes held records too.
-    const hold=(file:string,error:unknown)=>{recordError(error);renameSync(file,file+'.held');syncDirectory(dirname(file));};
+    const hold=(file:string,error:unknown)=>{try{renameSync(file,file+'.held');}catch(e){if((e as NodeJS.ErrnoException).code==='ENOENT')return;throw e;}recordError(error);syncDirectory(dirname(file));};
     let inboxAfter='';
     const blockedNotices=new Map<string,{name:string,attempt:number,dueAt:number}>(),noticeSessions=new Map<string,string>();
     const inbox=async()=>{
@@ -116,7 +117,8 @@ export async function runCaptureDaemon({signal,flushMs=10_000,reconcileMs=30_000
             sessionKey=harness+':'+session.sessionId;
             noticeSessions.set(name,sessionKey);
             if(deferred(sessionKey,name))continue;
-            if(!config.harnesses?.includes(harness)||captureExcluded(config,{sessionId:session.sessionId,cwd:session.cwd??undefined})){blockedNotices.delete(sessionKey);noticeSessions.delete(name);finished.add(name);hold(file,Error('Forward capture no longer selected'));continue;}
+            if(sessionPrivate(config,{harness,sessionId:session.sessionId})){remove(file);finished.add(name);continue;}
+            if(!config.harnesses?.includes(harness)||captureExcluded(config,{harness,sessionId:session.sessionId,cwd:session.cwd??undefined})){blockedNotices.delete(sessionKey);noticeSessions.delete(name);finished.add(name);hold(file,Error('Forward capture no longer selected'));continue;}
             registration=daemonRegistration(config,notice);
           }else{
             const legacy=notice as LegacyNotice,{event,...fields}=legacy;
@@ -166,6 +168,9 @@ export async function runCaptureDaemon({signal,flushMs=10_000,reconcileMs=30_000
       const pending=join(captureDir(),'notices');mkdirSync(pending,{recursive:true,mode:0o700});
       const watcher=watch(pending,()=>{inboxDirty=true;inboxRetryAt=0;wakeCapture();});watcher.on('error',()=>{watcher.close();});rootWatchers.push(watcher);
     }
+    const pendingDir=join(privacyRoot(initial),'pending');
+    mkdirSync(pendingDir,{recursive:true,mode:0o700});
+    const privacyWatch=watch(pendingDir,()=>wakeUpload());privacyWatch.on('error',stop);rootWatchers.push(privacyWatch);
     const configWatch=watch(captureDir(),(_event,name)=>{if(!name||name.toString()==='config.json'){if(!current())stop();else{wakeCapture();wakeUpload();startupDirty=true;wakeStartup();}}});
     configWatch.on('error',stop);rootWatchers.push(configWatch);
     const statusFile=join(daemonDir(),'status.json');
@@ -236,14 +241,22 @@ export async function runCaptureDaemon({signal,flushMs=10_000,reconcileMs=30_000
     };
     const queued=()=>names(join(captureDir(),'queue')).some(name=>!existsSync(join(captureDir(),'rejected',name)));
     const upload=async()=>{
-      let dueAt=0;
+      let dueAt=0,nextPrivacy=0;
       while(!stopped){
         const config=current();if(!config){stop();break;}
-        if(config.disabled){await wait('upload',Infinity);continue;}
+        let privacyWait=Infinity;
+        if(pendingPrivacy(config).length){
+          if(Date.now()>=nextPrivacy){
+            try{await (await import('../incognito.ts')).retryPrivacy(config);}catch(error){recordError(error);}
+            nextPrivacy=Date.now()+60_000;
+          }
+          privacyWait=Math.max(1,nextPrivacy-Date.now());
+        }
+        if(config.disabled){await wait('upload',privacyWait);continue;}
         if(queueDirty){queueDirty=false;if(queued()&&!dueAt){const since=pendingLiveSince(captureDir());dueAt=since===undefined?Date.now():Math.min(Date.now()+flushMs,since+flushMs);}}
-        if(!dueAt){await wait('upload',Infinity);continue;}
+        if(!dueAt){await wait('upload',privacyWait);continue;}
         const readyAt=Math.max(dueAt,retry.dueAt);
-        if(Date.now()<readyAt){await wait('upload',readyAt-Date.now());continue;}
+        if(Date.now()<readyAt){await wait('upload',Math.min(privacyWait,readyAt-Date.now()));continue;}
         try{
           const result=await flushCaptures({wait:false,concurrency:1,maxBatches:8});counters.uploads+=result.uploaded;
           const pending=queued();

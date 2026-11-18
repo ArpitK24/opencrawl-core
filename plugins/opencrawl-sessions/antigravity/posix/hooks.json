@@ -59,6 +59,11 @@
     "PreInvocation": [
       {
         "type": "command",
+        "command": "/bin/sh ./scripts/opencrawl-hook.sh privacy",
+        "timeout": 7
+      },
+      {
+        "type": "command",
         "command": "/bin/sh ./scripts/opencrawl-hook.sh suggest",
         "timeout": 3
       }

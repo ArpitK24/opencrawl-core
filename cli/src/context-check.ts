@@ -59,7 +59,7 @@ export function formatCheck(value:unknown):string|undefined {
 function eligible(settings:CheckSettings,harness:CheckHarness,input:CheckInput,projects:string[]){
   assertCheckSettings(settings,harness);
   const config=readCaptureConfig();if(!config)throw unavailable();
-  if((projects.length?projects:[undefined]).some(cwd=>captureExcluded(config,{sessionId:input.currentSession.sessionId,cwd})))throw unavailable();
+  if((projects.length?projects:[undefined]).some(cwd=>captureExcluded(config,{harness,sessionId:input.currentSession.sessionId,cwd})))throw unavailable();
 }
 function taskInput(task:CheckTask,harness:CheckHarness):CheckInput {
   if(task.input.length>12000||task.projects.length>65536)throw unavailable();
@@ -134,8 +134,9 @@ export async function contextCheckCommand(args:string[],input:Readable=process.s
       try{const result=await execute(store,task,checkPlugin);store.set(task,result.text?'ready':'delivered');}catch(error){dropped(task,error);}return 0;
     }
     const raw=await readSearchContextEvent(input,1000,128*1024);checkPlugin();
+    if((await import('./incognito.ts')).privateHookSession(harness,raw,config!))return 0;
     const event=checkEvent(harness,raw,config!);if(!event)return 0;
-    if((event.projects.length?event.projects:[undefined]).some(cwd=>captureExcluded(config!,{sessionId:event.sessionId,cwd}))){store.invalidate(event);return 0;}
+    if((event.projects.length?event.projects:[undefined]).some(cwd=>captureExcluded(config!,{harness,sessionId:event.sessionId,cwd}))){store.invalidate(event);return 0;}
     assertCheckSettings(settings,harness);recordPluginActivation(plugin,raw);
     if(event.delivery){
       const task=store.find(event);

@@ -1,3 +1,4 @@
+import {privateHookSession} from '../incognito.ts';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {inspectCodexHooks} from './codex-hooks.ts';
@@ -49,6 +50,7 @@ async function cursorFormatHook(harness:'cursor'|'grok-bot',plugin:PluginHookCon
   },5000);
   try {
     const event=await hookInput(true);
+    privateHookSession(harness,event);
     answer(event);
     recordPluginActivation(plugin,event);
     if(!plugin)await refreshManagedSkills(api,{hook:true});
@@ -82,6 +84,7 @@ async function antigravityHook(api:string,eventFlag?:string,plugin:PluginHookCon
   },5000);
   try {
     const event=await hookInput(true);
+    privateHookSession('antigravity',event);
     recordPluginActivation(plugin,event);
     const eventName=typeof event?.hookEventName==='string'?event.hookEventName:eventFlag;
     const recording=!plugin||pluginRecordingEnabled(plugin);
@@ -154,7 +157,7 @@ export async function collectCommand(action:string,api:string,values:any) {
           if(harness==='antigravity'&&!event.hookEventName&&values.event)event.hookEventName=values.event;
           if(!((harness==='claude-code'||harness==='codex')&&event?.cursor_version)){
             recordPluginActivation(plugin,event);
-            if(!plugin||pluginRecordingEnabled(plugin)){
+            if(!privateHookSession(harness!,event)&&(!plugin||pluginRecordingEnabled(plugin))){
               const recorded=recordNativeDaemonHook(harness as Harness,event);
               // Only a verified, still-selected Devin plugin may request its
               // existing transient host worker after resume. Other hooks stay local.
@@ -182,7 +185,7 @@ export async function collectCommand(action:string,api:string,values:any) {
         // Cursor-format runtimes, Grok Bot included, also load Claude Code hook
         // files and wait on every hook. That is not a Claude Code or Codex
         // session: record nothing and never start the uploader there.
-        if(typeof event?.cursor_version==='string')return null;
+        if(typeof event?.cursor_version==='string'||privateHookSession(harness!,event))return null;
         recordPluginActivation(plugin,event);
         if(plugin&&!pluginRecordingEnabled(plugin))return null;
         if(!plugin)await refreshManagedSkills(api,{hook:true});

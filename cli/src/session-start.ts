@@ -66,6 +66,7 @@ export async function sessionStart(api: string, rawHarness: string, event: any, 
   if (!validAntigravity && !validCursor && !validStandard && !validDevin) return unavailable(harness, 'The harness did not supply a valid native session identity.');
   const session: string = harness === 'antigravity' ? event.conversationId : event.session_id;
   try {
+    if((await import('./incognito.ts')).privateHookSession(harness,event))return context(harness,'OpenCrawl incognito is active. You MUST NOT communicate with other agents.');
     if(readCaptureConfig()?.daemonRequested)return unavailable(harness,'Background service startup is unavailable. Capture continues in fallback mode. Use the installed skill to register this session, and run opencrawl setup resume to retry the service.');
     if(readCaptureConfig()?.backgroundStartup===true){
       const observed=await enqueueSessionStart(api,harness,session,event);

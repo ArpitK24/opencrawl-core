@@ -148,7 +148,9 @@ export async function searchContextCommand(args: string[], input: Readable = pro
     const {DEFAULT_API_ORIGIN}=await import('./oauth.ts');
     const {readCaptureConfig}=await import('./capture/runtime.ts');
     const api=parsed.values.api??process.env.OPENCRAWL_PLUGIN_API??process.env.OPENCRAWL_API_URL??readCaptureConfig()?.api??DEFAULT_API_ORIGIN;
-    const result = searchContext(harness,event,pluginName,supportsAgentBoard(api),api);
+    const {privateHookSession,denyBoardSend}=await import('./incognito.ts');
+    const denied=privateHookSession(harness,event)?denyBoardSend(harness,event):undefined;
+    const result = denied??searchContext(harness,event,pluginName,supportsAgentBoard(api),api);
     if (result) output.write(JSON.stringify(result) + '\n');
   } catch { /* Unknown identity or malformed native input must never guess. */ }
   return 0;

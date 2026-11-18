@@ -7,7 +7,7 @@ import {sessionWriteBarrier} from './write-barrier.mjs';
 import {createSessionDeletionRequests} from './deletion-requests.mjs';
 import type {RealmOptions, QueryBody, IndexHit} from '../search/types.mjs';
 import {createRealmResolver, realmField} from '../search/realm.mjs';
-import {createSessionIngest, sessionScope, digest} from './ingest.mjs';
+import {createSessionIngest, sessionScope, digest, MAX_ATTACHMENT_BYTES} from './ingest.mjs';
 import {sourceBatchIdentity} from './event-identity.mjs';
 import {createControls, visibleTo} from './controls.mjs';
 import type {ResourceControl} from './controls.mjs';
@@ -294,11 +294,38 @@ export function createSessionLibrary({store, prefix, eventIdentities, purgeCopie
     await deletionControl(principal, key);
     return {objects: purgeCopies ? await purgeCopies(principal, key, store) : 0};
   }
+  // Legacy captures could share an owner-wide blob. New writes use session
+  // keys, so no new references can appear while this inventory is being read.
+  async function retainedLegacyAttachments(principal: Principal, deleting: SessionKey) {
+    const ownerRoot = `${prefix}/${sessionScope(principal)}/`, retained = new Set<string>();
+    for (const harness of SESSION_HARNESSES) {
+      const root = ownerRoot + harness + '/';
+      let continuationToken: string | null = null;
+      do {
+        const page = await store.listPage(root, {continuationToken, maxKeys: 500});
+        for (const path of page.keys) {
+          const match = /^([a-f0-9]{64})\/([a-f0-9]{64})\/[a-f0-9]{64}\.json\.gz$/.exec(path.slice(root.length));
+          if (!match || harness === deleting.harness && match[2] === digest(deleting.sessionId)) continue;
+          const bytes = await store.get(path, {maxBytes: 17 * 1024 * 1024});
+          if (!bytes) continue; // A concurrent deletion removed the manifest.
+          const batch = parseJson<SessionBatch>(gunzipSync(bytes, {maxOutputLength: 17 * 1024 * 1024}));
+          if (batch.owner?.tenantId !== principal.tenantId || batch.owner?.userId !== principal.userId || batch.harness !== harness ||
+              digest(batch.sessionId) !== match[2] || digest(batch.installationId) !== match[1]) throw new Error('Legacy attachment inventory scope mismatch');
+          const legacy = batch.attachments.filter(a => a.status === 'captured' && a.sha256 && (!a.objectKey || a.objectKey === ownerRoot + 'attachments/' + a.sha256));
+          if (!legacy.length || (await controls.read(principal, 'sessions', harness, batch.sessionId))?.deletedAt) continue;
+          for (const attachment of legacy) retained.add(attachment.sha256!);
+        }
+        continuationToken = page.nextToken;
+      } while (continuationToken);
+    }
+    return retained;
+  }
   async function finishDeletion(principal: Principal, input: {harness?: unknown; sessionId?: unknown}) {
     const key = checkKey({userId: principal.userId, harness: input.harness as string, sessionId: input.sessionId as string});
     const control = await deletionControl(principal, key);
     if (!store.purgePrefix) throw new Error('Permanent version deletion is unavailable');
     let objects = 0, documents = 0;
+    let retained: Promise<Set<string>> | undefined;
     const root = `${prefix}/${sessionScope(principal)}/${key.harness}/`, sessionHash = digest(key.sessionId);
     objects += await store.purgePrefix(root, {select: object => new RegExp(`^[a-f0-9]{64}/${sessionHash}/`).test(object.slice(root.length)), beforeDelete: async (object, read) => {
       if (!object.endsWith('.json.gz')) return;
@@ -308,7 +335,10 @@ export function createSessionLibrary({store, prefix, eventIdentities, purgeCopie
       // before removing the manifest needed to find them on a retry.
       for (const attachment of batch.attachments ?? []) if (attachment.status === 'captured' && /^[a-f0-9]{64}$/.test(attachment.sha256 ?? '')) {
         const blob = `${prefix}/${sessionScope(principal)}/attachments/${attachment.sha256}`;
-        objects += await store.purgePrefix!(blob, {select: candidate => candidate === blob});
+        // Most modern captures never had an owner-wide object.
+        if (attachment.objectKey && attachment.objectKey !== blob && !(store.has ? await store.has(blob) : await store.get(blob, {maxBytes: MAX_ATTACHMENT_BYTES}))) continue;
+        retained ??= retainedLegacyAttachments(principal, key);
+        if (!(await retained).has(attachment.sha256!)) objects += await store.purgePrefix!(blob, {select: candidate => candidate === blob});
       }
     }});
     // Include unrefreshed writes completed before the fence closed.
@@ -495,12 +525,12 @@ export function createSessionLibrary({store, prefix, eventIdentities, purgeCopie
     },
 
     /** Product deletion only records intent and revokes access. Temporal owns erasure. */
-    async requestDeletion(principal: Principal, input: {harness?: unknown; sessionId?: unknown}) {
+    async requestDeletion(principal: Principal, input: {harness?: unknown; sessionId?: unknown}, {beforeFirstCapture=false}={}) {
       const key = checkKey({userId: principal.userId, harness: input.harness as string, sessionId: input.sessionId as string});
       reader(principal);
       if (!scheduleDeletion) fail(503, 'Session deletion worker is not configured');
       const previous = await deletionStorage(() => controls.read(principal, 'sessions', key.harness, key.sessionId));
-      if (!previous?.deletedAt && !await deletionStorage(() => deletionRequests.readFor(principal, key)) && !await deletionStorage(() => owned(principal, key))) fail(404, 'Only the person who captured a session can delete it');
+      if (!beforeFirstCapture && !previous?.deletedAt && !await deletionStorage(() => deletionRequests.readFor(principal, key)) && !await deletionStorage(() => owned(principal, key))) fail(404, 'Only the person who captured a session can delete it');
       if (previous?.deletion?.state === 'complete') return {...key, deleted: true, pending: false};
       // Intent precedes revocation: a crash at either boundary is recoverable by
       // the scheduled Temporal sweep, even if the direct start was never sent.
