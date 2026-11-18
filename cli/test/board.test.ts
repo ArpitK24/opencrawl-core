@@ -128,10 +128,21 @@ test('wait exits on a nonempty delivery; revoked access stops immediately rather
 test('bounded monitor notices never truncate the receipt and fetch binds the exact pending batch',async()=>{
   const emitted:any[]=[];
   const receipt='d'.repeat(64);
-  await watchBoard({acknowledge:async()=>{},session:'s'.repeat(200),once:true,notifyOnly:true,emit:v=>emitted.push(v),warn:()=>{},request:async()=>({batch:{receipt,messages:Array.from({length:8},(_,id)=>({id,text:'x'.repeat(512)}))}})});
+  await watchBoard({acknowledge:async()=>{},session:'s'.repeat(200),once:true,notice:'ids',emit:v=>emitted.push(v),warn:()=>{},request:async()=>({batch:{receipt,messages:Array.from({length:8},(_,id)=>({id,text:'x'.repeat(512)}))}})});
   expect(emitted).toEqual([{type:'board.notice',ids:[0,1,2,3,4,5,6,7]}]);
   expect(JSON.stringify({schemaVersion:1,data:emitted[0]}).length).toBeLessThan(200);
   expect(boardInput('inbox',{session:'s',receipt})).toEqual({session:'s',receipt});
+});
+
+test('a full notice on a legacy server includes the body and leaves its receipt for the inbox', async () => {
+  const notices: unknown[] = [];
+  const message = {id: 7, name: 'sender', topic: 'review', text: 'Review complete\n🧪'};
+  await watchBoard({session: 'old', once: true, notice: 'full',
+    request: async () => ({batch: {receipt: 'f'.repeat(64), messages: [message]}}),
+    emit: value => notices.push(value), warn: () => {},
+    checkpoint: () => {throw Error('Premature checkpoint');},
+    acknowledge: async () => {throw Error('Premature receipt');}});
+  expect(notices).toEqual([{type: 'board.notice', ids: [7], messages: compactDelivery([message]), more: false, cursor: null}]);
 });
 
 test('channels and root-thread replies use canonical fields, with explicit legacy aliases',()=>{
@@ -151,7 +162,7 @@ test('idle shutdown measures 30 minutes from the last new notification or native
  const timeout=30*60_000;
  let now=0,last=0,notifiedAt=0,workedAt=0,exits=0;
  const notices:unknown[]=[];
- await watchBoard({session:'idle',now:()=>now,notifyOnly:true,acknowledge:async()=>{throw Error('Notice acknowledged');},
+ await watchBoard({session:'idle',now:()=>now,notice:'ids',acknowledge:async()=>{throw Error('Notice acknowledged');},
    emit:v=>notices.push(v),warn:()=>{},idle:{lastActivity:()=>last,onNotification:()=>{last=notifiedAt=now;},leave:async()=>{exits++;}},
    request:async()=>({batch:now>=60_000?{receipt:'d'.repeat(64),messages:[{id:1}]}:null}),
    delay:async ms=>{now+=ms;if(!workedAt&&now>=timeout){last=workedAt=now;}if(now>3*timeout)throw Error('Poll kept the listener alive');}});

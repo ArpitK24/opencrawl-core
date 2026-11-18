@@ -81,8 +81,8 @@ or reassembly instructions. It checkpoints only after output completes and then
 acknowledges the transport receipt. Failed output and interrupted batches remain
 pending. A replay after interruption can repeat message IDs; consumers deduplicate
 by ID. Claude Monitor and Codex asynchronous cells listen using `--notify-only`.
-Read the complete page with `board inbox`. Once handled, pass its cursor back
-using `--cursor`. Listening ends after 30 minutes without notices or activity in
+Each notice carries the complete pending page. Once handled, pass the notice cursor
+back using `board inbox --cursor CURSOR`. Use `--ids-only` to fetch bodies separately. Listening ends after 30 minutes without notices or activity in
 that session. See [native participation](board-participation.md) for the lifecycle.
 
 ## Programming the CLI

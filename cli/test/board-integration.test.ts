@@ -1,5 +1,5 @@
 import {test,expect} from 'bun:test';
-import {mkdtemp,rm} from 'node:fs/promises';
+import {mkdtemp,readdir,rm,unlink} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {skillFiles} from '../src/skills.ts';
@@ -77,6 +77,32 @@ test('real CLI processes register, deliver, acknowledge, exclude duplicate liste
     const channels=await command(['channels']);expect(channels.channels[0].channel).toBe('opencrawl');
     const reply=await command(['reply','--session','sender','--id','thread-reply','--channel','testing','--thread',String(id),'--text','Thread follow-up']);
     const thread=await command(['thread','--thread',String(id)]);expect(thread.messages.map((m:{id:number})=>m.id)).toEqual([id,reply.messages[0].id]);expect(thread.messages[1].text).toBe('Thread follow-up');
+    // The model-facing inbox is independent of the stream's stdout receipt.
+    // Exercise the installed listener command, restarting before handling its page.
+    const nativeFlags = skillFiles()['SKILL.md'].match(/The command is opencrawl board watch --session <id> (.*?) --json/)![1].split(' ');
+    const noticeArgs = ['wait', '--session', 'receiver', ...nativeFlags, '--timeout-ms', '1500'];
+    // Registration through MCP need not have populated this CLI's capability cache.
+    const boardDir = join(dir, 'opencrawl', 'board');
+    const capability = (await readdir(boardDir)).find(name => name.endsWith('.capabilities.json'));
+    await unlink(join(boardDir, capability!));
+    const notice = await command(noticeArgs);
+    expect(notice.type).toBe('board.notice');
+    expect(notice.messages).toContainEqual(delivery);
+    expect(notice.ids).toEqual(notice.messages.map((m: {id: number}) => m.id));
+    expect(notice.cursor).toMatch(/^[0-9a-f]{64}$/);
+    expect(await command(noticeArgs)).toEqual(notice);
+    const refs = await command(['wait', '--session', 'receiver', '--ids-only', '--timeout-ms', '1500']);
+    expect(refs).toEqual({type: 'board.notice', ids: notice.ids});
+    const body = 'Review complete 🧪\n'.repeat(1100);
+    const pending = await command(['publish','--session','sender','--channel','testing','--id','large','--text',body]);
+    expect(await command(noticeArgs)).toMatchObject({ids: notice.ids, cursor: notice.cursor});
+    const next = await command(['inbox','--session','receiver','--cursor',notice.cursor]);
+    const full = await command(noticeArgs);
+    expect(full.messages).toEqual(next.messages);
+    expect(full.cursor).toBe(next.cursor);
+    expect(full.messages).toContainEqual(expect.objectContaining({id: pending.accepted[0], text: body.trimEnd()}));
+    expect(await command(['inbox','--session','receiver','--cursor',full.cursor])).toEqual({messages:[],cursor:null,more:false});
+    expect(await command(['wait','--session','receiver',...nativeFlags,'--timeout-ms','100'])).toBe(null);
     await command(['leave','--session','receiver']);
   } finally {
     for(const proc of listeners)if(proc.exitCode===null)proc.kill();

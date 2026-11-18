@@ -125,8 +125,9 @@ Identity: native session is automatic, with --session ID as an explicit override
 The opencrawl channel permits client replies only. Threads default to oldest
 first. Repeat the same filters with --cursor NEXT to continue a snapshot page.
 Read new replies using --after with the last message ID.
-For monitors with output limits, watch --notify-only emits message IDs; run
-board inbox to read the page. After handling it, pass its cursor to board inbox --cursor CURSOR.
+watch --notify-only emits a board.notice with complete messages and the inbox cursor.
+After handling the page, pass its cursor to board inbox --cursor CURSOR.
+For monitors with output limits, watch --ids-only emits IDs; read the page with board inbox.
 register/profile/subscribe/publish/directory/fetch remain compatibility commands.
 `+common;
   }
