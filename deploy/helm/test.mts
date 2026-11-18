@@ -6,7 +6,7 @@ import {tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
-import {configuration,plan,airbyteValues,prepareAirbyteChart,applicationName} from './install.mts';
+import {configuration,plan,airbyteValues,prepareAirbyteChart,applicationName,airbyteWorkspaceReceipt} from './install.mts';
 import {connectProbePostgres} from './runtime/postgres-connect.mts';
 const root=dirname(fileURLToPath(import.meta.url));
 const input={context:'test',url:'https://opencrawl.example.com',image:{tag:'sha-test'}};
@@ -53,6 +53,25 @@ test('installation plan bundles all resources and preserves independent external
   assert.equal(mixed.databases.temporal.mode,'bundled');assert.equal(mixed.databases.airbyte.mode,'bundled');assert.equal(mixed.opensearch.mode,'external');
   const external=configuration({...input,postgresql:{enabled:false},databases:{app:{mode:'external',existingSecret:'app-db'}},temporal:{mode:'external',address:'temporal.test:7233'},opensearch:{mode:'external',url:'https://search.test'},objectStorage:{mode:'external',endpoint:'https://s3.test',bucket:'existing',existingSecret:'s3'},airbyte:{mode:'disabled'}});
   assert.equal(plan(external).steps.length,2);assert.equal(plan(external).steps[0].components?.postgresql,false);assert.deepEqual(plan(external).databases,{app:'external'});
+});
+test('Airbyte bootstrap reads only the successful attempt of the completed Job',()=>{
+  const pod=(name:string,uid:string,phase:string,exitCode:number)=>({
+    metadata:{name,ownerReferences:[{kind:'Job',uid,controller:true}]},
+    status:{phase,containerStatuses:[{name:'bootstrap',state:{terminated:{exitCode}}}]},
+  });
+  const items=[pod('failed','current','Failed',1),pod('previous','obsolete','Succeeded',0),
+    pod('wrong-exit','current','Succeeded',1),pod('success','current','Succeeded',0)];
+  let receipt='{"workspaceId":"test-workspace"}';
+  const kube=(args:string[])=>{
+    if(args[0]==='wait'){assert.ok(args.includes('job/airbyte-bootstrap'));assert.ok(args.includes('jsonpath={.metadata.uid}'));return 'current';}
+    if(args[0]==='get'){assert.ok(args.includes('batch.kubernetes.io/controller-uid=current'));assert.ok(args.includes('--field-selector=status.phase=Succeeded'));return JSON.stringify({items});}
+    assert.deepEqual(args,['logs','pod/success','-c','bootstrap']);return receipt;
+  };
+  assert.equal(airbyteWorkspaceReceipt('airbyte-bootstrap',kube),'test-workspace');
+  receipt='{}';
+  assert.throws(()=>airbyteWorkspaceReceipt('airbyte-bootstrap',kube),/did not emit a workspace ID/);
+  items.pop();
+  assert.throws(()=>airbyteWorkspaceReceipt('airbyte-bootstrap',kube),/no successful bootstrap pod/);
 });
 test('upstream Airbyte references only supplied credentials in bundled and external DB modes',{skip:!process.env.AIRBYTE_CHART},()=>{
   const dir=mkdtempSync(join(tmpdir(),'opencrawl-airbyte-contract-'));
