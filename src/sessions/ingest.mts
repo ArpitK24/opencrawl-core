@@ -85,8 +85,14 @@ export function createSessionIngest({store, eventIdentities, prefix = 'capture-v
       for (const hash of attachments) {
         const scoped = `${keyPrefix}/${batch.harness}/${digest(batch.installationId)}/${digest(batch.sessionId)}/attachments/${hash}`, legacy = `${keyPrefix}/attachments/${hash}`;
         if (await exists(scoped, MAX_ATTACHMENT_BYTES)) attachmentKeys.set(hash, scoped);
-        else if (await exists(legacy, MAX_ATTACHMENT_BYTES)) attachmentKeys.set(hash, legacy);
-        else fail(409, 'Attachment not uploaded');
+        else {
+          // New manifests must never acquire a dependency on an owner-wide blob.
+          const bytes = await store.get(legacy, {maxBytes: MAX_ATTACHMENT_BYTES});
+          if (!bytes) fail(409, 'Attachment not uploaded');
+          if (digest(bytes) !== hash) throw new Error('Stored attachment digest mismatch');
+          await writes.put(scoped, bytes, 'application/octet-stream');
+          attachmentKeys.set(hash, scoped);
+        }
       }
       await reserveSessionEvents({eventIdentities,store:writes,prefix,principal,harness:batch.harness,installationId:batch.installationId,sessionId:batch.sessionId,events:batch.events});
       const batchId = digest(serialized);

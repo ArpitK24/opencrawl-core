@@ -1,5 +1,6 @@
 import {isAbsolute, resolve, sep,dirname,basename,join} from 'node:path';
 import {realpathSync} from 'node:fs';
+import {sessionPrivate,type PrivacyOwner} from '../incognito-state.ts';
 import {apiOrigin} from '../oauth.ts';
 
 export type CaptureExclusions = {projects:string[], sessions:string[]};
@@ -20,7 +21,8 @@ export function projectPath(value:string) {
     }
   }
 }
-export function captureExcluded(config:{exclusions?:CaptureExclusions}, meta:{sessionId?:string,cwd?:string}) {
+export function captureExcluded(config:{exclusions?:CaptureExclusions}&Partial<PrivacyOwner>, meta:{harness?:string,sessionId?:string,cwd?:string}) {
+  if(config.api&&config.owner&&meta.harness&&meta.sessionId&&sessionPrivate({api:config.api,owner:config.owner},{harness:meta.harness,sessionId:meta.sessionId}))return true;
   const exclusions=config.exclusions;
   if(!exclusions)return false;
   if(exclusions.sessions.some(id=>meta.sessionId===id || meta.sessionId?.startsWith(id+':')))return true;

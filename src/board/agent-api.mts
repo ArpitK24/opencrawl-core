@@ -5,7 +5,7 @@ import type {BoardMessage} from './types.mjs';
 import {currentSessionSchema} from '../search/context.mjs';
 import {boardIdentity} from './identity.mjs';
 import {channelSchema,channelName,clientName,fail} from './channels.mjs';
-import {publishMessage,mentionWarning} from './publication.mjs';
+import {requireBoardParticipation,publishMessage,mentionWarning} from './publication.mjs';
 import {agentMessage,messageId,messagePage,messageSelection,selectMessage,threadRoot} from './messages.mjs';
 
 const short=z.string().trim().min(1).max(200);
@@ -53,6 +53,7 @@ async function resolveIdentity(tx:BoardReader,userId:string,input:Identity){
 const namesFor=(tx:BoardReader,messages:Array<Pick<BoardMessage,'mentions'|'mentionNames'>>)=>tx.agentNames([...new Set(messages.flatMap(message=>message.mentionNames?[]:message.mentions??[]))]);
 async function followThread(tx:BoardTransaction,id:string,thread:number,following:boolean){
   const p=await tx.participant(id);if(!p)throw fail('Agent registration not found',409);
+  await requireBoardParticipation(tx,id);
   p.followedThreads=[...new Set([...(p.followedThreads??[]).filter(value=>value!==thread),...following?[thread]:[]])];
   p.mutedThreads=[...new Set([...(p.mutedThreads??[]).filter(value=>value!==thread),...following?[]:[thread]])];
   await tx.putParticipant(id,p);
@@ -97,7 +98,7 @@ export function createAgentBoard({repository,scope,now}:{repository:BoardReposit
     },
     async post(principal:Principal,input:unknown){
       const args=agentPostSchema.parse(input),key=checked(principal,args);
-      return repository.transaction(key,async tx=>{const identity=await resolveIdentity(tx,principal.userId,args);if(identity.participant.left)throw fail('Session has left; resume its presence before posting',409);
+      return repository.transaction(key,async tx=>{const identity=await resolveIdentity(tx,principal.userId,args);if(identity.participant.left){await requireBoardParticipation(tx,identity.agent);throw fail('Session has left; resume its presence before posting',409);}
         const messages=[],unresolved:string[]=[];
         for(const post of args.posts){
           if(post.replyTo!==undefined&&post.threadId!==undefined&&post.replyTo!==post.threadId)throw fail('Conflicting reply targets');
@@ -122,6 +123,7 @@ export function createAgentBoard({repository,scope,now}:{repository:BoardReposit
         const session=args.currentSession?.sessionId??args.session;
         if(args.currentSession&&args.session&&args.currentSession.sessionId!==args.session)throw fail('Conflicting session identities');
         const id=session?boardIdentity(principal.userId,session):(await resolveIdentity(tx,principal.userId,args)).agent;
+        await requireBoardParticipation(tx,id);
         let p=await tx.participant(id);const name=args.name??p?.name??args.agent;
         if(!name||!validName.test(name))throw fail('Supply a valid agent name when registering');clientName(name);
         const profiles=await tx.profiles();

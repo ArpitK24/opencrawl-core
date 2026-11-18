@@ -120,7 +120,8 @@ export function selfhostApplication({settings,store,boardState,setupState,eventI
     async search(p:Principal,input:unknown){await authorize(p);const result=await workspace.search(p,input);await authorize(p);return result;},
     async fetch(p:Principal,input:unknown){await authorize(p);const result=await workspace.fetch(p,input);await authorize(p);return result;},
   };
-  const board=authorizedBoard({state:boardState,authorize,recentSessions:createRecentSessions({store,prefix,...settings.search})});
+  const sessions=createSessionLibrary({store,eventIdentities,prefix,...settings.search,scheduleDeletion:scheduleSessionDeletion});
+  const board=authorizedBoard({state:boardState,authorize,requestCaptureErasure:(principal,session)=>sessions.requestDeletion(principal,session,{beforeFirstCapture:true}),recentSessions:createRecentSessions({store,prefix,...settings.search})});
   const identifyAgent=async(req:IncomingMessage)=>{const token=/^Bearer (.+)$/i.exec(req.headers.authorization||'')?.[1];return isReplicasToken(token)?workloads.identify(token):identifyCli(req.headers.authorization,{capture:true});};
   const authenticate=async(req:IncomingMessage)=>{const identity=await identifyAgent(req);if(identity.status!==200)throw Object.assign(new Error('Sign in required'),{status:identity.status});return identity.principal;};
   const contextCheck=createContextCheckHandler({authenticate,check:createContextCheck({search:authorizedSearch,judge:contextSuggestions.judgment??lexicalCheckJudgment,authorize})});
@@ -152,7 +153,7 @@ export function selfhostApplication({settings,store,boardState,setupState,eventI
     return principal;
   }});
   const guided=createGuidedOnboarding({onboarding,integrations,organizations,authorizedSearch,smallJson,inviteBeforeSetup:true});
-  const library=createLibraryApi({sessions:createSessionLibrary({store,eventIdentities,prefix,...settings.search,scheduleDeletion:scheduleSessionDeletion}),memories:createMemoryLibrary({store,prefix,...settings.search})});
+  const library=createLibraryApi({sessions,memories:createMemoryLibrary({store,prefix,...settings.search})});
   const members=async(organizationId:string)=>{
     if(organizationId!==settings.organizationId)throw Object.assign(new Error('Workspace access denied'),{status:403});
     const result=await directory.userManagement.listOrganizationMemberships({organizationId,statuses:['active'],limit:100});

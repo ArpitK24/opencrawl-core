@@ -3,7 +3,8 @@ import type {BoardRepository,BoardReader} from '../state/board.mjs';
 import {createHash} from 'node:crypto';
 import {z} from 'zod';
 import {fail,channelSchema,channelName,channelNames,clientName,threadIdSchema,visibleMessage} from './channels.mjs';
-import {publishMessage,mentionWarning} from './publication.mjs';
+import {requireBoardParticipation,publishMessage,mentionWarning} from './publication.mjs';
+import {currentSessionSchema} from '../search/context.mjs';
 import {boardIdentity} from './identity.mjs';
 
 const text = (max: number) => z.string().trim().min(1).max(max);
@@ -14,6 +15,7 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 const aliveMs = 180_000, retainMs = 30 * 24 * 3600_000;
 const workspace = {workspace: text(200).optional()};
 export const participationSchemas = {
+  incognito: z.strictObject({currentSession:currentSessionSchema,...workspace}),
   bootstrap: z.strictObject({session, harness: text(40)}).extend(workspace),
   profile: z.strictObject({session, name, task: text(240)}).extend(workspace),
   register: z.strictObject({session, name, task: text(240), harness: text(40).default('other')}).extend(workspace),
@@ -30,12 +32,28 @@ type Operation = keyof typeof participationSchemas;
 type Command = {[K in Operation]: {operation: K; args: z.output<typeof participationSchemas[K]>}}[Operation];
 
 /** All state transitions and delivery receipts commit in one PostgreSQL transaction. */
-export function createParticipation({scope,repository,now}:{scope(principal:Principal):string;repository:BoardRepository;now():number}) {
+export type RequestCaptureErasure = (principal:Principal, session:z.output<typeof currentSessionSchema>)=>Promise<{deleted:boolean;pending:boolean}>;
+export function createParticipation({scope,repository,now,requestCaptureErasure}:{scope(principal:Principal):string;repository:BoardRepository;now():number;requestCaptureErasure?:RequestCaptureErasure}) {
   return async function participate(principal:Principal,requestedOperation:string,input:unknown={}){
     const key=scope(principal),schema=participationSchemas[requestedOperation as Operation];
     if(!schema)throw fail('Unknown board operation',404);
     const {operation,args}={operation:requestedOperation,args:schema.parse(input)} as Command;
     if(args.workspace!==undefined&&args.workspace!==principal.tenantId)throw fail('Workspace scope mismatch; use the registered workspace',403);
+    if(operation==='incognito'){
+      const session=args.currentSession;
+      // A shared workload principal can represent multiple people's conversations.
+      if(principal.owner)throw fail('A personal session owner is required for erasure',403);
+      await repository.transaction(key,async tx=>{
+        const id=boardIdentity(principal.userId,session.sessionId);
+        await tx.blockPublication(id);
+        const participant=await tx.participant(id);
+        if(participant&&!participant.left)await tx.putParticipant(id,{...participant,left:true,pending:null});
+        await tx.removeAgent(id);
+      });
+      if(!requestCaptureErasure)throw fail('Session erasure is unavailable',503);
+      const result=await requestCaptureErasure(principal,session);
+      return {session,boardBlocked:true,...result};
+    }
     const time=now(),id='session'in args?boardIdentity(principal.userId,args.session):'';
     const directory=async(tx:BoardReader,after=0,limit=32)=>{
       const page=await tx.directory({after,limit,cutoff:time-retainMs});
@@ -47,6 +65,7 @@ export function createParticipation({scope,repository,now}:{scope(principal:Prin
     if(operation==='directory')return repository.read(key,async tx=>{const {agents,total}=await directory(tx,args.after);return {workspace:principal.tenantId,agents,through:(await tx.metadata()).head,total,next:args.after+agents.length<total?args.after+agents.length:null};});
     return repository.transaction(key,async tx=>{
       const {head}=await tx.metadata();let p=await tx.participant(id);
+      if(operation!=='leave'&&operation!=='inbox')await requireBoardParticipation(tx,id);
       if(operation==='register'||operation==='bootstrap'||operation==='profile'){
         const profiles=await tx.profiles(),requestedName=operation==='bootstrap'?undefined:args.name;
         if(requestedName)clientName(requestedName);

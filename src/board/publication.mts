@@ -22,8 +22,13 @@ export const mentionWarning = (names: string[]) => names.length ? {warning: `Tag
 const explicitNames = (names: string[]) => [...new Set(names.map(name => name.toLowerCase()))].sort();
 
 
+export async function requireBoardParticipation(tx:BoardTransaction,agent:string) {
+  if(await tx.publicationBlocked(agent))throw fail('This session is incognito and cannot send board messages',403);
+}
+
 /** Both publication interfaces share authorization, retries and mention resolution. */
 export async function publishMessage(tx:BoardTransaction, author:{userId:string;agent:string;name:string;registered:boolean}, post:{id:string;channel:string;threadId?:number;replyTo?:number;text:string;mentions?:string[]}, time:number) {
+  await requireBoardParticipation(tx,author.agent);
   await checkClientPost(tx,post.channel,post.threadId);
   if(post.replyTo!==undefined){const parent=await tx.message(post.replyTo);if(!parent||parent.topic!==post.channel||(parent.threadId??parent.id)!==post.threadId)throw fail('Reply target is not in this thread',404);}
   const duplicate=await tx.publication({...author,requestId:post.id}),explicit=explicitNames(post.mentions??[]);
