@@ -207,6 +207,11 @@ export function setupCommand(action:string,api:string,values:Values,deps:Depende
  return action==='resume'||action==='apply'&&values.yes===true||action==='run'&&(interactive||values.yes===true||!values.json)
   ?withSessionLock('setup:interactive-choices',run,0):run();
 }
+export function nativeSetupPrompt(api:string,client:string,command=setupCommandForSelf()){
+ const nextCommand=formatSetupCommand(['setup','next','--api',api,'--json'],profileSetupCommand(command,dirname(configDir()),process.env,true));
+ return `Finish OpenCrawl setup in this conversation. Run ${nextCommand} and follow nextAction. Reuse my saved choices. After the native verify_installation call, run setup wait --json with this same profile-bound CLI and follow its nextAction. Never ask me to reply just to wait for capture. After any reconciliation, read setup next again before reporting completion. Work only on ${client}. When this client is verified, tell the person it is connected and they can return to setup. Leave other clients to their own setup screens.`;
+}
+
 async function executeSetup(action:string,api:string,values:Values,{platform=process.platform,command=setupCommandForSelf(),login,installPlugins=installPublishedSetupPlugins,modeEligibility=daemonEligibility,stopDaemon=uninstallCaptureDaemon,launchHistory=startHistoryWorker,choose=chooseSetupItems,inspectHooks=inspectCodexHooks,installDaemon=installCaptureDaemon,daemonReady=waitForDaemonReady,expectedScope,validateCapturePrincipal,onProgress,confirmedCaptureMode,finishOnboarding=false,canInstall=id=>canInstallRecordingPlugin(id,{},platform),interactive=Boolean(process.stdin.isTTY&&process.stderr.isTTY&&!values.json)}:Dependencies={}){
  const requestedClients=Array.isArray(values.client)?values.client:values.client===undefined?[]:[values.client];
  let claudeOnly=requestedClients.length===1&&requestedClients[0]==='claude-code'&&['run','plan','apply'].includes(action);
@@ -340,9 +345,8 @@ async function executeSetup(action:string,api:string,values:Values,{platform=pro
   const client=chosen(state.selections,'plugins').filter(id=>!deferred.some(row=>row.client===id)).join(',');
   const interactiveHandoff=action==='run'&&interactive&&['codex','antigravity'].includes(client);
   if(action==='resume'||configured.nextAction.kind==='complete'||configured.nextAction.kind==='plugin_unavailable'||client!=='claude-code'&&!interactiveHandoff)return configured;
-  const nextCommand=formatSetupCommand(['setup','next','--api',api,'--json'],profileSetupCommand(command,dirname(configDir()),process.env,true));
   const latest=await readServerSetup(api),nativeClient=latest.installations.find(row=>row.installationId===state.installationId)?.clients.find(row=>row.client===client);
-  return {...configured,client,nativeMcpLoginRequired:!['authenticated','observed'].includes(nativeClient?.mcp?.state??'pending'),agentPrompt:`Finish OpenCrawl setup in this conversation. Run ${nextCommand} and follow nextAction. Reuse my saved choices. After the native verify_installation call, run setup wait --json with this same profile-bound CLI and follow its nextAction. Never ask me to reply just to wait for capture. After any reconciliation, read setup next again before reporting completion.`,nextAction:nextSetupAction(state,latest)};
+  return {...configured,client,nativeMcpLoginRequired:!['authenticated','observed'].includes(nativeClient?.mcp?.state??'pending'),agentPrompt:nativeSetupPrompt(api,client,command),nextAction:nextSetupAction(state,latest)};
  };
  // An existing capture configuration may still describe the old choices until
  // installation commits. Replay newly approved opt-ins only against that exact baseline.
