@@ -79,12 +79,13 @@ export function createParticipation({scope,repository,now,requestCaptureErasure}
         if(!p&&Object.keys(profiles).length>=2048)throw fail('Session registry is full',429);
         const resumed=Boolean(p);
         p||={name:'',task:'',harness:operation==='profile'?'other':args.harness,registeredAt:time,seen:time,topics:[],inboxAfter:head,ackCursor:head,lastPoll:null,lastAckAt:null,nextHomeAt:time+60000,pending:null,batches:0,acknowledgedBatches:0};
+        const announce=p.announced || (operation!=='bootstrap' && args.announce);
         if(p.left||p.seen<=time-onlineWindow)p.announced=false;
         Object.assign(p,{userId:principal.userId,seen:time,left:false});
         if(operation!=='bootstrap')Object.assign(p,{name:args.name,task:args.task});
         if(operation!=='profile')p.harness=args.harness;
-        if(operation!=='bootstrap' && args.announce){
-          if(args.installationId)p.captureRef=captureReference(principal,p.harness,args.installationId,args.session);
+        if(announce){
+          if(operation!=='bootstrap'&&args.installationId)p.captureRef=captureReference(principal,p.harness,args.installationId,args.session);
           await announceOnline(tx,id,p,profiles,time);
         }
         await tx.putParticipant(id,p);

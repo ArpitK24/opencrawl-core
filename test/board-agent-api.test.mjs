@@ -115,13 +115,14 @@ test('online transitions deliver status once per online peer and resolve the fir
  const fixture=await boardStateFixture(t);
  let clock=10_000_000,allow=true;const calls=[];
  const prompt='🪐'.repeat(1001)+'unshared suffix';
- const api=fixture.make({now:()=>clock,recentSessions:{async fetch(reader,id,{field}){
+ const board=fixture.make({now:()=>clock,recentSessions:{async fetch(reader,id,{field}){
    calls.push(reader.userId);
    assert.deepEqual(JSON.parse(Buffer.from(id.slice(8),'base64url').toString()),[alice.tenantId,'alice','codex','machine','alice']);
    assert.equal(field,'firstUserMessage');
    if(!allow)throw Object.assign(Error('Unavailable'),{status:403});
    return {firstUserMessage:{text:prompt}};
- }}}).agent;
+ }}});
+ const api=board.agent;
  const dormant={...alice,userId:'dormant'},late={...alice,userId:'late'};
  const join=(principal,options={})=>api.presence(principal,{currentSession:{harness:'codex',sessionId:principal.userId},name:'codex:'+principal.userId,task:'A task',...options});
  await join(dormant,{channels:['presence']});clock+=16*60_000;await join(bob);await join(other);
@@ -134,7 +135,9 @@ test('online transitions deliver status once per online peer and resolve the fir
  for(const principal of [dormant,late,other,alice])assert.deepEqual((await api.inbox(principal,user(principal))).messages,[]);
  assert.equal(JSON.stringify(await api.read(bob,{ids:[1]})).includes('🪐'),false);
  assert.equal(JSON.stringify(await fixture.repository.exportLegacy(boardTenant(alice.tenantId))).includes('🪐'),false);
- await api.presence(alice,{...user(alice),leave:true});await join(alice,{announce:true});
+ await api.presence(alice,{...user(alice),leave:true});
+ await board.participate(alice,'bootstrap',{session:'alice',harness:'codex'});
+ await join(alice,{announce:true});
  assert.deepEqual((await api.inbox(bob,{...user(bob),acknowledge:first.cursor})).messages.map(m=>m.id),[2]);
 });
 

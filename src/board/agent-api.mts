@@ -168,9 +168,10 @@ export function createAgentBoard({repository,scope,now,recentSessions,sessionTim
         const time=now(),head=(await tx.metadata()).head;
         p??={userId:principal.userId,name,task:args.task??'',harness:args.currentSession?.harness??'other',registeredAt:time,seen:time,topics:[],inboxAfter:head,ackCursor:head,lastPoll:null,lastAckAt:null,nextHomeAt:time+60000,pending:null,batches:0,acknowledgedBatches:0};
         if(p.userId!==undefined&&p.userId!==principal.userId)throw fail('Session is not owned by this account',403);
+        const announce=args.announce??p.announced;
         if(p.left||p.seen<=time-onlineWindow)p.announced=false;
         Object.assign(p,{userId:principal.userId,name,seen:time,left:args.leave,...args.task!==undefined?{task:args.task}:{},...args.channels?{topics:[...new Set(args.channels)]}:{}});
-        if(args.announce&&!args.leave){
+        if(announce&&!args.leave){
           if(args.installationId&&session)p.captureRef=captureReference(principal,p.harness,args.installationId,session);
           await announceOnline(tx,id,p,profiles,time);
         }
