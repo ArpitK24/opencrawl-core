@@ -106,14 +106,13 @@ async function tasks(server:SetupServerStatus,state:SetupState|null,inspectHooks
  const instruction=codexHookReviewMessage(review);
  return instruction?[{id:'codex-hook-review',kind:'hook_trust',client:'codex',title:'Review OpenCrawl hooks in Codex',instruction},...others]:others;
 }
-function assertPluginSelection(selections:SetupSelections){const missing=chosen(selections,'forward').filter(client=>!selections.plugins[client]);if(missing.length)throw new CliError('SETUP_PLUGIN_REQUIRED','Future recording requires its native plugin. Select '+missing.join(', ')+' in --plugins, or turn its --forward choice off. Choose history separately after capture.',64);}
-/** New installations always capture. Existing legacy opt-outs may only be retained. */
+function assertPluginSelection(selections:SetupSelections){const missing=chosen(selections,'forward').filter(client=>!selections.plugins[client]);if(missing.length)throw new CliError('SETUP_PLUGIN_REQUIRED','Future recording requires its native plugin. Select '+missing.join(', ')+' in --plugins, or turn its --forward choice off. Choose history separately.',64);}
+/** Installing a new plugin enables future capture. History uses its own approval. */
 function assertCaptureSelections(selections:SetupSelections,previous?:SetupSelections){
- for(const client of new Set([...Object.keys(selections.plugins),...Object.keys(selections.forward),...Object.keys(selections.history)])){
+ for(const client of new Set([...Object.keys(selections.plugins),...Object.keys(selections.forward)])){
   const plugin=selections.plugins[client]===true,forward=selections.forward[client]===true;
   const retained=previous?.plugins[client]===plugin&&previous?.forward[client]===forward;
   if(plugin!==forward&&!retained)throw new CliError('SETUP_CAPTURE_REQUIRED','Installing a harness enables new-session capture. Use the same clients for --plugins and --forward, or none for both.',64);
-  if(selections.history[client]&&!forward&&!(retained&&previous?.history[client]))throw new CliError('SETUP_CAPTURE_REQUIRED','History import is available only for harnesses selected for capture. Choose capture first, then history.',64);
  }
 }
 async function confirmScope(scope:SetupScope){
@@ -161,7 +160,13 @@ async function applyClients(scope:SetupScope,selections:SetupSelections,installP
 }
 async function applyHistory(scope:SetupScope,selections:SetupSelections,files:HistoryFile[],retainedHistory:string[]=[]){
  await confirmScope(scope);
- await withSessionLock('capture:configuration',async()=>{const current=readCaptureConfig();if(!current||current.api!==scope.api||current.owner.tenantId!==scope.tenantId||current.owner.userId!==scope.userId)throw new CliError('SETUP_SCOPE_CHANGED','The recording destination changed before history approval.');atomicJson(join(captureDir(),'config.json'),{...current,historyHarnesses:chosen(selections,'history'),...(chosen(selections,'history').length?{disabled:false}:{})});});
+ const historyClients=chosen(selections,'history');
+ await withSessionLock('capture:configuration',async()=>{
+  const current=readCaptureConfig();
+  if(!current||current.api!==scope.api||current.owner.tenantId!==scope.tenantId||current.owner.userId!==scope.userId)throw new CliError('SETUP_SCOPE_CHANGED','The recording destination changed before history approval.');
+  if(current.disabled&&historyClients.length&&current.harnesses?.length!==0)throw new CliError('SETUP_SCOPE_CHANGED','Recording was disabled during setup. Review your choices before importing history.');
+  atomicJson(join(captureDir(),'config.json'),{...current,historyHarnesses:historyClients,...(current.disabled&&historyClients.length?{disabled:false}:{})});
+ });
  const state=await updateSetupState(scope,current=>{if(!current?.installationId)throw new CliError('SETUP_NOT_STARTED','Confirm client setup before history.');const clients=chosen(selections,'history'),retainingPause=current.historyJob?.state==='paused'&&retainedHistory.some(client=>selections.history[client]);
   const sameSnapshot=JSON.stringify(current.historyJob?.clients)===JSON.stringify(clients)&&JSON.stringify(current.historyJob?.files)===JSON.stringify(files);
   const job=retainingPause&&sameSnapshot?current.historyJob:historyJob(current,clients,files);
@@ -171,7 +176,7 @@ async function applyHistory(scope:SetupScope,selections:SetupSelections,files:Hi
 }
 async function result(state:SetupState,launchHistory:typeof startHistoryWorker,inspectHooks:typeof inspectCodexHooks,command:string[],start=true){
  command=profileSetupCommand(command,dirname(configDir()),process.env,true);
- const history=start&&!state.pluginResults?.some(row=>row.captureAvailable===false)?launchHistory(state):{state:state.historyJob?.state??'not_started'};
+ const history=start&&state.historyJob?launchHistory(state):{state:state.historyJob?.state??'not_started'};
  const worker=workerObservation(state.worker),workerPending=worker?.readiness==='pending',workerGuidance=['fallback','unavailable'].includes(worker?.kind??'')?worker!.reason!:pendingWorkerGuidance;
  const server=await readServerSetup(state.scope.api),statusCommand=formatSetupCommand(['setup','status','--local','--api',state.scope.api,'--json'],command);
  const nextAction=nextSetupAction(state,server),unavailable=nextAction.kind==='plugin_unavailable';
@@ -259,13 +264,11 @@ export async function setupCommand(action:string,api:string,values:Values,{platf
  const availableHistory=()=>[...historyFiles(api,claudeOnly?'claude-code':undefined).filter(file=>!retainedHistory.includes(file.harness)&& (workload||newSetupClientAvailable(file.harness,platform))),...(previous?.historyJob?.files??[]).filter(file=>retainedHistory.includes(file.harness))];
  const files=availableHistory().filter(file=>selections.history[file.harness]),planId=createHash('sha256').update(planDigest(scope,selections,files)+captureMode).digest('hex');
  const plan={status:'confirmation_required',...(workload?{}:{availability:setupAvailabilityMessage}),scope,clients,selections,captureMode,daemon:eligibility(selections),...(selections.plugins.cursor?{nativeHooks:'Cursor setup installs the deployment-specific plugin and its recording hooks in the local plugins folder.'}:{}),historyBenefit,history:{files:files.length,bytes:files.reduce((n,f)=>n+f.bytes,0)},planId,humanTasks:await tasks(server,previous,inspectHooks),applyCommand:formatSetupCommand(['setup','apply','--api',api,...(claudeOnly?['--client','claude-code']:[]),'--plugins',list(chosen(selections,'plugins')),'--forward',list(chosen(selections,'forward')),'--history',list(chosen(selections,'history')),'--capture-mode',captureMode,'--plan-id',planId,'--yes','--json'],command)};
- const recordingOff=async()=>{
-  const bound=existing?.api===scope.api&&existing.owner.tenantId===scope.tenantId&&existing.owner.userId===scope.userId;
-  const state=bound?await applyClients(scope,selections,installPlugins,command,installDaemon,validateCapturePrincipal,['darwin','linux'].includes(platform)&&!process.env.OPENCRAWL_AUTH,daemonReady,captureMode,eligibility(selections).eligible,stopDaemon):await updateSetupState(scope,current=>({...current,schemaVersion:1,scope,selections,captureMode,acceptedAt:new Date().toISOString()}));
-  return {status:'recording_off',scope,installationId:state.installationId,selections,humanTasks:[]};
- };
- const completed=async(state:SetupState)=>{
-  const configured=await result(state,launchHistory,inspectHooks,command);
+ const configureClients=()=>applyClients(scope,selections,installPlugins,command,installDaemon,validateCapturePrincipal,['darwin','linux'].includes(platform)&&!process.env.OPENCRAWL_AUTH,daemonReady,captureMode,chosen(selections,'plugins').length>0&&eligibility(selections).eligible,stopDaemon);
+ const saveRecording=()=>sameOwner||chosen(selections,'plugins').length?configureClients():updateSetupState(scope,current=>({...current,schemaVersion:1,scope,selections,captureMode,acceptedAt:new Date().toISOString()}));
+ const recordingOff=(state:SetupState)=>({status:'recording_off',scope,installationId:state.installationId,selections:state.selections,humanTasks:[]});
+ const completed=async(state:SetupState,startHistory=true)=>{
+  const configured=await result(state,launchHistory,inspectHooks,command,startHistory);
   const client=chosen(state.selections,'plugins').join(',');
   const interactiveHandoff=action==='run'&&interactive&&['codex','antigravity'].includes(client);
   if(configured.nextAction.kind==='plugin_unavailable'||client!=='claude-code'&&!interactiveHandoff)return configured;
@@ -278,36 +281,41 @@ export async function setupCommand(action:string,api:string,values:Values,{platf
   if(selected===null)return {status:'cancelled',humanTasks:[]};
   const capture=new Set(selected.filter(row=>row.selected).map(row=>row.id));
   for(const group of ['plugins','forward'] as const)selections[group]=Object.fromEntries([...new Set([...Object.keys(selections[group]),...clients.map(client=>client.id)])].map(id=>[id,capture.has(id)]));
-  const prospectiveHistory={...selections.history};
-  selections.history=Object.fromEntries(Object.keys(selections.history).map(id=>[id,capture.has(id)&&previous?.selections.history[id]===true]));
-  if(!capture.size){onProgress?.('Saving your choices','Turning off recording for this workspace on this machine.');return recordingOff();}
+  const prospectiveHistory=values.history===undefined?{}:selections.history;
+  selections.history=Object.fromEntries(Object.keys(selections.history).map(id=>[id,previous?.selections.history[id]===true]));
   assertCaptureSelections(selections,previous?.selections);
   const offered=eligibility(selections);
-  if(offered.eligible){
+  if(capture.size&&offered.eligible){
    const firstInstall=!previous&&!sameOwner&&values['capture-mode']===undefined;
    const service=await choose({phase:3,title:'Background capture',description:'Install background utility for more reliable session capture?',noneLabel:'Record without a background service',items:[{id:'daemon',label:'Install background service',selected:firstInstall||captureMode==='daemon'}]});
    if(service===null)return {status:'cancelled',humanTasks:[]};
    captureMode=service.some(item=>item.id==='daemon'&&item.selected)?'daemon':'hook';
   }
-  checkMode(selections);
-  onProgress?.('Installing session capture tooling','Connecting the selected agents and enabling session recording.','installing');
-  let state=await applyClients(scope,selections,installPlugins,command,installDaemon,validateCapturePrincipal,['darwin','linux'].includes(platform)&&!process.env.OPENCRAWL_AUTH,daemonReady,captureMode,eligibility(selections).eligible,stopDaemon);
-  if(state.pluginResults?.some(row=>row.captureAvailable===false))return completed(state);
-  const available=availableHistory().filter(file=>capture.has(file.harness)),historyClients=clients.filter(client=>capture.has(client.id)&&client.history&&available.some(file=>file.harness===client.id));
-  const selectedHistory=await choose({phase:2,title:'Import past sessions',description:historyBenefit+'\nOnly the agents you selected for capture are offered here.',noneLabel:'Skip history import',emptyMessage:'No past sessions found for your selected agents. Continuing without an import.',items:historyClients.map(client=>{const count=available.filter(file=>file.harness===client.id).length;return {id:client.id,label:client.label,detail:`${count} ${count===1?'file':'files'}`,selected:prospectiveHistory[client.id]===true};})});
-  if(selectedHistory===null)return {...await result(state,launchHistory,inspectHooks,command,false),historyDecision:'unchanged'};
-  onProgress?.('Saving your choices',selectedHistory.some(row=>row.selected)?'Starting your history import in the background.':'Continuing without a new history import.');
-  selections.history=Object.fromEntries(Object.keys(selections.history).map(id=>[id,selectedHistory.some(row=>row.id===id&&row.selected)]));
-  state=await applyHistory(scope,selections,available.filter(file=>selections.history[file.harness]),retainedHistory);
-  return completed(state);
+  if(capture.size){
+   checkMode(selections);
+   onProgress?.('Installing session capture tooling','Connecting the selected agents and enabling session recording.','installing');
+  }else onProgress?.('Saving your choices','Turning off new-session recording for this workspace on this machine.');
+  const state=await saveRecording();
+  const available=availableHistory(),historyClients=clients.filter(client=>client.history&&available.some(file=>file.harness===client.id));
+  const selectedHistory=await choose({phase:2,title:'Import past sessions',description:historyBenefit+'\nChoose a one-time import from any listed agent, even if new-session recording is off.',noneLabel:'Skip history import',emptyMessage:'No supported local session history was found. Continuing without an import.',items:historyClients.map(client=>{const count=available.filter(file=>file.harness===client.id).length;return {id:client.id,label:client.label,detail:`${count} ${count===1?'file':'files'}`,selected:prospectiveHistory[client.id]===true};})});
+  if(selectedHistory===null)return capture.size?{...await result(state,launchHistory,inspectHooks,command,false),historyDecision:'unchanged'}:recordingOff(state);
+  const selectedClients=selectedHistory.filter(row=>row.selected).map(row=>row.id);
+  if(!selectedClients.length){
+   // Skip this import without replacing an earlier approved snapshot or disturbing its worker.
+   return capture.size||sameOwner&&state.historyJob?completed(state,false):recordingOff(state);
+  }
+  onProgress?.('Saving your choices','Starting your history import in the background.');
+  selections.history=Object.fromEntries(Object.keys(selections.history).map(id=>[id,selectedClients.includes(id)]));
+  if(!capture.size&&!sameOwner)await configureClients(); // Bind only the approved upload.
+  return completed(await applyHistory(scope,selections,available.filter(file=>selections.history[file.harness]),retainedHistory));
  }
  if(action!=='apply')return plan;
  if(values.yes!==true)return plan;
  checkMode(selections);
  if(values['plan-id']!==undefined&&values['plan-id']!==planId)throw new CliError('SETUP_PLAN_CHANGED',`The workspace, choices or available history changed. Review \`${formatSetupCommand(['setup','--api',api,'--json'],command)}\` again before applying.`,2);
  if(values['plan-id']===undefined&&!['plugins','forward','history'].every(group=>typeof values[group]==='string'))throw new CliError('SETUP_CONFIRMATION_REQUIRED','Use the applyCommand after the user confirms its choices, or specify all three selections with --yes.',64);
- if(!chosen(selections,'plugins').length&&!chosen(selections,'forward').length&&!chosen(selections,'history').length)return recordingOff();
- await applyClients(scope,selections,installPlugins,command,installDaemon,validateCapturePrincipal,['darwin','linux'].includes(platform)&&!process.env.OPENCRAWL_AUTH,daemonReady,captureMode,eligibility(selections).eligible,stopDaemon);
+ if(!chosen(selections,'plugins').length&&!chosen(selections,'forward').length&&!chosen(selections,'history').length)return recordingOff(await saveRecording());
+ await configureClients();
  return completed(await applyHistory(scope,selections,files,retainedHistory));
 }
 export function formatSetupOutput(data:unknown):string{

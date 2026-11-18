@@ -23,13 +23,16 @@ import type {SetupUi} from '../src/setup/tui.tsx';
 const setupCommand=(action:string,api:string,values:Parameters<typeof realSetupCommand>[2],dependencies:NonNullable<Parameters<typeof realSetupCommand>[3]>={})=>realSetupCommand(action,api,values,{platform:'darwin',modeEligibility:()=>({eligible:values['capture-mode']==='daemon'||Boolean(readCaptureConfig()?.captureWorker||readCaptureConfig()?.daemonRequested),reason:'Fixture supervisor'}),daemonReady:async()=>true,installDaemon:async()=>({kind:'launchd',status:'installed',supervised:true,label:'fixture',path:'fixture'}),...dependencies});
 
 test('full human TUI keeps installation, history and pending verification in its own screens',async()=>fixture(async(api,_dir,_observations,setCodex)=>{
- const screens:string[]=[],controller=new AbortController();let closed=false;
- const ui:SetupUi={signal:controller.signal,welcome:async()=>true,hosting:async()=>'self-hosted',workspace:async()=>({kind:'address',api}),progress:title=>{screens.push(title);if(title==='Finish connecting your agents')setCodex({installed:true,mcp:{state:'authenticated'},proof:{state:'verified'}});},choose:async screen=>screen.items.map(item=>({...item,selected:screen.phase===1&&item.id==='codex'})),action:async screen=>{
+ const screens:string[]=[],controller=new AbortController();let closed=false,polls=0;
+ const ui:SetupUi={signal:controller.signal,welcome:async()=>true,hosting:async()=>'self-hosted',workspace:async()=>({kind:'address',api}),progress:title=>{screens.push(title);},choose:async screen=>screen.items.map(item=>({...item,selected:screen.phase===1&&item.id==='codex'})),action:async screen=>{
   screens.push(screen.title);
   return 'done';
  },close:()=>{closed=true;},native:async run=>run()};
- const result=await runInteractiveSetup({values:{},readDestination:()=>({}),withOrigin:async(origin,run)=>{expect(origin).toBe(api);return run();},login:async()=>{throw Error('Unexpected sign-in');}},{createUi:()=>ui,which:()=>null,pause:async()=>{},setup:(action,origin,values,dependencies)=>setupCommand(action,origin,values,{...dependencies,installPlugins:async()=>({results:[{client:'codex',status:'installed'}],humanTasks:[]}),launchHistory:()=>({state:'not_started'})})});
- expect(result).toBe(0);expect(closed).toBe(true);expect(screens).toContain('Installing session capture tooling');expect(screens).toContain('Finish connecting your agents');expect(screens.at(-1)).toBe('Setup complete');
+ const result=await runInteractiveSetup({values:{},readDestination:()=>({}),withOrigin:async(origin,run)=>{expect(origin).toBe(api);return run();},login:async()=>{throw Error('Unexpected sign-in');}},{createUi:()=>ui,which:()=>null,pause:async()=>{
+  expect(screens.at(-1)).toBe('Finish connecting your agents');
+  if(++polls===3)setCodex({installed:true,mcp:{state:'authenticated'},proof:{state:'verified'}});
+ },setup:(action,origin,values,dependencies)=>setupCommand(action,origin,values,{...dependencies,installPlugins:async()=>({results:[{client:'codex',status:'installed'}],humanTasks:[]}),launchHistory:()=>({state:'not_started'})})});
+ expect(result).toBe(0);expect(closed).toBe(true);expect(screens).toContain('Installing session capture tooling');expect(polls).toBe(3);expect(screens.slice(screens.indexOf('Checking setup'))).toEqual(['Checking setup','Finish connecting your agents','Setup complete']);
  expect(readCaptureConfig()?.harnesses).toEqual(['codex']);expect(readSetupState({api,tenantId:'tenant',userId:'user'})?.selections.history.codex).toBe(false);
 }));
 
@@ -177,14 +180,16 @@ test('structured plan has no enrollment effects; apply requires explicit consent
  await expect(setupCommand('apply',api,{yes:true})).rejects.toMatchObject({code:'SETUP_CONFIRMATION_REQUIRED'});expect(readCaptureConfig()).toBeNull();
  await expect(setupCommand('apply',api,{yes:true,'plan-id':'changed'})).rejects.toMatchObject({code:'SETUP_PLAN_CHANGED'});expect(observations).toHaveLength(0);
 }));
-test('two interactive screens install plugins first and queue approved history only after the second confirmation',async()=>fixture(async(api,dir,observations)=>{
+test('recording Codex can independently import only Claude history after the second confirmation',async()=>fixture(async(api,dir,observations)=>{
+ const file=join(dir,'claude','projects','example','claude.jsonl');mkdirSync(dirname(file),{recursive:true});
+ writeFileSync(file,JSON.stringify({type:'user',sessionId:'claude-history',uuid:'one',message:{role:'user',content:'past session'}})+'\n');
  const steps:string[]=[],screens:SelectionScreen[]=[],launched:SetupState[]=[];
  const result=await setupCommand('run',api,{}, {interactive:true,choose:async screen=>{
   screens.push(screen);steps.push('choose:'+screens.length);
   if(screens.length===1){expect(readSetupState({api,tenantId:'tenant',userId:'user'})).toBeNull();return screen.items.map(item=>({...item,selected:item.id==='codex'}));}
-  expect(steps).toEqual(['choose:1','install','choose:2']);expect(launched).toHaveLength(0);expect(readSetupState({api,tenantId:'tenant',userId:'user'})?.historyJob).toBeUndefined();expect(screen.description.split('\n')[0]).toBe(historyBenefit);expect(screen.items.find(item=>item.id==='codex')?.selected).toBe(false);return screen.items.map(item=>({...item,selected:true}));
+  expect(steps).toEqual(['choose:1','install','choose:2']);expect(launched).toHaveLength(0);expect(readSetupState({api,tenantId:'tenant',userId:'user'})?.historyJob).toBeUndefined();expect(screen.description.split('\n')[0]).toBe(historyBenefit);expect(screen.items.map(item=>item.id)).toEqual(['claude-code','codex']);expect(screen.items.every(item=>!item.selected)).toBe(true);return screen.items.map(item=>({...item,selected:item.id==='claude-code'}));
  },installPlugins:async(_api,selected,options)=>{steps.push('install');expect(selected).toEqual(['codex']);expect(readCaptureConfig()).toMatchObject({hookOwnership:'plugin',harnesses:['codex']});expect(readCaptureConfig()?.command).toEqual(options?.command);return {results:[{client:'codex',status:'installed'}],humanTasks:[]};},launchHistory:state=>{steps.push('history');launched.push(state);return {state:'queued',jobId:state.historyJob?.id};}});
- expect(steps).toEqual(['choose:1','install','choose:2','history']);expect(observations).toHaveLength(2);expect(launched[0].historyJob?.files).toHaveLength(1);expect(launched[0].selections.forward.codex).toBe(true);expect(formatSetupOutput(result)).toContain('In your primary coding agent');
+ expect(steps).toEqual(['choose:1','install','choose:2','history']);expect(observations).toHaveLength(2);expect(launched[0].historyJob?.files.map(f=>f.path)).toEqual([realpathSync(file)]);expect(readCaptureConfig()).toMatchObject({harnesses:['codex'],historyHarnesses:['claude-code']});expect(formatSetupOutput(result)).toContain('In your primary coding agent');
  for(const file of [join(dir,'codex','hooks.json'),join(dir,'codex','config.toml'),join(dir,'config','opencrawl','capture','runner.sh'),join(dir,'codex','skills','opencrawl','SKILL.md')])expect(existsSync(file)).toBe(false);
 }));
 test('cancelling history preserves the confirmed clients and never starts a new import',async()=>fixture(async(api)=>{
@@ -636,20 +641,59 @@ for(const failure of ['throw','unsupervised'] as const)test('approved history st
 for(const choice of [
  {plugins:'codex',forward:'none',history:'none'},
  {plugins:'codex',forward:'none',history:'codex'},
- {plugins:'none',forward:'none',history:'codex'},
 ])test('new installs cannot separate installation from capture: '+JSON.stringify(choice),()=>fixture(async(api,_dir,observations)=>{
  await expect(setupCommand('apply',api,{...choice,yes:true},{installPlugins:async()=>{throw Error('Must not install');},launchHistory:()=>{throw Error('Must not import');}})).rejects.toMatchObject({code:'SETUP_CAPTURE_REQUIRED'});
  expect(readCaptureConfig()).toBeNull();expect(readSetupState({api,tenantId:'tenant',userId:'user'})).toBeNull();expect(observations).toEqual([]);
 }));
 
-test('machine-wide opt-out skips installation and history; cancellation saves nothing',()=>fixture(async(api,_dir,observations)=>{
+test('declining recording still offers history, and skipping both leaves no installation',()=>fixture(async(api,_dir,observations)=>{
  const dependencies={interactive:true,installPlugins:async()=>{throw Error('Must not install');},installDaemon:async()=>{throw Error('Must not start service');},launchHistory:()=>{throw Error('Must not import');}};
  expect(await setupCommand('run',api,{}, {...dependencies,choose:async()=>null})).toMatchObject({status:'cancelled'});
  const scope={api,tenantId:'tenant',userId:'user'};expect(readSetupState(scope)).toBeNull();
  let questions=0;
- const off=await setupCommand('run',api,{}, {...dependencies,choose:async screen=>{questions++;expect(screen.noneLabel).toBe('Do not record any sessions on this machine');expect(screen.items.map(item=>item.id)).toEqual(['claude-code','codex','antigravity','cursor']);return screen.items.map(item=>({...item,selected:false}));}});
- expect(off).toMatchObject({status:'recording_off'});expect(questions).toBe(1);expect(readCaptureConfig()).toBeNull();expect(observations).toEqual([]);
+ const off=await setupCommand('run',api,{}, {...dependencies,choose:async screen=>{questions++;
+  if(screen.phase===1)expect(screen.noneLabel).toBe('Do not record any sessions on this machine');
+  else {expect(screen.phase).toBe(2);expect(screen.items.map(item=>item.id)).toEqual(['codex']);}
+  return screen.items.map(item=>({...item,selected:false}));}});
+ expect(off).toMatchObject({status:'recording_off'});expect(questions).toBe(2);expect(readCaptureConfig()).toBeNull();expect(observations).toEqual([]);
  const saved=readSetupState(scope)!;for(const group of ['plugins','forward','history'] as const)expect(Object.values(saved.selections[group]).every(value=>!value)).toBe(true);
+}));
+
+test('history-only interactive setup finishes without installing a recording plugin or waiting for an agent',()=>fixture(async api=>{
+ const ui:SetupUi={
+  signal:new AbortController().signal,welcome:async()=>true,hosting:async()=>'cloud',workspace:async()=>null,close:()=>{},progress:()=>{},native:async run=>run(),
+  choose:async screen=>screen.items.map(item=>({...item,selected:screen.phase===2&&item.id==='codex'})),
+  action:async screen=>{
+   expect(screen.description).toBe('Past sessions are importing in the background.');
+   expect(screen.details).toEqual(['New-session recording is off.']);
+   return 'done';
+  },
+ };
+ const code=await runInteractiveSetup({values:{},readDestination:()=>({api}),withOrigin:(_origin,run)=>run(),login:async()=>{}},{
+  createUi:()=>ui,setup:(action,origin,values,deps)=>{
+   expect(action).toBe('run');
+   return setupCommand(action,origin,values,{...deps,
+    installPlugins:async(_api,selected)=>{expect(selected).toEqual([]);return {results:[],humanTasks:[]};},
+    installDaemon:async()=>{throw Error('History import must not install background capture');},
+    launchHistory:state=>{expect(state.historyJob?.clients).toEqual(['codex']);return {state:'queued'};},
+   });
+  },
+ });
+ expect(code).toBe(0);expect(readCaptureConfig()).toMatchObject({harnesses:[],historyHarnesses:['codex'],backgroundStartup:false});
+}));
+
+test('changing recording and skipping a new import preserves the approved file snapshot',()=>fixture(async(api,dir)=>{
+ const scope={api,tenantId:'tenant',userId:'user'};
+ const dependencies={installPlugins:async()=>({results:[],humanTasks:[]}),launchHistory:()=>({state:'queued'})};
+ await setupCommand('apply',api,{plugins:'none',forward:'none',history:'codex',yes:true},dependencies);
+ const approved=readSetupState(scope)!.historyJob;
+ writeFileSync(join(dir,'codex','sessions','later.jsonl'),'{}');
+ await setupCommand('run',api,{}, {...dependencies,interactive:true,choose:async screen=>{
+  if(screen.phase===2)expect(screen.items.every(item=>!item.selected)).toBe(true);
+  return screen.items.map(item=>({...item,selected:false}));
+ },launchHistory:()=>{throw Error('Skipping must not restart the worker');}});
+ expect(readSetupState(scope)?.historyJob).toEqual(approved);
+ expect(readCaptureConfig()).toMatchObject({harnesses:[],historyHarnesses:['codex']});
 }));
 
 test('eligible setup offers the utility by default and preserves a declined installation',()=>fixture(async api=>{

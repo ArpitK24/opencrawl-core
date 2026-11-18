@@ -7,6 +7,7 @@ Interactive setup on macOS connects a workspace and installs recording for the s
 1. Run `opencrawl setup` in a terminal. The entire interactive setup uses one
    Ink TUI: workspace input, browser approval guidance, installation, history,
    verification, errors and completion share its frame and keyboard controls.
+   The welcome screen explains recording and links to the OpenCrawl Cloud privacy notice.
    Choose Cloud or Self-hosted when no destination is saved or explicitly
    supplied. Cloud uses `https://app.getopencrawl.com`; only Self-hosted asks
    for a workspace address. Back returns to the hosting choice. Saved addresses
@@ -21,11 +22,10 @@ Interactive setup on macOS connects a workspace and installs recording for the s
    and Cursor, with unavailable agents dimmed. Move with the arrow keys and toggle checkboxes with Space. Move to the
    bottom buttons and press Enter to activate one. Selecting an agent installs its integration and enables capture.
    Detected agents start selected; saved off choices remain off. The final option
-   is **Do not record any sessions on this machine**. That option skips
-   installation and history import.
-3. **Import past sessions.** After capture is configured, a separate screen
-   offers available histories for the selected agents. History starts off for a
-   new installation. Choose histories to import or **Skip history import**.
+   is **Do not record any sessions on this machine**. You can still import past sessions with recording off.
+   Eligible new installations offer the background utility preselected.
+3. **Import past sessions.** A separate screen lists supported local histories,
+   including agents you left out of ongoing recording. Each one-time import starts unchecked. Choose histories to import or **Skip history import**.
    If no eligible history exists, setup continues without another question.
    Cursor history import is not currently supported.
 4. Complete any required native agent sign-in/trust clicks. Claude-only setup
@@ -47,9 +47,9 @@ opencrawl setup apply --api https://your-workspace.example --plugins claude-code
 ```
 
 Use the same harness IDs for `--plugins` and `--forward`. Installation implies
-capture. `--history` is an independently approved subset of those agents; `none`
-skips import. A new installation cannot be search-only or history-only. Use
-`none` for all three flags to decline recording. Credentials missing from an
+capture. Choose any supported history sources with `--history`. For a one-time
+import with recording off, use `--plugins none --forward none --history codex`.
+Use `none` for all three flags to skip both recording and import. Credentials missing from an
 agent invocation produce a JSON action rather than an interactive questionnaire.
 
 `setup --json` returns a plan and exact `applyCommand` without changing clients.
