@@ -170,7 +170,7 @@ export async function installCaptureDaemon(config:CaptureConfig,{home=homedir(),
     };
     const failed=(operation:Parameters<typeof launchdOperation>[0],result:ReturnType<typeof spawnSync>):never=>{
       const failure=launchdOperation(operation,result);
-      const error=new CliError('CAPTURE_SUPERVISION_FAILED',`Could not install the capture LaunchAgent: launchctl ${operation} failed (exit=${failure.exitStatus??'none'}, signal=${failure.signal??'none'}, error=${failure.errorCode??'none'}). Check this user's LaunchAgent registration, then rerun setup resume.`);
+      const error=new CliError('CAPTURE_SUPERVISION_FAILED',`Could not install the capture LaunchAgent: launchctl ${operation} failed (exit=${failure.exitStatus??'none'}, signal=${failure.signal??'none'}, error=${failure.errorCode??'none'}). Check this user's LaunchAgent registration, then rerun setup.`);
       return recordFailure(error);
     };
     const isAbsent=(result:ReturnType<typeof spawnSync>)=>result.status===113&&!result.error&&!result.signal&&String(result.stderr).includes('Could not find service');
@@ -213,7 +213,7 @@ export async function installCaptureDaemon(config:CaptureConfig,{home=homedir(),
       while(true){
         replacementUnchanged();
         const remaining=deadline-performance.now();
-        if(remaining<=0)recordFailure(new CliError('CAPTURE_SUPERVISION_TIMEOUT','The previous capture LaunchAgent or worker did not stop within 30 seconds. Its service file and queued data were preserved; check the user LaunchAgent, then rerun setup resume.'));
+        if(remaining<=0)recordFailure(new CliError('CAPTURE_SUPERVISION_TIMEOUT','The previous capture LaunchAgent or worker did not stop within 30 seconds. Its service file and queued data were preserved; check the user LaunchAgent, then rerun setup.'));
         const checked=run('launchctl',['print',target],{stdio:'pipe',timeout:Math.max(1,Math.min(5000,Math.ceil(remaining)))});
         operations.push(launchdOperation('print',checked));replacementUnchanged();
         if(isAbsent(checked)){
@@ -222,7 +222,7 @@ export async function installCaptureDaemon(config:CaptureConfig,{home=homedir(),
           catch(error){
             replacementUnchanged();
             if(!(error instanceof CliError)||error.code!=='SESSION_BUSY')
-              recordFailure(new CliError('CAPTURE_SUPERVISION_FAILED','Could not verify that the previous capture worker stopped. Its service file and queued data were preserved; rerun setup resume after checking local state.'));
+              recordFailure(new CliError('CAPTURE_SUPERVISION_FAILED','Could not verify that the previous capture worker stopped. Its service file and queued data were preserved; rerun setup after checking local state.'));
           }
           replacementUnchanged();
           if(released&&performance.now()<deadline)break;

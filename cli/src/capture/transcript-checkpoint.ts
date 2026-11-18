@@ -20,6 +20,6 @@ export const validTranscriptIdentity=(value:unknown):value is string=>typeof val
 /** A numeric legacy inode has no device binding, even when it is a safe integer. */
 export function transcriptIdentityMatches(saved:unknown,current:string):boolean {
   if(!validTranscriptIdentity(saved))
-    throw new CliError('CAPTURE_FILE_IDENTITY_UNVERIFIED','This transcript has no verifiable saved file identity. Capture is paused; its cursor and queued data are unchanged. Run setup resume with this same CLI profile and API to refresh only unverifiable future-recording boundaries; saved history choices stay unchanged.');
+    throw new CliError('CAPTURE_FILE_IDENTITY_UNVERIFIED','This transcript has no verifiable saved file identity. Capture is paused; its cursor and queued data are unchanged. Run setup with this same CLI profile and API to refresh only unverifiable future-recording boundaries; saved history choices stay unchanged.');
   return saved===current;
 }

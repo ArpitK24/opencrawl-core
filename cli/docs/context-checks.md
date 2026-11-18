@@ -9,7 +9,7 @@ After installing the native OpenCrawl plugin:
 
 ```sh
 opencrawl context-suggestions enable --harness codex --harness claude-code
-opencrawl setup resume
+opencrawl setup
 opencrawl context-suggestions status
 ```
 

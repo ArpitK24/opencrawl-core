@@ -11,7 +11,7 @@ test('setup guides preserve the actual invocation and quote client/server argume
  for(const platform of ['linux','win32'] as const){
   const command=[platform==='win32'?"C:\\Private install's\\opencrawl.cmd":"/private install's/bin/opencrawl"];
   const guide=setupAgentGuide('codex',api,command,platform);
-  for(const args of [['setup','hooks','--json'],['setup','status','--local','--json'],['setup','status','--json'],['setup','resume','--json'],['setup'],['verify-installation','--client','codex','--json']]){
+  for(const args of [['setup','hooks','--json'],['setup','status','--local','--json'],['setup','status','--json'],['setup','--yes','--json'],['setup'],['verify-installation','--client','codex','--json']]){
    expect(guide).toContain('`'+formatSetupCommand([...args,'--api',api],command,platform)+'`');
   }
   expect(guide).not.toMatch(/`opencrawl (setup|verify-installation)/);

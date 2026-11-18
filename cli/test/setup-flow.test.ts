@@ -18,6 +18,7 @@ import {validTranscriptIdentity} from '../src/capture/transcript-checkpoint.ts';
 import {installCapture} from '../src/capture/install.ts';
 import {canInstallRecordingPlugin,installSetupPlugins,setupPluginIdentity} from '../src/setup/plugins.ts';
 import type {SelectionScreen} from '../src/setup/select.ts';
+import {terminalSetupEntry} from '../src/setup/entry.ts';
 import {needsFirstRunSetup} from '../src/setup/first-run.ts';
 import {runInteractiveSetup} from '../src/setup/interactive.ts';
 import type {SetupUi} from '../src/setup/tui.tsx';
@@ -32,6 +33,76 @@ test('first run stays open after interruption and remembers an explicit opt-out 
  expect(readCaptureConfig()).toBeNull();
  expect(await needsFirstRunSetup()).toBe(false);
  expect(await needsFirstRunSetup('https://different.example')).toBe(true);
+ expect(await setupCommand('run',api,{yes:true,json:true})).toMatchObject({status:'recording_off'});
+ expect(readCaptureConfig()).toBeNull();
+}));
+
+test('plain setup resumes each confirmed step and reopens choices after verification',()=>fixture(async(api,_dir,_observations,setClient)=>{
+ const scope={api,tenantId:'tenant',userId:'user'};
+ const phases:number[]=[];
+ let failInstall=true,installs=0;
+ const deps={
+  interactive:true,modeEligibility:()=>({eligible:true,reason:'Fixture'}),
+  installPlugins:async()=>{
+   installs++;
+   if(failInstall)throw Error('interrupted plugin install');
+   return {results:[{client:'codex' as const,status:'installed' as const}],humanTasks:[]};
+  },
+  launchHistory:()=>{throw Error('History was never approved');},
+ };
+ const run=(choose:(screen:SelectionScreen)=>ReturnType<typeof pick>|null)=>setupCommand('run',api,{},{
+  ...deps,choose:async screen=>{phases.push(screen.phase);return choose(screen);},
+ });
+ const pick=(screen:SelectionScreen,id?:string)=>screen.items.map(item=>({...item,selected:item.id===id}));
+ await run(screen=>screen.phase===1?pick(screen,'codex'):null);
+ expect(phases.splice(0)).toEqual([1,3]);expect(readCaptureConfig()).toBeNull();
+ expect(await setupCommand('run',api,{json:true})).toMatchObject({status:'confirmation_required'});
+ for(const flags of [{},{yes:true,json:true}]){
+  expect(await setupCommand('run',api,flags,{...deps,interactive:false})).toMatchObject({question:'background_capture'});
+ }
+ await expect(run(screen=>pick(screen))).rejects.toThrow('interrupted plugin install');
+ expect(phases.splice(0)).toEqual([3]);expect(readSetupState(scope)?.checkpoint?.step).toBe('install');
+ failInstall=false;
+ await run(()=>null);
+ expect(phases.splice(0)).toEqual([2]);expect(installs).toBe(2);
+ expect(readSetupState(scope)?.checkpoint?.step).toBe('history');
+ await run(screen=>pick(screen));
+ expect(phases.splice(0)).toEqual([2]);expect(installs).toBe(2);
+ expect(readSetupState(scope)?.firstRun).toBe('ready');
+ setClient({installed:true,mcp:{state:'authenticated'},proof:{state:'verified'}});
+ expect(await run(()=>{throw Error('Repeated choice');})).toMatchObject({nextAction:{kind:'complete'}});
+ expect(installs).toBe(2);expect(readSetupState(scope)?.firstRun).toBe('complete');
+ await run(()=>null);expect(phases).toEqual([1]);
+}));
+
+test('plain setup uses the approved history snapshot after an interrupted history-only install',()=>fixture(async(api,dir)=>{
+ const scope={api,tenantId:'tenant',userId:'user'};
+ const choose=async(screen:SelectionScreen)=>screen.items.map(item=>({...item,selected:screen.phase===2&&item.id==='codex'}));
+ const fail=async()=>{throw Error('interrupted history binding');};
+ await expect(setupCommand('run',api,{}, {interactive:true,choose,installPlugins:fail})).rejects.toThrow('interrupted history binding');
+ const snapshot=readSetupState(scope)?.checkpoint?.approvedHistory?.files;
+ expect(snapshot?.length).toBe(1);
+ writeFileSync(join(dir,'codex','sessions','unapproved.jsonl'),'{}');
+ const resumed=await setupCommand('run',api,{}, {interactive:true,choose:fail,
+  installPlugins:async()=>({results:[],humanTasks:[]}),launchHistory:state=>{
+   expect(state.historyJob?.files).toEqual(snapshot);return {state:'queued'};
+  }});
+ expect(resumed).toMatchObject({history:{state:'queued'},nextAction:{kind:'complete'}});
+ expect(readSetupState(scope)?.checkpoint).toBeUndefined();
+}));
+
+test('a saved self-hosted address survives interrupted sign-in without authorizing an environment token',()=>fixture(async api=>{
+ const first=terminalSetupEntry();await first.save(api);
+ const resumed=terminalSetupEntry();expect(resumed).toMatchObject({api,continuing:true});
+ const different=terminalSetupEntry('https://another.example');expect(different.continuing).toBe(false);
+ const unexpected=async():Promise<never>=>{throw Error('Repeated navigation');};
+ let connected=false;
+ const ui:SetupUi={signal:new AbortController().signal,welcome:unexpected,hosting:unexpected,workspace:unexpected,choose:unexpected,native:unexpected,
+  close:()=>{},progress:()=>{},action:async()=>'done'};
+ await runInteractiveSetup({values:{},entry:()=>resumed,readDestination:()=>({}),withOrigin:(origin,run)=>{
+  expect(origin).toBeUndefined();return run();
+ },login:unexpected},{createUi:()=>ui,setup:async(_action,destination)=>{connected=true;expect(destination).toBe(api);return {status:'recording_off',scope:{api,tenantId:'tenant',userId:'user'},installationId:undefined,selections:{plugins:{},forward:{},history:{}},humanTasks:[]};}});
+ expect(connected).toBe(true);expect(terminalSetupEntry().continuing).toBe(false);
 }));
 
 test('first run checks legacy installation proof once and keeps completed help offline',()=>fixture(async(api,_dir,_observations,setClient)=>{
@@ -131,7 +202,7 @@ test('a failed plugin leaves history and healthy agents usable and can be retrie
  expect(await needsFirstRunSetup(api)).toBe(false);
  expect(await setupCommand('next',api,{})).toMatchObject({nextAction:{kind:'repair_plugin',client:'cursor'}});
  expect(await setupCommand('status',api,{local:true})).toMatchObject({pluginResults:expect.arrayContaining([failure])});
- const resumed=await setupCommand('resume',api,{}, {installPlugins:async(_api,clients)=>{
+ const resumed=await setupCommand('run',api,{}, {interactive:true,choose:async()=>{throw Error('Repeated confirmed choice');},installPlugins:async(_api,clients)=>{
   expect(clients).toEqual(['codex','cursor']);return {results:[{client:'codex',status:'unchanged'},{client:'cursor',status:'prepared'}],humanTasks:[]};
  },launchHistory:()=>({state:'queued'})});
  expect(resumed).toMatchObject({nextAction:{kind:'native_tool',arguments:{client:'cursor'}}});
@@ -145,7 +216,7 @@ test('an interactive resume with only a failed plugin finishes without a repair 
  const ui:SetupUi={invite:async()=>{throw Error("Unexpected invite prompt");},signal:new AbortController().signal,welcome:unexpected,hosting:unexpected,workspace:unexpected,choose:unexpected,native:unexpected,close:()=>{},progress:()=>{},
   action:async screen=>{actions.push(screen.title);expect(screen.actions?.map(action=>action.label)).toEqual(['Done']);return 'done';}
  };
- const code=await runInteractiveSetup({action:'resume',values:{},readDestination:()=>({api}),withOrigin:(_origin,run)=>run(),login:unexpected},{
+ const code=await runInteractiveSetup({entry:()=>terminalSetupEntry(api),values:{},readDestination:()=>({api}),withOrigin:(_origin,run)=>run(),login:unexpected},{
   createUi:()=>ui,pause:unexpected,setup:(action,origin,values,deps)=>setupCommand(action,origin,values,{...deps,installPlugins:async()=>failure})
  });
  expect(code).toBe(0);expect(actions).toEqual(['Setup saved']);expect(await needsFirstRunSetup(api)).toBe(false);
@@ -282,7 +353,7 @@ test('Claude setup separates capture from history and gives the agent one contin
  const result=await setupCommand('run',api,{client:['claude-code']},{interactive:true,choose:async screen=>{questions++;expect(Number(screen.phase)).toBe(questions);if(screen.phase===2)expect(screen.items[0].selected).toBe(false);return screen.items.map(item=>({...item,selected:screen.phase===1}));},installPlugins:async(_api,clients)=>{expect(clients).toEqual(['claude-code']);return {results:[{client:'claude-code',status:'installed'}],humanTasks:[]};},launchHistory:()=>({state:'not_started'})});
  expect(questions).toBe(2);expect(result).toMatchObject({client:'claude-code',selections:{plugins:{'claude-code':true},forward:{'claude-code':true},history:{'claude-code':false}}});
  for(const group of ['plugins','forward','history'] as const)expect(readSetupState({api,tenantId:'tenant',userId:'user'})?.selections[group].codex).not.toBe(true);
- expect(result).toHaveProperty('agentPrompt');expect((result as {agentPrompt:string}).agentPrompt).toContain('setup next');
+ expect(result).toMatchObject({agentPrompt:expect.stringContaining('setup next')});
  const next=await setupCommand('next',api,{}, {choose:async()=>{throw new Error('must not ask again');}});
  expect(next).toMatchObject({status:'next_action',nextAction:{actor:'agent',kind:'native_tool',tool:'installation_status'}});
  expect(readSetupState({api,tenantId:'tenant',userId:'user'})?.historyJob).toBeUndefined();
@@ -312,7 +383,7 @@ test('cancelling history preserves the confirmed clients and never starts a new 
 
 test('resume retries pending selected plugins without another selection screen or broader history consent',async()=>fixture(async api=>{
  let chooseCount=0,installs=0;
- const pending=await setupCommand('run',api,{}, {interactive:true,choose:async screen=>{chooseCount++;return screen.items.map(item=>({...item,selected:chooseCount===1&&item.id==='codex'}));},installPlugins:async()=>({results:[{client:'codex',status:'pending'}],humanTasks:[{id:'codex-install',kind:'plugin_install',client:'codex',title:'Install Codex',instruction:'Install Codex, then run setup resume.'}]}),launchHistory:()=>({state:'not_started'})});
+ const pending=await setupCommand('run',api,{}, {interactive:true,choose:async screen=>{chooseCount++;return screen.items.map(item=>({...item,selected:chooseCount===1&&item.id==='codex'}));},installPlugins:async()=>({results:[{client:'codex',status:'pending'}],humanTasks:[{id:'codex-install',kind:'plugin_install',client:'codex',title:'Install Codex',instruction:'Install Codex, then run setup.'}]}),launchHistory:()=>({state:'not_started'})});
  expect(pending).toMatchObject({status:'needs_attention'});const before=readSetupState({api,tenantId:'tenant',userId:'user'});
  const resumed=await setupCommand('resume',api,{json:true},{choose:async()=>{throw new Error('Unexpected questionnaire');},installPlugins:async(_api,selected)=>{installs++;expect(selected).toEqual(['codex']);return {results:[{client:'codex',status:'installed'}],humanTasks:[]};},launchHistory:()=>({state:'not_started'})});
  expect(installs).toBe(1);expect(resumed).toMatchObject({status:'configured'});expect(readSetupState({api,tenantId:'tenant',userId:'user'})?.selections.history).toEqual(before?.selections.history);expect(readSetupState({api,tenantId:'tenant',userId:'user'})?.historyJob).toBeUndefined();
@@ -431,8 +502,8 @@ test('prepared plugin handoff reconciles only selected activations with ready su
   const client=scenario==='unselected'?'claude-code' as const:'codex' as const;
   const dependencies={...setupCodex,command,installPlugins:async()=>{installs++;return {results:[{client,status}],humanTasks:[]};},...(scenario==='worker-pending'?{installDaemon:async()=>({kind:'external',status:'required',supervised:false,command:['/owned/worker'],reason:'No systemd user manager'})}:{})};
   const applied=await legacySetupCommand('apply',api,{yes:true,plugins:'codex',forward:'none',history:'none'},dependencies);
-  if(!applied||!('agentPrompt' in applied))throw Error('Expected an agent handoff');
-  const resumeCommand=formatSetupCommand(['setup','resume','--api',api,'--json'],profileSetupCommand(command,join(dir,'config')));
+  if(!applied||!('agentPrompt' in applied)||typeof applied.agentPrompt!=='string')throw Error('Expected an agent handoff');
+  const resumeCommand=formatSetupCommand(['setup','--yes','--api',api,'--json'],profileSetupCommand(command,join(dir,'config')));
   expect(applied.agentPrompt.includes('`'+resumeCommand+'` once')).toBe(scenario==='prepared');
   expect(installs).toBe(1);
   const saved=readSetupState({api,tenantId:'tenant',userId:'user'});
@@ -843,7 +914,8 @@ test('unavailable daemon and cancelled daemon question make no enrollment change
  await expect(setupCommand('apply',api,{yes:true,plugins:'codex',forward:'codex',history:'none','capture-mode':'daemon'},{modeEligibility:()=>({eligible:false,reason:'Unsupported host'})})).rejects.toMatchObject({code:'SETUP_DAEMON_UNAVAILABLE'});
  expect(readCaptureConfig()).toBeNull();
  const answer=await setupCommand('run',api,{}, {interactive:true,modeEligibility:()=>({eligible:true,reason:'Fixture'}),choose:async screen=>screen.phase===3?null:screen.items.map(row=>({...row,selected:row.id==='codex'}))});
- expect(answer).toMatchObject({status:'cancelled'});expect(readCaptureConfig()).toBeNull();expect(readSetupState({api,tenantId:'tenant',userId:'user'})).toBeNull();
+ expect(answer).toMatchObject({status:'cancelled'});expect(readCaptureConfig()).toBeNull();
+ expect(readSetupState({api,tenantId:'tenant',userId:'user'})).toMatchObject({checkpoint:{step:'service'},selections:{forward:{codex:true}}});
 }));
 
 // Enable on the Mac proof host with the verified public release directory.
