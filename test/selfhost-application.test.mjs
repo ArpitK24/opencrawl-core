@@ -9,6 +9,7 @@ import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {selfhostApplication} from '../dist/src/selfhost/application.mjs';
+import {createSetupState} from '../dist/src/state/setup.mjs';
 import {createLocalIdentity} from '../dist/src/identity/better-auth.mjs';
 import {createLocalSessionStore} from '../dist/src/sessions/local-store.mjs';
 import {createCaptureCredentials} from '../dist/src/sessions/credentials.mjs';
@@ -16,17 +17,18 @@ import {valueReportKey} from '../dist/src/application/value-report.mjs';
 import {createOnboardingStatus} from '../dist/src/onboarding-status.mjs';
 const org='org_selfhost',setup='setup-token-for-tests';
 async function fixture(t,options={}){
-  const {search:searchOptions,replicasBindings,...appOptions}=options;
+  const {search:searchOptions,replicasBindings,cliSetup,...appOptions}=options;
   const dir=await mkdtemp(join(tmpdir(),'opencrawl-selfhost-app-'));
   const store=createLocalSessionStore(dir),prefix='sessions/selfhost/v1';
   let app;const server=createServer((req,res)=>app(req,res));
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   const origin='http://localhost:'+server.address().port;
   const {database,state:boardState}=await boardStateFixture(t);
+  const setupState=cliSetup?createSetupState(database):undefined;await setupState?.ready();
   const identity=await createLocalIdentity({url:origin,secret:randomBytes(32).toString('hex'),database,organizationId:org});
   await identity.ready();t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await identity.close();await rm(dir,{recursive:true,force:true});});
   const settings={replicasBindings,organizationId:org,url:origin,authOrigin:origin+'/api/auth',clientId:'opencrawl-cli',authSecret:'x'.repeat(32),setupToken:setup,search:{endpoint:'http://127.0.0.1:1',environment:'selfhost',tenantId:org,...searchOptions}};
-  app=selfhostApplication({settings,store,boardState,prefix,identity,readAsset:async file=>'asset:'+file,...appOptions});
+  app=selfhostApplication({settings,store,boardState,setupState,prefix,identity,readAsset:async file=>'asset:'+file,...appOptions});
   const jars=new Map();
   const request=async(path,who=null,options={})=>{
     const jar=who?jars.get(who)||new Map():null;
@@ -46,6 +48,17 @@ async function fixture(t,options={}){
   };
   return {request,post,identity,store,prefix,origin,admin,join:join_};
 }
+
+test('CLI setup leaves authenticated pages and console operations open before any agent receipt',async t=>{
+  const f=await fixture(t,{cliSetup:true});await f.admin();
+  for(const path of ['/','/setup','/sessions','/sources','/settings/team'])assert.equal((await f.request(path,'admin')).status,200,path);
+  const bootstrap=await (await f.request('/api/console/bootstrap','admin')).json();
+  assert.deepEqual(bootstrap.setup.installations,[]);assert.equal(bootstrap.setup.firstWin,null);
+  assert.equal(bootstrap.onboarding.completed,false);
+  assert.equal((await f.request('/api/console/team','admin')).status,200);
+  assert.equal((await f.request('/setup')).status,303,'setup does not bypass sign-in');
+  assert.equal((await f.request('/api/console/team')).status,401,'console data still requires membership');
+});
 
 test('OSS first run creates one admin from the setup link; nobody else can sign up without an invitation',async t=>{
   const f=await fixture(t);
