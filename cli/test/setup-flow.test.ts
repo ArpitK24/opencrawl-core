@@ -43,6 +43,42 @@ test('cancelling workspace entry never runs auth or setup and the TUI always clo
  expect(closed).toBe(true);
 });
 
+test('terminal resume shows the saved plugin failure ahead of hook review and retries without asking for choices',()=>fixture(async(api,_dir,_observations,setCodex)=>{
+ const reason='Codex took more than 45 seconds to list plugins.';
+ const config={yes:true,plugins:'codex',forward:'codex',history:'none'};
+ const failure={results:[{client:'codex' as const,status:'error' as const,message:reason}],humanTasks:[{id:'repair',client:'codex' as const,kind:'plugin_install' as const,title:'Repair Codex installation',instruction:'Check plugin inventory, then retry.'}]};
+ await setupCommand('apply',api,config,{installPlugins:async()=>failure});
+ const scope={api,tenantId:'tenant',userId:'user'},before=readSetupState(scope)!;
+ let attempts=0;
+ const screens:string[]=[],actions:string[]=[];
+ const unexpected=async():Promise<never>=>{throw Error('Unexpected setup question');};
+ const ui:SetupUi={signal:new AbortController().signal,welcome:unexpected,hosting:unexpected,workspace:unexpected,choose:unexpected,native:unexpected,close:()=>{},
+  progress:(title,description)=>{screens.push(title,description);},
+  action:async screen=>{
+   actions.push(screen.title);
+   if(screen.title==='Setup complete')return 'done';
+   expect(screen.description).toBe(reason);
+   expect(screen.actions?.map(action=>action.label)).toEqual(['Retry installation','Close']);
+   return 'retry';
+  },
+ };
+ const code=await runInteractiveSetup({action:'resume',values:{},readDestination:()=>({api}),withOrigin:(_origin,run)=>run(),login:unexpected},{
+  createUi:()=>ui,which:()=>null,pause:unexpected,setup:(action,origin,values,deps)=>setupCommand(action,origin,values,{...deps,
+   inspectHooks:async()=>({state:'unknown',total:0,pending:null,disabled:null}),
+   installPlugins:async(_api,_clients,options)=>{
+    attempts++;
+    options?.onProgress?.('Reading the Codex plugin inventory.');
+    if(attempts===1)return failure;
+    setCodex({installed:true,mcp:{state:'authenticated'},proof:{state:'verified'}});
+    return {results:[{client:'codex',status:'installed'}],humanTasks:[]};
+   },
+  }),
+ });
+ expect(code).toBe(0);expect(attempts).toBe(2);expect(actions).toEqual(['Repair Codex installation','Setup complete']);
+ expect(screens[0]).toBe('Resuming setup');expect(screens).toContain('Reading the Codex plugin inventory.');
+ expect(readSetupState(scope)?.installationId).toBe(before.installationId);expect(readSetupState(scope)?.selections).toEqual(before.selections);
+}));
+
 test('TUI service retry preserves selections and does not ask for native verification first',async()=>fixture(async(api,_dir,_observations,setCodex)=>{
  let ready=false,choices=0,installs=0;const screens:string[]=[],operations:string[]=[];
  const ui:SetupUi={signal:new AbortController().signal,welcome:async()=>true,hosting:async()=>'self-hosted',workspace:async()=>({kind:'address',api}),progress:title=>{screens.push(title);},choose:async screen=>{choices++;return screen.items.map(item=>({...item,selected:screen.phase===1&&item.id==='codex'||screen.phase===3&&item.id==='daemon'}));},action:async screen=>{

@@ -299,11 +299,11 @@ export async function main(args = process.argv.slice(2)) {
     if(parsed.values.local){const data=localSetupStatus((parsed.values.api as string|undefined)??process.env.OPENCRAWL_API_URL);emit(data,formatSetupOutput(data));return 0;}
     if(command==='setup'&&parsed.positionals[1]==='hooks'){const data=await setupHookStatus((parsed.values.api as string|undefined)??process.env.OPENCRAWL_API_URL);emit(data,formatSetupOutput(data));return 0;}
     if(command==='setup'||command==='verify-installation'){
-      const humanSetup=command==='setup'&&!parsed.positionals[1]&&!json&&Boolean(process.stdin.isTTY&&process.stderr.isTTY);
+      const humanSetup=command==='setup'&&(!parsed.positionals[1]||parsed.positionals[1]==='resume')&&!json&&Boolean(process.stdin.isTTY&&process.stderr.isTTY);
       let explicitDestination=(parsed.values.api as string|undefined)??process.env.OPENCRAWL_API_URL;
       if(humanSetup){
         const {runInteractiveSetup}=await import('./setup/interactive.ts');
-        return runInteractiveSetup({values:parsed.values,readDestination:()=>({api:explicitDestination??readCaptureConfig()?.api,explicit:explicitDestination}),withOrigin:withEnvironmentTokenOrigin,login:(api,ui)=>loginIdentity(api,{noBrowser:parsed.values['no-browser']===true,signal:ui.signal,onDevice:({url,code})=>ui.progress('Sign in to OpenCrawl','Approve this connection in your browser. Setup continues automatically.',[url,`Confirm code: ${code}`])})});
+        return runInteractiveSetup({action:parsed.positionals[1]==='resume'?'resume':'run',values:parsed.values,readDestination:()=>({api:explicitDestination??readCaptureConfig()?.api,explicit:explicitDestination}),withOrigin:withEnvironmentTokenOrigin,login:(api,ui)=>loginIdentity(api,{noBrowser:parsed.values['no-browser']===true,signal:ui.signal,onDevice:({url,code})=>ui.progress('Sign in to OpenCrawl','Approve this connection in your browser. Setup continues automatically.',[url,`Confirm code: ${code}`])})});
       }
       let destination=explicitDestination??readCaptureConfig()?.api;
       const api=apiOrigin(destination??DEFAULT_API_ORIGIN);

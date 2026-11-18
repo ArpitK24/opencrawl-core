@@ -10,7 +10,10 @@ export function nextSetupAction(state:SetupState,server:SetupServerStatus){
  if(unavailable)return {actor:'agent',kind:'plugin_unavailable',client:unavailable.client,instruction:'This pinned plugin package does not implement capture yet. Setup remains incomplete. Preserve the saved choices; resume after a capture-capable package is available.'} as const;
  if(state.worker?.supervised===false&&state.worker.kind!=='not-required')return {actor:'agent',kind:'repair_worker',instruction:'The capture worker is not supervised. Inspect setup status --local --json and repair its reported service. Keep the saved choices.'} as const;
  const pending=state.pluginResults?.find(row=>selected.includes(row.client)&&['pending','error'].includes(row.status));
- if(pending)return {actor:'agent',kind:'repair_plugin',client:pending.client,instruction:'Read setup status --local --json and resolve the reported native plugin issue before running setup resume. Preserve native trust, disabled plugins and saved choices.'} as const;
+ if(pending){
+  const task=state.humanTasks?.find(task=>task.client===pending.client&&task.kind==='plugin_install');
+  return {actor:'agent',kind:'repair_plugin',client:pending.client,reason:pending.message,title:task?.title,instruction:task?.instruction??'Read setup status --local --json and resolve the reported native plugin issue before running setup resume. Preserve native trust, disabled plugins and saved choices.'} as const;
+ }
  const installation=server.installations.find(row=>row.installationId===state.installationId);
  for(const id of selected){
   const client=installation?.clients.find(row=>row.client===id),forward=state.selections.forward[id];

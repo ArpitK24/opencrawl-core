@@ -53,6 +53,11 @@ test('local status reads only the exact saved binding, retains independent choic
  expect(result.output).not.toContain('"authenticated"');expect(result.output).not.toContain('"proof"');expect(result.output).not.toContain('"server":');
 }));
 
+test('local status includes the saved per-client repair reason',()=>fixture(async({state,save,invoke})=>{
+ state.pluginResults=[{client:'codex',status:'pending',message:'Codex timed out during inventory.'}];save();
+ expect((await invoke()).data).toMatchObject({data:{pluginResults:state.pluginResults}});
+}));
+
 test('local status preserves global pause, native disabled recording and explicit saved opt-outs',()=>fixture(async({config,state,save,invoke})=>{
  writeFileSync(join(config.roots.codex,'config.toml'),'[features]\nhooks = false\n');writeFileSync(join(config.roots.antigravity!,'config','hooks.json'),JSON.stringify({'opencrawl-capture':{enabled:false}}));
  const native=await invoke();expect(native.code).toBe(0);expect(native.data).toMatchObject({data:{savedSelections:state.selections,selections:{forward:{codex:false,cursor:false,antigravity:false,'claude-code':false},history:state.selections.history}}});

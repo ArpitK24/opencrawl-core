@@ -18,8 +18,8 @@ import {bundleManifest,MAX_PLUGIN_BINARY,MAX_PLUGIN_TEXT,type BundleFiles} from 
 export type PluginClient = 'claude-code' | 'codex' | 'cursor' | 'antigravity' | 'devin';
 export type PluginHumanTask = {id:string;kind:'mcp_auth'|'restart'|'plugin_install';client:PluginClient;title:string;instruction:string;url?:string};
 export type PluginResult = {client:PluginClient;status:'installed'|'unchanged'|'prepared'|'pending'|'error';message?:string;pluginId?:string;directory?:string;preparedAt?:string;captureAvailable?:boolean;daemonHandoff?:boolean;source?:PublishedPackage['source']};
-type CommandResult = {code:number;stdout?:string};
-export type PluginOptions = {validateBinding?:()=>void;cursorCapture?:{installationId:string;observedAt:string};captureMode?:CaptureMode;bundles?:Partial<Record<LocalPluginClient,PublishedPackage>>;command?:string[];home?:string;env?:NodeJS.ProcessEnv;which?:(name:string)=>string|null;runner?:(command:string,args:string[],env:NodeJS.ProcessEnv)=>Promise<CommandResult>};
+type CommandResult = {code:number;stdout?:string;timedOut?:boolean};
+export type PluginOptions = {onProgress?:(message:string)=>void;validateBinding?:()=>void;cursorCapture?:{installationId:string;observedAt:string};captureMode?:CaptureMode;bundles?:Partial<Record<LocalPluginClient,PublishedPackage>>;command?:string[];home?:string;env?:NodeJS.ProcessEnv;which?:(name:string)=>string|null;runner?:(command:string,args:string[],env:NodeJS.ProcessEnv)=>Promise<CommandResult>};
 const clients:PluginClient[] = ['claude-code','codex','cursor','antigravity','devin'];
 const labels:Record<PluginClient,string> = {'claude-code':'Claude Code',codex:'Codex',cursor:'Cursor',antigravity:'Antigravity',devin:'Devin Cloud'};
 const marker = '.opencrawl-setup-plugin.json';
@@ -119,13 +119,25 @@ export function pluginCommand(command:string,args:string[],env:NodeJS.ProcessEnv
 }
 async function run(command:string,args:string[],env:NodeJS.ProcessEnv):Promise<CommandResult> {
   const [executable,arguments_]=pluginCommand(command,args,env);
-  return new Promise(resolve=>execFile(executable,arguments_,{env,timeout:45_000,maxBuffer:1024*1024,windowsHide:true},(error,stdout)=>resolve({code:error?typeof error.code==='number'?error.code:1:0,stdout})));
+  return new Promise(resolve=>execFile(executable,arguments_,{env,timeout:45_000,maxBuffer:1024*1024,windowsHide:true},(error,stdout)=>resolve({code:error?typeof error.code==='number'?error.code:1:0,stdout,timedOut:error?.killed===true&&error.signal==='SIGTERM'})));
 }
 function read(path:string):any {try{return JSON.parse(readFileSync(path,'utf8'));}catch{return null;}}
 function pluginRows(output:string):Record<string,unknown>[]|null {
   let value:unknown;try{value=JSON.parse(output);}catch{return null;}
   const rows=Array.isArray(value)?value:value&&typeof value==='object'&&'installed' in value?value.installed:value&&typeof value==='object'&&'plugins' in value?value.plugins:null;
   return Array.isArray(rows)?rows.filter((row):row is Record<string,unknown>=>Boolean(row&&typeof row==='object')):null;
+}
+// A marketplace-scoped inventory omits plugins from other marketplaces. Keep
+// protecting explicitly configured plugins with the same deployment name.
+function otherCodexOwner(home:string,env:NodeJS.ProcessEnv,name:string,pluginId:string){
+ try{
+  const config=Bun.TOML.parse(readFileSync(join(env.CODEX_HOME||join(home,'.codex'),'config.toml'),'utf8'));
+  const plugins='plugins' in config&&config.plugins&&typeof config.plugins==='object'?config.plugins:{};
+  return Object.keys(plugins).some(id=>id.startsWith(name+'@')&&id!==pluginId);
+ }catch(error){
+  if((error as NodeJS.ErrnoException).code==='ENOENT')return false;
+  throw new CliError('PLUGIN_CONFIG_UNREADABLE','Could not read the Codex plugin configuration. Review it before retrying setup.');
+ }
 }
 function matchesName(row:Record<string,unknown>,name:string) {return row.name===name||[row.id,row.pluginId].some(id=>typeof id==='string'&&(id===name||id.startsWith(name+'@')));}
 function isManaged(row:Record<string,unknown>,client:PluginClient,identity:ReturnType<typeof setupPluginIdentity>) {return client==='antigravity'?row.name===identity.name:[row.id,row.pluginId].includes(identity.name+'@'+identity.marketplace);}
@@ -212,8 +224,19 @@ export async function installSetupPlugins(api:string,selected:string[],options:P
       const pluginId=client==='codex'||client==='claude-code'?identity.name+'@'+identity.marketplace:identity.name;
       try {
         const binary=which(client==='cursor'?'cursor-agent':client==='claude-code'?'claude':client==='antigravity'?'agy':client);
+        const nativeEnv={...env,HOME:home,USERPROFILE:home};
+        const listArgs=client==='codex'?['plugin','list','--marketplace',identity.marketplace,'--json']:['plugin','list','--json'];
+        const inventory=async(executable:string)=>{
+          options.onProgress?.('Reading the '+labels[client]+' plugin inventory.');
+          const result=await runner(executable,listArgs,nativeEnv);
+          if(result.timedOut)throw new CliError('PLUGIN_INVENTORY_TIMEOUT',labels[client]+' took more than 45 seconds to list plugins. Retry when the client is ready.');
+          return result;
+        };
         if(published?.minimumHarnessVersion){
-          const result=binary?await runner(binary,['--version'],{...env,HOME:home,USERPROFILE:home}):null;
+          if(!binary)throw new CliError('PLUGIN_CLIENT_MISSING','Setup could not find '+(client==='cursor'?'cursor-agent':client==='claude-code'?'claude':client==='antigravity'?'agy':client)+' on PATH. Install the '+labels[client]+' CLI or add it to PATH, then retry.');
+          options.onProgress?.('Checking the '+labels[client]+' version.');
+          const result=await runner(binary,['--version'],nativeEnv);
+          if(result.timedOut)throw new CliError('PLUGIN_VERSION_TIMEOUT',labels[client]+' took more than 45 seconds to report its version. Retry when the client is ready.');
           if(result?.code!==0||!supportsMinimumVersion(client,result.stdout?.trim()??'',published.minimumHarnessVersion)){
             const message=labels[client]+' '+published.minimumHarnessVersion+' or later is required. Update the client, then resume setup.';
             results.push({client,status:'pending',message});
@@ -222,13 +245,13 @@ export async function installSetupPlugins(api:string,selected:string[],options:P
         }
         let native:Record<string,unknown>|undefined,loadedRoot:string|undefined,cachePath=typeof prior?.cachePath==='string'?prior.cachePath:undefined;
         if(binary&&client!=='cursor'){
-          const listing=await runner(binary,['plugin','list','--json'],{...env,HOME:home,USERPROFILE:home});
+          const listing=await inventory(binary);
           const rows=listing.code===0?pluginRows(listing.stdout??''):null;
           if(!rows){results.push({client,status:'pending',message:'The client could not report its plugin state. Resolve its sign-in, version or policy before retrying.'});humanTasks.push({id:client+':plugin_install',kind:'plugin_install',client,title:'Check '+labels[client]+' plugin access',instruction:'Inspect the native client plugin inventory and its reported policy or sign-in issue. Resume setup after it can report its installed plugins.'});continue;}
           const matches=rows.filter(row=>matchesName(row,identity.name));native=matches.find(row=>isManaged(row,client,identity));
           const ownedSource=read(join(directory,marker));
           const managedSource=[2,3].includes(ownedSource?.schemaVersion)&&ownedSource.api===origin&&ownedSource.client===client&&ownedSource.pluginName===identity.name&&ownedSource.configHome===configHome;
-          if(matches.some(row=>!isManaged(row,client,identity))||native&&!prior&&!managedSource){
+          if(matches.some(row=>!isManaged(row,client,identity))||native&&!prior&&!managedSource||client==='codex'&&otherCodexOwner(home,env,identity.name,pluginId)){
             results.push({client,status:'pending',message:'Another installation owns this deployment-specific plugin. It was preserved.'});
             humanTasks.push({id:client+':plugin_install',kind:'plugin_install',client,title:'Review this deployment plugin',instruction:'Inspect the existing deployment-specific plugin and source in native controls. Preserve it until the user chooses to repair or replace that installation; unrelated OpenCrawl plugins can remain enabled.'});continue;
           }
@@ -269,9 +292,9 @@ export async function installSetupPlugins(api:string,selected:string[],options:P
               commands=client==='codex'?[['plugin','marketplace','add',marketRoot,'--json'],['plugin','add',pluginId,'--json']]:[['plugin','marketplace','add',marketRoot,'--json'],['plugin','install',pluginId,'--scope','user','--json']];
             } else commands=[['plugin','install',directory]];
             let success=true;
-            for(const args of commands){options.validateBinding?.();const result=await runner(binary,args,{...env,HOME:home,USERPROFILE:home});if(result.code!==0){success=false;break;}if(client==='codex'&&args[1]==='add')try{const installed=JSON.parse(result.stdout??'');if(typeof installed.installedPath==='string')cachePath=installed.installedPath;}catch{}}
+            for(const args of commands){options.validateBinding?.();options.onProgress?.(args[1]==='marketplace'?'Adding the OpenCrawl marketplace in '+labels[client]+'.':'Installing the OpenCrawl plugin in '+labels[client]+'.');const result=await runner(binary,args,nativeEnv);if(result.timedOut)throw new CliError('PLUGIN_INSTALL_TIMEOUT',labels[client]+' took more than 45 seconds to confirm installation. Retry to check its current state.');if(result.code!==0){success=false;break;}if(client==='codex'&&args[1]==='add')try{const installed=JSON.parse(result.stdout??'');if(typeof installed.installedPath==='string')cachePath=installed.installedPath;}catch{}}
             if(!success){results.push({client,status:'error',message:labels[client]+' did not confirm plugin installation.',directory});humanTasks.push({id:client+':plugin_install',kind:'plugin_install',client,title:'Finish '+labels[client]+' plugin installation',instruction:'Review the native installation error and resolve its policy, access or sign-in requirement before resuming.'});continue;}
-            const confirmed=await runner(binary,['plugin','list','--json'],{...env,HOME:home,USERPROFILE:home});
+            const confirmed=await inventory(binary);
             native=confirmed.code===0?pluginRows(confirmed.stdout??'')?.find(row=>isManaged(row,client,identity)):undefined;
             loadedRoot=native?nativeRoot(native,client,cachePath):undefined;
             if(!native||native.enabled===false||native.installed===false||!nativeBindingMatches(native,client,directory,origin,identity.name,digest,configHome,loadedRoot)) {results.push({client,status:'pending',message:'The client has not confirmed this enabled plugin at the selected source and endpoint.',directory});humanTasks.push({id:client+':plugin_install',kind:'plugin_install',client,title:'Confirm '+labels[client]+' plugin source',instruction:'Inspect the native plugin source and endpoint. Preserve unrelated plugins and finish the reported policy or installation step before resuming.'});continue;}
