@@ -12,7 +12,7 @@ export function nextSetupAction(state:SetupState,server:SetupServerStatus){
  const pending=state.pluginResults?.find(row=>selected.includes(row.client)&&['pending','error'].includes(row.status));
  if(pending){
   const task=state.humanTasks?.find(task=>task.client===pending.client&&task.kind==='plugin_install');
-  return {actor:'agent',kind:'repair_plugin',client:pending.client,reason:pending.message,title:task?.title,instruction:task?.instruction??'Read setup status --local --json and resolve the reported native plugin issue before running setup resume. Preserve native trust, disabled plugins and saved choices.'} as const;
+  return {actor:'agent',kind:'repair_plugin',client:pending.client,reason:pending.message,title:task?.title,instruction:task?.instruction??'Read setup status --local --json and resolve the reported native plugin issue before running setup. Preserve native trust, disabled plugins and saved choices.'} as const;
  }
  const installation=server.installations.find(row=>row.installationId===state.installationId);
  for(const id of selected){
@@ -23,7 +23,7 @@ export function nextSetupAction(state:SetupState,server:SetupServerStatus){
    if(prepared&&!(Date.parse(client?.captureObservedAt??'')>=Date.parse(prepared.preparedAt!)))
     return {actor:'agent',kind:'review_setup',client:id,instruction:'The previous capture confirmation predates this local plugin installation. Keep activation pending until this workspace observes capture from the current Cursor installation.'} as const;
    if(client?.installed&&!prepared)continue;
-   return {actor:'agent',kind:'reconcile_activation',client:id,instruction:'Run setup resume --json once to report the activated plugin, then read setup next --json. Preserve saved choices.'} as const;
+   return {actor:'agent',kind:'reconcile_activation',client:id,instruction:'Run setup --yes --json once to report the activated plugin, then read setup next --json. Preserve saved choices.'} as const;
   }
   if(['observed','authenticated'].includes(client?.mcp?.state??'')&&['waiting_capture','waiting_index'].includes(client?.proof?.state??''))return {actor:'agent',kind:'wait_capture',client:id,arguments:['setup','wait','--json'],instruction:'Run setup wait --json with this profile-bound CLI. It waits for native capture and indexing. Follow the returned nextAction. Do not ask the person to reply or type a test message.'} as const;
   return {actor:'agent',kind:'native_tool',tool:'installation_status',arguments:{installationId:state.installationId,client:id},instruction:`Use the installed OpenCrawl MCP connection in ${id}. Follow its proof instructions in that harness. Ask the person only for a required sign-in or trust click; do not repeat saved choices or request a verification message.`,retryAfterMs:3000} as const;

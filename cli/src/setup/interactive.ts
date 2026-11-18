@@ -11,7 +11,7 @@ import {nativeTerminal} from './native-terminal.ts';
 import {inspectCodexHooks,type CodexHookReview} from '../capture/codex-hooks.ts';
 import {readCaptureConfig} from '../capture/runtime.ts';
 
-type Options={action?:'run'|'resume';values:Record<string,unknown>;readDestination:()=>{api?:string;explicit?:string};withOrigin:(api:string|undefined,run:()=>Promise<number>)=>Promise<number>;login:(api:string,ui:SetupUi)=>Promise<unknown>};
+type Options={entry?:()=>ReturnType<typeof import('./entry.ts').terminalSetupEntry>;action?:'run'|'resume';values:Record<string,unknown>;readDestination:()=>{api?:string;explicit?:string};withOrigin:(api:string|undefined,run:()=>Promise<number>)=>Promise<number>;login:(api:string,ui:SetupUi)=>Promise<unknown>};
 type Dependencies={createUi?:()=>SetupUi;setup?:typeof setupCommand;which?:(name:string)=>string|null;native?:(command:string,args:string[],ui:SetupUi,title?:string)=>Promise<number>;inspectCodex?:()=>Promise<CodexHookReview>;pause?:(signal:AbortSignal)=>Promise<void>};
 
 async function currentCodexReview():Promise<CodexHookReview>{
@@ -30,10 +30,15 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
  let action=options.action??'run';
  let destination:ReturnType<Options['readDestination']>|undefined;
  try{
-  if(action==='run'&&!await ui.welcome())return 0;
+  const entry=options.entry?.();
+  if(action==='run'&&!entry?.continuing&&!await ui.welcome())return 0;
+  if(entry)await entry.save(entry.api);
   for(;;){
    try{
-    destination??=options.readDestination();
+    if(!destination){
+     destination=options.readDestination();
+     if(!destination.explicit&&entry?.api)destination={api:entry.api};
+    }
     if(action==='resume'&&!destination.api)destination={api:DEFAULT_API_ORIGIN};
     while(!destination.api){
      const hosting=await ui.hosting();
@@ -46,7 +51,8 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
     }
     const api=apiOrigin(destination.api??''),explicit=destination.explicit;
     destination={api,explicit};
-    if(action==='resume')ui.progress('Resuming setup','Checking your saved installation and workspace sign-in.',[api]);
+    await entry?.save(api);
+    if(action==='resume'||entry?.continuing)ui.progress('Resuming setup','Checking your saved installation and workspace sign-in.',[api]);
     else ui.progress('Connecting to your workspace','Checking your sign-in and available agents.',[api]);
     return await options.withOrigin(explicit,async()=>{
      const onProgress=(title:string,description:string,phase?:'installing')=>ui.progress(title,description,undefined,phase==='installing');
@@ -54,6 +60,7 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
      if(ui.signal.aborted)return 130;
      if(!result||'status' in result&&result.status==='cancelled')return 0;
      if('status' in result&&result.status==='recording_off'){
+      await entry?.finish();
       await ui.action({title:'Setup saved',description:'No sessions will be recorded on this machine. No history import was started.',actions:[{id:'done',label:'Done'}]});return 0;
      }
      if('nextAction' in result&&result.nextAction?.kind==='plugin_unavailable'){await ui.action({title:'Capture is not available yet',description:'This plugin version cannot record sessions yet. Your choices are saved.',actions:[{id:'close',label:'Close'}]});return 2;}
@@ -62,6 +69,7 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
      if('selections' in result&&result.selections&&!Object.values(result.selections.plugins).some(Boolean)){
       const state=history&&typeof history==='object'&&'state' in history?history.state:undefined;
       const description=state==='complete'?'Your history import is complete.':state==='queued'||state==='running'?'Past sessions are importing in the background.':'Check setup status for your history import.';
+      await entry?.finish();
       await ui.action({title:'Setup saved',description,details:['New-session recording is off.'],actions:[{id:'done',label:'Done'}]});
       return 0;
      }
@@ -70,7 +78,7 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
      ui.progress('Checking setup','Waiting for native connection and session verification.');
      for(;;){
       const kind='nextAction' in result?result.nextAction?.kind:undefined;
-      if(!launched&&handoff&&kind!=='repair_worker'&&kind!=='repair_plugin'&&(handoff.client!=='antigravity'||kind==='native_tool')){
+      if(!launched&&handoff&&kind!=='complete'&&kind!=='repair_worker'&&kind!=='repair_plugin'&&(handoff.client!=='antigravity'||kind==='native_tool')){
        launched=true;
        displayedInstruction=undefined;
        if(handoff.client==='antigravity'){
@@ -134,6 +142,7 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
       }
       if(ui.signal.aborted)return 130;
       if(next&&'nextAction' in next&&next.nextAction?.kind==='complete'){
+       await entry?.finish();
        await ui.action({title:'Setup complete',description:'Your selected agents are connected and verified.',details:['New-session recording is ready.',...(history&&typeof history==='object'&&'state' in history&&['queued','running'].includes(history.state)?['Past sessions are importing in the background.']:[])],actions:[{id:'done',label:'Done'}]});return 0;
       }
       if(next&&'nextAction' in next&&next.nextAction?.kind==='plugin_unavailable'){await ui.action({title:'Capture is not available yet',description:'This plugin version cannot record sessions yet. Your choices are saved.',actions:[{id:'close',label:'Close'}]});return 2;}
@@ -161,7 +170,7 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
     if(ui.signal.aborted)return 130;
     const failure=filesystemError(error),known=failure instanceof CliError;
     const action=await ui.action({title:'Setup needs attention',description:known?failure.message:'Setup could not finish. Your saved choices are kept. Retry when ready.',error:true,actions:[{id:'retry',label:'Retry'},{id:'address',label:'Change workspace'},{id:'close',label:'Close'}]});
-    if(action==='address'){destination={};continue;}
+    if(action==='address'){destination={};await entry?.save();continue;}
     if(action!=='retry')return known?failure.exitCode:1;
    }
   }

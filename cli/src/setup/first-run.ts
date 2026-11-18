@@ -3,6 +3,7 @@ import {readCaptureConfig} from '../capture/runtime.ts';
 import {withEnvironmentTokenOrigin} from '../environment-token.ts';
 import {apiOrigin} from '../oauth.ts';
 import {readServerSetup,serverScope} from './api.ts';
+import {pendingSetupApi} from './entry.ts';
 import {nextSetupAction} from './next.ts';
 import {chosen,readSetupState,readStateKey,scopeKey,setupRoot,updateSetupState,type SetupState} from './state.ts';
 
@@ -29,13 +30,14 @@ export async function rememberFinishedSetup(state:SetupState){
 }
 
 export async function needsFirstRunSetup(requestedApi?:string,read=readServerSetup){
- const config=readCaptureConfig(),api=requestedApi?apiOrigin(requestedApi):undefined;
+ const config=readCaptureConfig(),api=requestedApi?apiOrigin(requestedApi):pendingSetupApi();
  if(!config||(api&&api!==config.api))return !unboundSetupComplete(api);
  if(!config.owner||config.authPending)return true;
  const scope={api:config.api,...config.owner};
  const state=readSetupState(scope);
  if(!state||!state.installationId||state.installationId!==config.installationId||state.firstRun==='choosing')return true;
  if(state.firstRun==='complete')return false;
+ if(state.firstRun==='ready'&&state.historyJob&&!chosen(state.selections,'plugins').length)return true;
  // Older releases saved choices before native verification finished. Consult the
  // same proof as setup, then cache completion for future offline invocations.
  let server;

@@ -33,10 +33,11 @@ Interactive setup on macOS connects a workspace and installs recording for the s
    agents receive their native setup handoff. `setup next --json` checks every
    selected agent; one verified agent cannot make the whole installation complete.
 
-Cancelling the first phase saves nothing. Cancelling the history phase retains
-capture choices already confirmed and starts no new import. Existing legacy
-recording opt-outs remain unchanged on `setup resume`; they are not new install
-options. The workspace stays available while setup runs.
+Run `opencrawl setup` again after an interruption. It continues from the last
+confirmed step in this profile and workspace. Cancelling the recording screen
+saves no recording choice. Cancelling the history screen keeps the confirmed
+recording choices and leaves the import decision open. Once setup finishes,
+running it again opens the choices for review.
 
 ## Agent path
 
@@ -56,7 +57,7 @@ agent invocation produce a JSON action rather than an interactive questionnaire.
 `setup next --json` returns the next remaining action. `setup wait --json` waits
 for capture/indexing without another human reply and returns pending after a
 bounded number of checks. It cannot create a missing native MCP receipt. JSON
-mode never opens an agent. `setup resume --json` preserves accepted choices and
+mode never opens an agent. `setup --yes --json` preserves accepted choices and
 reconciles activation. Plans bind to the authenticated workspace/person and the
 history snapshot.
 

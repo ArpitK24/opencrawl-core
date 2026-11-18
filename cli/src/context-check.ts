@@ -107,10 +107,10 @@ export async function contextCheckCommand(args:string[],input:Readable=process.s
       const selected=values.harness??[];
       if(selected.some(h=>!CHECK_HARNESSES.includes(h as CheckHarness))||action==='enable'&&!selected.length)throw new CliError('INVALID_USAGE','Use context-suggestions enable --harness codex|claude-code|cursor|antigravity|devin. Repeat --harness as needed.',64);
       const existing=checkSettings(binding);
-      if(action==='enable'&&config?.hookOwnership!=='plugin')throw new CliError('CHECK_PLUGIN_REQUIRED','Run opencrawl setup resume to install the native plugin before enabling prompt checks.');
+      if(action==='enable'&&config?.hookOwnership!=='plugin')throw new CliError('CHECK_PLUGIN_REQUIRED','Run opencrawl setup to install the native plugin before enabling prompt checks.');
       const settings=action==='status'?existing:saveCheckSettings(binding,action==='enable'?[...existing?.harnesses??[],...selected as CheckHarness[]]:selected.length?(existing?.harnesses??[]).filter(h=>!selected.includes(h)):[]);
       const data={api,harnesses:settings?.harnesses??[],enabled:Boolean(settings?.harnesses.length)};
-      output.write(values.json?JSON.stringify({schemaVersion:1,data})+'\n':`Context suggestions ${data.enabled?'enabled for '+data.harnesses.join(', '):'disabled'} at ${api}.\n`+(action==='enable'?'Checks use this deployment’s credit policy. Run opencrawl setup resume, review any native hook trust prompt, then start a fresh session. Existing recording choices are unchanged.\n':''));return 0;
+      output.write(values.json?JSON.stringify({schemaVersion:1,data})+'\n':`Context suggestions ${data.enabled?'enabled for '+data.harnesses.join(', '):'disabled'} at ${api}.\n`+(action==='enable'?'Checks use this deployment’s credit policy. Run opencrawl setup, review any native hook trust prompt, then start a fresh session. Existing recording choices are unchanged.\n':''));return 0;
     }
     if(action==='feedback'){
       const harness=values.harness?.[0] as CheckHarness,settings=checkSettings(binding);

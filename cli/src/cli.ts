@@ -309,7 +309,8 @@ export async function main(args = process.argv.slice(2)) {
       let explicitDestination=(parsed.values.api as string|undefined)??process.env.OPENCRAWL_API_URL;
       if(humanSetup){
         const {runInteractiveSetup}=await import('./setup/interactive.ts');
-        return runInteractiveSetup({action:parsed.positionals[1]==='resume'?'resume':'run',values:parsed.values,readDestination:()=>({api:explicitDestination??readCaptureConfig()?.api,explicit:explicitDestination}),withOrigin:withEnvironmentTokenOrigin,login:(api,ui)=>loginIdentity(api,{noBrowser:parsed.values['no-browser']===true,signal:ui.signal,onDevice:({url,code})=>ui.progress('Sign in to OpenCrawl','Approve this connection in your browser. Setup continues automatically.',[url,`Confirm code: ${code}`])})});
+        const {terminalSetupEntry}=await import('./setup/entry.ts');
+        return runInteractiveSetup({entry:()=>terminalSetupEntry(explicitDestination),action:parsed.positionals[1]==='resume'?'resume':'run',values:parsed.values,readDestination:()=>({api:explicitDestination??readCaptureConfig()?.api,explicit:explicitDestination}),withOrigin:withEnvironmentTokenOrigin,login:(api,ui)=>loginIdentity(api,{noBrowser:parsed.values['no-browser']===true,signal:ui.signal,onDevice:({url,code})=>ui.progress('Sign in to OpenCrawl','Approve this connection in your browser. Setup continues automatically.',[url,`Confirm code: ${code}`])})});
       }
       let destination=explicitDestination??readCaptureConfig()?.api;
       const api=apiOrigin(destination??DEFAULT_API_ORIGIN);

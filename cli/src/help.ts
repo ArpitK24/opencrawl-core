@@ -13,7 +13,7 @@ Paste your workspace address when none is saved, then complete two short phases:
 Use arrows to move, Space to toggle, and Enter on a bottom button.
 Detected agents start selected; saved off choices stay off. History starts off.
 Each selected plugin records new sessions. You can import history with recording off.
-Existing installations retain their saved choices on setup resume.
+Run setup again to continue from your last confirmed step. After setup finishes, run it again to review your choices.
 setup hooks inspects this installation's Codex hook trust locally without changing it.
 
   --plugins IDS   Harness IDs to install: comma-separated IDs, all, or none
@@ -26,12 +26,12 @@ setup hooks inspects this installation's Codex hook trust locally without changi
   setup next --json  Return saved choices and one next action for the agent
   setup wait --json  Wait for native capture and search, then return the next action
   setup status --local --json  Read only the exact saved installation and effective choices; no network or server verification
-  setup resume   Resume a previously approved, interrupted history job
+  setup --yes --json  Continue already approved setup work without opening the terminal interface
   setup verify --client ID  Prove a fresh native session is searchable
 
-Noninteractive setup returns a plan and exact applyCommand without changing clients.
+Use setup --json to preview the plan and its exact applyCommand.
 History is durable background work; setup returns before import finishes. A stopped
-job resumes on setup resume or a later enrolled CLI/session startup. Login is not
+job resumes on setup or a later enrolled CLI/session startup. Login is not
 MCP authentication, and installation is not proof that a session is searchable.
 `+common;
   if(command==='verify-installation')return `Usage: opencrawl verify-installation --client CLIENT [--installation-id ID]
