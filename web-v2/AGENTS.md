@@ -27,7 +27,7 @@ DTOs and runtime adapters; WorkOS, billing and managed connector code stay outsi
   while an image loads or when it fails. Photos are decorative beside the account
   name, use no-referrer requests, and accept HTTPS or same-origin paths. Do not make
   photo loading block account navigation. Retain the content-aligned maximum width.
-  The popover contains Settings and runtime account actions such as Sign out;
+  The popover contains Settings, Docs and runtime account actions such as Sign out;
   omit the static email/role summary and show no empty popover without actions.
 - Use the components exported from src/design/components.tsx. Never add a second
   native button, field, dialog or table implementation in a feature page. Add a
