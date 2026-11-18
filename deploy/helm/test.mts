@@ -13,7 +13,7 @@ test('release packaging versions both archives without changing source or buildi
   const dir=mkdtempSync(join(tmpdir(),'opencrawl-release-package-'));
   const original=readFileSync(join(root,'opencrawl/Chart.yaml'),'utf8');
   try{
-    const manifest=JSON.stringify({manifests:['amd64','arm64'].map(architecture=>({platform:{os:'linux',architecture}}))});
+    const manifest=JSON.stringify({mediaType:'application/vnd.oci.image.index.v1+json',manifests:['amd64','arm64'].map(architecture=>({platform:{os:'linux',architecture}}))});
     const stub=join(dir,'registry.mjs');
     writeFileSync(stub,`globalThis.fetch=async url=>{if(String(url).startsWith('https://ghcr.io/token?'))return Response.json({token:'fixture'});if(String(url).startsWith('https://ghcr.io/v2/'))return new Response(${JSON.stringify(manifest)},{headers:{'docker-content-digest':${JSON.stringify('sha256:'+createHash('sha256').update(manifest).digest('hex'))}}});throw Error('Unexpected network request')};`);
     const out=join(dir,'out');
