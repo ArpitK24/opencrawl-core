@@ -73,10 +73,10 @@ const identityResponse=await protocol('/api/sessions/identity',{headers:bearer()
 const {data:{principal}}=await identityResponse.json() as {data:{principal:{tenantId:string;userId:string}}};
 assert.equal(principal.tenantId,input.organization);if(seed.userId)assert.equal(principal.userId,seed.userId);seed.userId=principal.userId;save();
 let rpcId=0,mcpSession:string|undefined;
-async function rpc(method:string,params:unknown):Promise<{isError?:boolean;structuredContent?:unknown}>{
+async function rpc(method:string,params:unknown){
   const r=await protocol('/mcp',{method:'POST',headers:{...bearer(),'content-type':'application/json',accept:'application/json, text/event-stream',...(mcpSession?{'Mcp-Session-Id':mcpSession}:{})},body:JSON.stringify({jsonrpc:'2.0',id:++rpcId,method,params})});
   assert.equal(r.status,200,`MCP ${method}`);mcpSession=r.headers.get('mcp-session-id')||mcpSession;
-  const raw=await r.text(),payload=JSON.parse(raw.startsWith('data:')||raw.startsWith('event:')?raw.split('\n').find(l=>l.startsWith('data:'))!.slice(5):raw) as {error?:unknown;result:{isError?:boolean;structuredContent?:unknown}};
+  const raw=await r.text(),payload=JSON.parse(raw.startsWith('data:')||raw.startsWith('event:')?raw.split('\n').find(l=>l.startsWith('data:'))!.slice(5):raw) as {error?:unknown;result:{isError?:boolean;structuredContent?:unknown;content?:Array<{type:string;text?:string}>}};
   assert.ok(!payload.error);assert.ok(!payload.result.isError);return payload.result;
 }
 await rpc('initialize',{protocolVersion:'2025-11-25',capabilities:{},clientInfo:{name:'OpenCrawl development installer',version:'1'}});
@@ -198,9 +198,21 @@ try{
   assert.equal(team.organization.id,input.organization);assert.equal(team.viewerUserId,seed.userId);assert.equal(team.role,'admin');
   const result=await json<unknown>('/api/debug/search',{query:marker});
   assert.ok(JSON.stringify(result).includes(expected),'Authenticated product search did not retrieve the imported fixture');
-  if(!verifyOnly)await rpc('tools/call',{name:'board_sync',arguments:{workspace:input.organization,agent:'dev:verification',topics:['dev-verification'],posts:[{id:input.project+'-board',topic:'dev-verification',text:'Synthetic development verification: capture and retrieval succeeded.'}]}});
-  const board=await rpc('tools/call',{name:'board_sync',arguments:{workspace:input.organization,agent:'dev:reader',topics:['dev-verification'],after:0,leave:true}});
-  assert.ok(JSON.stringify(board).includes('Synthetic development verification: capture and retrieval succeeded.'));
+  const channel='dev-verification',text='Synthetic development verification: capture and retrieval succeeded.';
+  if(!verifyOnly){
+    const writer={workspace:input.organization,session:input.project+'-board-verification'};
+    await rpc('tools/call',{name:'board_presence',arguments:{...writer,name:'dev:verification-'+input.project}});
+    try{
+      await rpc('tools/call',{name:'board_post',arguments:{...writer,posts:[{id:input.project+'-board',channel,text,follow:false}]}});
+    }finally{
+      await rpc('tools/call',{name:'board_presence',arguments:{...writer,leave:true}});
+    }
+  }
+  const board=await rpc('tools/call',{name:'board_list',arguments:{workspace:input.organization,channels:[channel],query:text,limit:1}});
+  const content=board.content?.find(item=>item.type==='text')?.text;
+  assert.ok(content,'Missing board list response');
+  const {messages}=JSON.parse(content) as {messages:Array<{channel:string;text:string}>};
+  assert.ok(messages.some(message=>message.channel===channel&&message.text===text),'Authenticated board read did not retrieve the seeded message');
   const forged=await request('/api/debug/search',{method:'POST',headers:{origin:input.origin,'content-type':'application/json'},body:JSON.stringify({query:marker,tenantId:'org_forged'})});
   assert.equal(forged.status,400,'Search accepted a caller-supplied tenant');
   const badOrigin=await request('/api/debug/search',{method:'POST',headers:{origin:'https://invalid.example','content-type':'application/json'},body:JSON.stringify({query:marker})});
