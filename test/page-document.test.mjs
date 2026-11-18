@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {oauthReturnSchema} from '../dist/src/application/page-types.mjs';
+import {consoleDocument} from '../dist/src/application/console.mjs';
 import {document} from '../dist/src/application/presentation.mjs';
 
 test('page data cannot escape its inert JSON element, even with closing tags and Unicode separators',()=>{
@@ -24,4 +25,9 @@ test('server presentation paths do not compose browser feature markup',async()=>
 test('OAuth return rendering allows registered Claude callbacks but rejects active content',()=>{
   for(const url of ['https://client.example/callback?code=one-use','http://127.0.0.1:33418/callback','claude://claude.ai/mcp-auth-callback/sdk?code=one-use&state=bound'])assert.equal(oauthReturnSchema.safeParse({kind:'oauth-return',url}).success,true,url);
   for(const url of ['javascript:alert(1)','data:text/html,hello','file:///etc/passwd','vbscript:alert(1)','claude:alert(1)','claude://secret@claude.ai/mcp-auth-callback/sdk','https://secret@client.example/callback','claude://claude.ai/mcp-auth-callback/sdk#fragment'])assert.equal(oauthReturnSchema.safeParse({kind:'oauth-return',url}).success,false,url);
+});
+
+test('the initial workspace shell can identify guided setup without private bootstrap data',()=>{
+  assert.match(consoleDocument(undefined,{machineSetup:false}), /<div id="root" data-setup-mode="guided"><\/div>/);
+  assert.doesNotMatch(consoleDocument(), /data-setup-mode="guided"/);
 });
