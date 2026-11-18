@@ -77,7 +77,9 @@ test.skipIf(process.platform === 'win32')('setup shows the code before opening a
     state.holdApproval = approval.promise;
     const childEnv = {...env, PATH: directory, OPENED: opened, SSH_CONNECTION: mode === 'ssh' ? 'fixture' : '', SSH_TTY: ''};
     let output = '';
-    const args = ['setup', '--api', api, ...(mode === 'no-browser' ? ['--no-browser'] : [])];
+    // Fresh setup is offered on macOS. Resuming uses the same interactive sign-in on Linux.
+    const resume = process.platform !== 'darwin' || mode === 'ssh';
+    const args = ['setup', ...(resume ? ['resume'] : []), '--api', api, ...(mode === 'no-browser' ? ['--no-browser'] : [])];
     const child = Bun.spawn([process.execPath, resolve(import.meta.dir, '../src/cli.ts'), ...args], {
       env: childEnv,
       terminal: {cols: 90, rows: 28, data: (_terminal, bytes) => {output += new TextDecoder().decode(bytes);}},
@@ -88,8 +90,10 @@ test.skipIf(process.platform === 'win32')('setup shows the code before opening a
       expect(output).toContain(text);
     };
     try {
-      await waitFor('› [ Continue ]');
-      child.terminal!.write('\r');
+      if (!resume) {
+        await waitFor('› [ Continue ]');
+        child.terminal!.write('\r');
+      }
       await waitFor('Device code: TEST-CODE');
       if (local) {
         await waitFor('› [ Open browser ]');
