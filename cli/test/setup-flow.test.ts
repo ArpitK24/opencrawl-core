@@ -57,7 +57,9 @@ test('plain setup resumes each confirmed step and reopens choices after verifica
  await run(screen=>screen.phase===1?pick(screen,'codex'):null);
  expect(phases.splice(0)).toEqual([1,3]);expect(readCaptureConfig()).toBeNull();
  expect(await setupCommand('run',api,{json:true})).toMatchObject({status:'confirmation_required'});
- expect(await setupCommand('run',api,{yes:true,json:true},{...deps,interactive:false})).toMatchObject({question:'background_capture'});
+ for(const flags of [{},{yes:true,json:true}]){
+  expect(await setupCommand('run',api,flags,{...deps,interactive:false})).toMatchObject({question:'background_capture'});
+ }
  await expect(run(screen=>pick(screen))).rejects.toThrow('interrupted plugin install');
  expect(phases.splice(0)).toEqual([3]);expect(readSetupState(scope)?.checkpoint?.step).toBe('install');
  failInstall=false;

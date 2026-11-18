@@ -192,7 +192,7 @@ export function setupCommand(action:string,api:string,values:Values,deps:Depende
  const interactive=deps.interactive??Boolean(process.stdin.isTTY&&process.stderr.isTTY&&!values.json);
  const run=()=>executeSetup(action,api,values,{...deps,interactive});
  // Two terminals cannot advance the same profile's journal out of order.
- return action==='resume'||action==='apply'&&values.yes===true||action==='run'&&(interactive||values.yes===true)
+ return action==='resume'||action==='apply'&&values.yes===true||action==='run'&&(interactive||values.yes===true||!values.json)
   ?withSessionLock('setup:interactive-choices',run,0):run();
 }
 async function executeSetup(action:string,api:string,values:Values,{platform=process.platform,command=setupCommandForSelf(),login,installPlugins=installPublishedSetupPlugins,modeEligibility=daemonEligibility,stopDaemon=uninstallCaptureDaemon,launchHistory=startHistoryWorker,choose=chooseSetupItems,inspectHooks=inspectCodexHooks,installDaemon=installCaptureDaemon,daemonReady=waitForDaemonReady,expectedScope,validateCapturePrincipal,onProgress,confirmedCaptureMode,interactive=Boolean(process.stdin.isTTY&&process.stderr.isTTY&&!values.json)}:Dependencies={}){
@@ -260,7 +260,7 @@ async function executeSetup(action:string,api:string,values:Values,{platform=pro
    throw new CliError('INVALID_USAGE','Run setup with your saved choices, or use setup apply to approve different choices.',64);
   action='run';
  }
- const automatic=action==='run'&&!workload&&(interactive||values.yes===true||legacyCheckpoint)&&
+ const automatic=action==='run'&&(!workload||legacyCheckpoint)&&(interactive||!values.json||values.yes===true||legacyCheckpoint)&&
   ['plugins','forward','history','capture-mode','client','plan-id'].every(key=>values[key]===undefined);
  const pending=automatic&&previous&&(previous.firstRun!=='complete'||values.yes===true)&&(
   previous.firstRun||admitted&&nextSetupAction(previous,server).kind!=='complete');
