@@ -13,8 +13,8 @@ export function validateRevision(revision: string, mainline: boolean, runs: Run[
 
 interface Job {name: string; status: string; conclusion: string | null}
 export function validateCliChecks(jobs: Job[]): void {
-  if (jobs.some(job=>job.name==='CLI release validation')) {
-    for(const name of ['build','CLI release validation']){
+  if (jobs.some(job=>job.name==='Native CLI / CLI release validation')) {
+    for(const name of ['Native CLI / build','Native CLI / CLI release validation']){
       const matches=jobs.filter(job=>job.name===name);
       assert(matches.length===1&&matches[0]!.status==='completed'&&matches[0]!.conclusion==='success', 'Incomplete CLI validation: '+name);
     }

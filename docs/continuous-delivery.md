@@ -74,6 +74,8 @@ verifying anonymous downloads of the versioned GitHub assets. npm installations
 follow npm's `latest` tag. All six packages upload under a staging tag. Promotion
 waits until every tarball is downloadable with the expected source and integrity.
 The `next` alias follows `latest` for existing clients.
+The native release queue ends when the native pointer advances. npm publishing
+has its own ordered queue, allowing the next native release to ship during a scan.
 
 PRs build a candidate version above the occupied native tags and npm versions.
 Main rechecks the version, builds from its own checkout and compares the Git tree
