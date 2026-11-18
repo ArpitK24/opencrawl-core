@@ -214,17 +214,21 @@ export async function identity(api: string, fetcher = fetch, initialToken?: stri
   return {user};
 }
 
-export async function loginIdentity(api:string,options:{organizationId?:string;noBrowser?:boolean;signal?:AbortSignal;onDevice?:(approval:{url:string;code:string;expiresIn:number})=>void}={}) {
+export async function loginIdentity(api:string,options:{organizationId?:string;noBrowser?:boolean;signal?:AbortSignal;onDevice?:(approval:{url:string;code:string;expiresIn:number;canOpenBrowser:boolean})=>void|Promise<void>}={}) {
   const organizationId=options.organizationId;
   if(organizationId&&readSession(api))return selectOrganization(api,organizationId,token=>identity(api,fetch,token));
       const auth = await discover(api);
       const device = await startDevice(auth);
       const url = device.verification_uri_complete ?? device.verification_uri;
       options.signal?.throwIfAborted();
-      if(options.onDevice)options.onDevice({url,code:device.user_code,expiresIn:device.expires_in});
+      const expiresAt = Date.now() + device.expires_in * 1000;
+      const canOpenBrowser = Boolean(!options.noBrowser && process.stdin.isTTY && !process.env.SSH_CONNECTION && !process.env.SSH_TTY);
+      if (options.onDevice) await options.onDevice({url,code:device.user_code,expiresIn:device.expires_in,canOpenBrowser});
       else process.stderr.write(`Open ${url}\nConfirm code: ${device.user_code}\nWaiting for browser approval (expires in ${device.expires_in} seconds)…\n`);
-      if (!options.noBrowser && process.stdin.isTTY && !process.env.SSH_CONNECTION && !process.env.SSH_TTY) openBrowser(url);
-      const tokens = await pollDevice(auth, device,{signal:options.signal});
+      options.signal?.throwIfAborted();
+      if (Date.now() >= expiresAt) throw new CliError('AUTH_EXPIRED', 'The device code expired. Retry to get a new code.');
+      if (canOpenBrowser) openBrowser(url);
+      const tokens = await pollDevice(auth, device,{signal:options.signal,expiresAt});
       options.signal?.throwIfAborted();
       let verified: Awaited<ReturnType<typeof identity>> | undefined;
       try { verified = await identity(api, fetch, tokens.accessToken); }
@@ -306,8 +310,14 @@ export async function main(args = process.argv.slice(2)) {
       const humanSetup=command==='setup'&&(!parsed.positionals[1]||parsed.positionals[1]==='resume')&&!json&&Boolean(process.stdin.isTTY&&process.stderr.isTTY);
       let explicitDestination=(parsed.values.api as string|undefined)??process.env.OPENCRAWL_API_URL;
       if(humanSetup){
-        const {runInteractiveSetup}=await import('./setup/interactive.ts');
-        return runInteractiveSetup({action:parsed.positionals[1]==='resume'?'resume':'run',values:parsed.values,readDestination:()=>({api:explicitDestination??readCaptureConfig()?.api,explicit:explicitDestination}),withOrigin:withEnvironmentTokenOrigin,login:(api,ui)=>loginIdentity(api,{noBrowser:parsed.values['no-browser']===true,signal:ui.signal,onDevice:({url,code})=>ui.progress('Sign in to OpenCrawl','Approve this connection in your browser. Setup continues automatically.',[url,`Confirm code: ${code}`])})});
+        const {runInteractiveSetup,showDeviceCode}=await import('./setup/interactive.ts');
+        return runInteractiveSetup({
+          action:parsed.positionals[1]==='resume'?'resume':'run',values:parsed.values,
+          readDestination:()=>({api:explicitDestination??readCaptureConfig()?.api,explicit:explicitDestination}),
+          withOrigin:withEnvironmentTokenOrigin,
+          login:(api,ui)=>loginIdentity(api,{noBrowser:parsed.values['no-browser']===true,signal:ui.signal,
+            onDevice:({url,code,canOpenBrowser})=>showDeviceCode(ui,url,code,canOpenBrowser)}),
+        });
       }
       let destination=explicitDestination??readCaptureConfig()?.api;
       const api=apiOrigin(destination??DEFAULT_API_ORIGIN);
