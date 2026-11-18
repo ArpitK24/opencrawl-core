@@ -436,6 +436,15 @@ test('the person and workspace stay together in the docked account menu', async 
   await trigger.click();
   await expect(account).toBeVisible();
   await expect(account.getByRole('button', {name: 'Sign out', exact: true})).toBeVisible();
+  const docs = account.getByRole('link', {name: 'Docs', exact: true});
+  await page.context().route('https://docs.getopencrawl.com/', route => route.fulfill({body: 'OpenCrawl docs'}));
+  const opened = page.waitForEvent('popup');
+  await docs.focus();
+  await docs.press('Enter');
+  const docsPage = await opened;
+  await expect(docsPage).toHaveURL('https://docs.getopencrawl.com/');
+  await docsPage.close();
+  await expect(page).toHaveURL(/\/workspace$/);
   await expect(account).not.toContainText('alex@example.test');
   await page.keyboard.press('Escape');
   await expect(account).not.toBeVisible();
@@ -462,7 +471,9 @@ test('mobile account disclosure closes before the drawer and hidden actions leav
   await expect(trigger).toBeFocused();
   await trigger.click();
   await expect(account).toBeVisible();
-  await page.getByRole('button', {name: 'Sign out', exact: true}).focus();
+  await account.getByRole('link', {name: 'Docs', exact: true}).focus();
+  await page.keyboard.press('Tab');
+  await expect(account.getByRole('button', {name: 'Sign out', exact: true})).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(account).not.toBeVisible();
   await expect(sidebar).toBeVisible();

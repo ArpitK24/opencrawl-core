@@ -73,7 +73,9 @@ test('settings sections live behind one account entry and share a single page he
   const workspaceNavigation = html.match(/<nav id="workspace-navigation"[^>]*>([\s\S]*?)<\/nav>/)?.[1];
   assert.ok(workspaceNavigation);
   assert.doesNotMatch(workspaceNavigation, /Team|Billing/);
-  assert.match(html, /oc-account-settings[^>]*href="\/settings\/team"/);
+  assert.match(html, /oc-account-link[^>]*href="\/settings\/team"/);
+  const account = html.slice(html.indexOf('aria-label="Account details"'));
+  assert.match(account, /<span>Settings<\/span>.*?<\/a><a [^>]*href="https:\/\/docs\.getopencrawl\.com\/"[^>]*>.*?<span>Docs<\/span>/);
   assert.equal((html.match(/<h1\b/g) || []).length, 1);
   assert.match(html, /<h1[^>]*>Settings<\/h1>/);
   assert.match(html, /<nav class="oc-settings-nav" aria-label="Settings">/);
@@ -90,5 +92,5 @@ test('hidden Settings sections do not create tabs or an account entry', () => {
   const html = render([team, hidden]);
   assert.match(html, /href="\/settings\/team"/);
   assert.doesNotMatch(html, /href="\/settings\/billing"/);
-  assert.doesNotMatch(render([hidden]), /oc-account-settings/);
+  assert.doesNotMatch(render([hidden]), /oc-account-link/);
 });

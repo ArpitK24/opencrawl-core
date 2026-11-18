@@ -2,7 +2,7 @@ import {useEffect, useId, useRef, useState} from 'react';
 import type {KeyboardEvent, ReactNode} from 'react';
 import {NavLink, Route, Routes, useLocation} from './router.tsx';
 import type {NavigationItem, WorkspaceIdentity} from './contracts.ts';
-import {Avatar, Brand, Button, EmptyState, LinkButton, Page} from './design/components.tsx';
+import {Avatar, Brand, Button, EmptyState, ExternalLink, LinkButton, Page} from './design/components.tsx';
 import {Icon} from './design/icons.tsx';
 import {ConsoleDataProvider, useHasConsoleCache} from './data.tsx';
 
@@ -85,7 +85,10 @@ function WorkspaceShell({workspace, routes, children, footer, navigation, naviga
       <footer className="oc-account-zone" onKeyDown={event => {if (event.key === 'Escape' && accountPanel.current?.matches(':popover-open')) {event.preventDefault(); event.stopPropagation(); closeAccount();}}}>
         {hasAccountDetails ? <>
           <div ref={accountPanel} id={accountDetailsId} className="oc-account-details" popover="auto" role="group" aria-label="Account details" onToggle={event => setAccountOpen(event.currentTarget.matches(':popover-open'))}>
-            {settingsRoutes[0] && <LinkButton to={settingsRoutes[0].path} variant="quiet" className="oc-account-settings" onClick={() => {accountPanel.current?.hidePopover(); setAccountOpen(false); if (compact) closeMenu(); if (location.pathname === settingsRoutes[0]?.path) requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-page-heading]')?.focus());}}><Icon name="settings" size={18}/><span>Settings</span><Icon name="chevron-right" size={16}/></LinkButton>}
+            {settingsRoutes[0] && <LinkButton to={settingsRoutes[0].path} variant="quiet" className="oc-account-link" onClick={() => {accountPanel.current?.hidePopover(); setAccountOpen(false); if (compact) closeMenu(); if (location.pathname === settingsRoutes[0]?.path) requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-page-heading]')?.focus());}}><Icon name="settings" size={18}/><span>Settings</span><Icon name="chevron-right" size={16}/></LinkButton>}
+            <ExternalLink href="https://docs.getopencrawl.com/" className="oc-button quiet oc-account-link">
+              <Icon name="memories" size={18}/><span>Docs</span>
+            </ExternalLink>
             {footer && <div className="oc-account-actions">{footer}</div>}
           </div>
           <Button ref={accountToggle} variant="quiet" className="oc-account-trigger" popoverTarget={accountDetailsId} aria-label={`${accountName ? `${accountName}, ` : ''}${workspace.name}. Account menu`} aria-controls={accountDetailsId} aria-expanded={accountOpen}>{identity}<Icon name="chevron-down" size={20}/></Button>
