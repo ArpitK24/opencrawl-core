@@ -1,15 +1,21 @@
 import type {Authenticate,HttpHandler} from '../sessions/types.mjs';
+import {setupInvitation,type SetupInvitations} from './invitations.mjs';
 import {serviceError} from '../sessions/types.mjs';
 import type {createSetupStatus} from './status.mjs';
 
 /** Portable CLI protocol. Browser reads use their runtime's authenticated principal. */
-export function createSetupHandler({setup,authenticate}:{setup:ReturnType<typeof createSetupStatus>;authenticate:Authenticate}):HttpHandler {
+export function createSetupHandler({setup,authenticate,invitations}:{setup:ReturnType<typeof createSetupStatus>;authenticate:Authenticate;invitations?:SetupInvitations}):HttpHandler {
   return async(req,res)=>{
     const send=(status:number,value:unknown)=>{res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify({schemaVersion:1,...value as object}));};
     try {
       if(req.headers.origin)return send(403,{error:{code:'BROWSER_REQUEST_DENIED'}});
       const url=new URL(req.url||'/', 'http://setup.invalid');
       if(url.search)return send(400,{error:{code:'INVALID_SETUP_REQUEST'}});
+      if(url.pathname==='/api/setup/invitations'){
+        if(!invitations)return send(404,{error:{code:'SETUP_NOT_FOUND'}});
+        if(req.method!=='GET'&&req.method!=='POST')return send(405,{error:{code:'METHOD_NOT_ALLOWED'}});
+        return send(200,{data:await setupInvitation(req,invitations)});
+      }
       const operation=url.pathname==='/api/setup'&&req.method==='GET'?'read':url.pathname==='/api/setup/installation'&&req.method==='POST'?'installation':url.pathname==='/api/setup/verify'&&req.method==='POST'?'verify':null;
       if(!operation)return send(405,{error:{code:'METHOD_NOT_ALLOWED'}});
       const principal=await authenticate(req);

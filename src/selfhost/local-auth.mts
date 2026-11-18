@@ -193,7 +193,7 @@ export function localAuth({identity,url,organizationId,setupToken,member}:LocalA
   }
 
   /** Bearer tokens from the CLI device grant or an MCP client authorization. */
-  async function identifyToken(authorization:string|undefined,_options?:{capture?:boolean}):Promise<CliResult>{
+  async function identifyToken(authorization:string|undefined,options?:{capture?:boolean;cliOnly?:boolean}):Promise<CliResult>{
     const token=/^Bearer ([A-Za-z0-9_.-]+)$/.exec(authorization||'')?.[1];
     if(!token||token.length>16384)return {status:401};
     let payload;
@@ -201,6 +201,7 @@ export function localAuth({identity,url,organizationId,setupToken,member}:LocalA
     // Keys are local: a token error is invalid credentials; anything else is a storage outage.
     catch(error){return {status:errorInfo(error).code?.startsWith('ERR_J')?401:503};}
     if(typeof payload.sub!=='string'||!/^user_[A-Za-z0-9]+$/.test(payload.sub))return {status:401};
+    if(options?.cliOnly && payload.client_id!==CLI_CLIENT_ID)return {status:401};
     if(typeof payload.client_id!=='string'||typeof payload.scope!=='string'||!payload.scope.split(' ').includes('openid')||payload.cnf!==undefined)return {status:401};
     if(typeof payload.iat!=='number'||!await identity.tokenCurrent(payload.sub,payload.iat))return {status:401};
     const current=await currentVerifiedUser(directory,payload.sub);
