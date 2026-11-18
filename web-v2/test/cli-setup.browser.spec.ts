@@ -7,7 +7,7 @@ for(const viewport of [{width:1280,height:800},{width:390,height:844}])test(`inc
   await page.route('**/api/console/bootstrap',route=>route.fulfill({json:bootstrap}));
   await page.goto('/setup?full-app');
   await expect(page.getByRole('heading',{name:'Setup',exact:true})).toBeVisible();
-  await expect(page.getByRole('textbox',{name:'Run in your terminal, or give this command to Claude Code',exact:true})).toHaveValue('opencrawl setup --client claude-code --api https://disposable.example');
+  await expect(page.getByRole('textbox',{name:'Run in your terminal',exact:true})).toHaveValue('opencrawl setup');
   let documents=0;page.on('request',request=>{if(request.isNavigationRequest()&&request.frame()===page.mainFrame())documents++;});
   if(viewport.width<600)await page.getByRole('button',{name:'Open workspace navigation'}).click();
   await page.getByRole('navigation',{name:'Workspace navigation'}).getByRole('link',{name:'Sessions',exact:true}).click();
