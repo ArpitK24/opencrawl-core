@@ -1,5 +1,5 @@
 import {test,expect} from 'bun:test';
-import {mkdtemp,rm} from 'node:fs/promises';
+import {mkdtemp,readdir,rm,unlink} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {skillFiles} from '../src/skills.ts';
@@ -81,6 +81,10 @@ test('real CLI processes register, deliver, acknowledge, exclude duplicate liste
     // Exercise the installed listener command, restarting before handling its page.
     const nativeFlags = skillFiles()['SKILL.md'].match(/The command is opencrawl board watch --session <id> (.*?) --json/)![1].split(' ');
     const noticeArgs = ['wait', '--session', 'receiver', ...nativeFlags, '--timeout-ms', '1500'];
+    // Registration through MCP need not have populated this CLI's capability cache.
+    const boardDir = join(dir, 'opencrawl', 'board');
+    const capability = (await readdir(boardDir)).find(name => name.endsWith('.capabilities.json'));
+    await unlink(join(boardDir, capability!));
     const notice = await command(noticeArgs);
     expect(notice.type).toBe('board.notice');
     expect(notice.messages).toContainEqual(delivery);

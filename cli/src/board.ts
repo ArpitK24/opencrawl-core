@@ -218,6 +218,12 @@ export const boardStateFile = (api: string, session: string) => join(configDir()
 export const boardProtocolFile = (api:string) => join(configDir(),'board',createHash('sha256').update(api).digest('hex')+'.capabilities.json');
 export function supportsInbox(api:string){try{return JSON.parse(readFileSync(boardProtocolFile(api),'utf8')).inbox===true;}catch{return false;}}
 
+// Native MCP registration can leave the CLI's capability file absent or stale.
+// Only an unsupported route on an unadvertised server permits legacy fallback.
+function missingInboxRoute(api: string, error: unknown) {
+  return error instanceof CliError && error.code === 'BOARD_NOT_FOUND' && !supportsInbox(api);
+}
+
 export async function onlineAnnouncement(api:string){
   const {readCaptureConfig}=await import('./capture/runtime.ts');
   const config=readCaptureConfig();
@@ -299,10 +305,15 @@ export async function boardCommand(operation: string, api: string, values: Optio
         throw new CliError('BOARD_STARTUP_PENDING','Background registration is still pending. Continue your task; retry this profile command at a later work boundary without registering again.');
       if(file)try{reload();}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
     }
-    if(operation==='inbox' && values.receipt===undefined && (supportsInbox(api)||values.cursor!==undefined)){
-      const page=await boardRequest(api,'v2/inbox',scoped({session:sessionId(values),...(values.cursor!==undefined?{acknowledge:values.cursor}:{})}));
-      await emit(page);
-      return;
+    if (operation === 'inbox' && values.receipt === undefined) {
+      let page;
+      try {
+        page = await boardRequest(api, 'v2/inbox', scoped({session: sessionId(values),
+          ...(values.cursor !== undefined ? {acknowledge: values.cursor} : {})}));
+      } catch (error) {
+        if (values.cursor !== undefined || !missingInboxRoute(api, error)) throw error;
+      }
+      if (page) {await emit(page); return;}
     }
     const input=boardInput(operation,values);
     // Older deployments use strict schemas. Registration returns the capability
@@ -337,12 +348,19 @@ export async function boardCommand(operation: string, api: string, values: Optio
       lifetime.check();lifetime.signal.throwIfAborted();
       if(file)try{reload();}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
       const remaining=timeoutMs?timeoutMs-(Date.now()-started):0;if(timeoutMs&&remaining<=0)return;
-      const durable = notice && supportsInbox(api);
-      const poll = (lastEmitted: string | null) => {
+      let useInbox = Boolean(notice);
+      const poll = async (lastEmitted: string | null) => {
         const options = {signal: lifetime.signal};
-        if (!durable) return boardRequest(api, 'inbox', scoped({session}), fetch, options);
-        return pollInboxNotice(idsOnly => boardRequest(api, 'v2/inbox',
-          scoped({session, ...(idsOnly ? {noticeOnly: true} : {})}), fetch, options), notice === 'ids', lastEmitted);
+        if (useInbox) {
+          try {
+            return await pollInboxNotice(idsOnly => boardRequest(api, 'v2/inbox',
+              scoped({session, ...(idsOnly ? {noticeOnly: true} : {})}), fetch, options), notice === 'ids', lastEmitted);
+          } catch (error) {
+            if (!missingInboxRoute(api, error)) throw error;
+            useInbox = false;
+          }
+        }
+        return boardRequest(api, 'inbox', scoped({session}), fetch, options);
       };
       return watchBoard({session, timeoutMs:remaining,
       idle:{...listenerActivity(api,session),leave:()=>boardRequest(api,'leave',scoped({session}),fetch,{signal:lifetime.signal})}, once: operation === 'wait', notice, compact: values.compact === true,
