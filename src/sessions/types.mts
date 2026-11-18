@@ -38,7 +38,7 @@ export interface ObjectStore extends ConditionalStore {
 }
 /** Capture clients with their own session namespace. Memory snapshots are
  * narrower: only harnesses that keep native memory files (see memories/). */
-export const SESSION_HARNESSES = ['claude-code', 'codex', 'cursor', 'grok-bot', 'antigravity', 'devin'] as const;
+export const SESSION_HARNESSES = ['claude-code', 'codex', 'cursor', 'grok-bot', 'antigravity', 'devin', 'replicas'] as const;
 export type SessionHarness = typeof SESSION_HARNESSES[number];
 export const isSessionHarness = (value: unknown): value is SessionHarness => (SESSION_HARNESSES as readonly unknown[]).includes(value);
 export interface Attachment {type?: string; status?: string; sha256?: string; size?: number; mimeType?: string; path?: string; objectKey?: string | null}
@@ -52,6 +52,7 @@ export interface SessionBatch {
   schemaVersion: number; installationId: string; sessionId: string; harness: string; origin: string;
   owner: Principal; events: SessionEvent[]; attachments: Attachment[]; captureMode?: string;
   host?: string | null; receivedAt?: string; title?: string;
+  replicasSenders?: import("../integrations/replicas-senders.mjs").SenderEvidence;
   actorProfiles?: Record<string,unknown>;
 }
 export interface SessionIdentity {
