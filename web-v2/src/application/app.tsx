@@ -56,13 +56,15 @@ function ConsoleApp<B extends Bootstrap>({api, extensions}: {api: ProductApi<B>;
     invitations: api.onboardingInvitations, invite: api.onboardingInvite, finish: api.finishOnboarding,
   }), [api]);
   const navigate = useNavigate(), location = useLocation();
+  const [initialIntegrationsNav, setInitialIntegrationsNav] = useState(() => document.getElementById('root')?.hasAttribute('data-integrations-nav') === true);
   const [snapshot, setSnapshot] = useState(readReload<B>);
-  const {data, error, refresh, retry, rename, invalidateAccess: deny} = useAdmission(api, snapshot?.bootstrap, location.pathname === '/setup');
+  const {data, error, accessDenied, refresh, retry, rename, invalidateAccess: deny} = useAdmission(api, snapshot?.bootstrap, location.pathname === '/setup');
   const invalidateAccess = (failure: unknown) => {setSnapshot(undefined); deny(failure);};
   useEffect(() => {
     setSnapshot(undefined);
     document.getElementById('opencrawl-reload')?.remove();
   }, []);
+  useEffect(() => {if (accessDenied) setInitialIntegrationsNav(false);}, [accessDenied]);
   const reportKeys: Record<string, readonly unknown[]> = {
     'console.team': consoleResourceKey(api.team), 'console.sources': consoleResourceKey(api.sources),
     'console.usage': consoleResourceKey(dataAdapter, 'usage'),
@@ -85,7 +87,7 @@ function ConsoleApp<B extends Bootstrap>({api, extensions}: {api: ProductApi<B>;
     {path:'/',label:'Usage',icon:'usage',element:<UsagePage adapter={dataAdapter} reportScope={data?.splitUsage ? data.cacheScope : undefined} setupPrompt={data?.setup ? undefined : data?.setupPrompt}/>,pending:feedback => <PendingPage bodyClassName="usage-report" title="Usage" description="Workspace usage">{feedback}</PendingPage>},
     {path:'/sessions',label:'Sessions',icon:'sessions',element:<SessionsPage adapter={libraryAdapter}/>,pending:feedback => <PendingPage bodyClassName="oc-library" title="Sessions" description="Agent sessions captured across your workspace. Private sessions are visible only to the person who captured them.">{feedback}</PendingPage>},
     {path:'/memories',label:'Memories',icon:'memories',element:<MemoriesPage adapter={libraryAdapter}/>,pending:feedback => <PendingPage bodyClassName="oc-library" title="Memories" description="Memory files your agents keep, captured so teammates’ agents can use them.">{feedback}</PendingPage>},
-    {path:'/sources',label:'Integrations',icon:'sources',navigation:data?.workspace.role === 'admin',element:<SourcesPage adapter={api} canConfigure={data?.workspace.role === 'admin'}/>,pending:feedback => <PendingPage bodyClassName="oc-connections" title="Integrations" description="Connect your tools and OpenCrawl keeps their content in sync for your agents.">{feedback}</PendingPage>},
+    {path:'/sources',label:'Integrations',icon:'sources',navigation:data ? data.workspace.role === 'admin' : initialIntegrationsNav && !accessDenied,element:<SourcesPage adapter={api} canConfigure={data?.workspace.role === 'admin'}/>,pending:feedback => <PendingPage bodyClassName="oc-connections" title="Integrations" description="Connect your tools and OpenCrawl keeps their content in sync for your agents.">{feedback}</PendingPage>},
     {path:'/usage',label:'Usage',navigation:false,element:<Navigate to={'/' + location.search} replace/>},
     {path:'/diagnostics',label:'Message board',icon:'diagnostics',element:<DiagnosticsPage adapter={dataAdapter}/>,pending:feedback => <PendingPage title={boardTopic ? '# ' + boardTopic : 'All channels'}>{feedback}</PendingPage>},
     {path:'/search',label:'Search playground',icon:'search',element:<SearchPlaygroundPage adapter={dataAdapter}/>,pending:feedback => <PendingPage title="Search playground">{feedback}</PendingPage>},

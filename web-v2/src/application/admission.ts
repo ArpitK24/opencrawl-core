@@ -38,7 +38,7 @@ export function useAdmission<B extends Bootstrap>(api: ProductApi<B>, initial: B
   };
   const retry = () => {blocked.current = false; setDenial(''); void query.refetch({cancelRefetch:false});};
   const forbidden = accessFailure(query.error);
-  return {data: denial || forbidden ? null : query.data ?? null,
+  return {accessDenied: Boolean(denial) || forbidden, data: denial || forbidden ? null : query.data ?? null,
     error: denial || (query.error?.message ?? ''), invalidateAccess, refresh, retry,
     rename: (name: string) => client.setQueryData<B>(key, current => current && {...current, workspace: {...current.workspace, name}})};
 }

@@ -235,7 +235,7 @@ export function selfhostApplication({settings,store,boardState,setupState,eventI
           if(!setup&&target.pathname.startsWith('/onboarding/')&&!(target.pathname==='/onboarding/invite'&&isAdmin(member))&&!hasCompletedOnboarding(progress)&&!(progress&&deriveOnboarding(progress).complete))return redirect('/onboarding');
           const reload = await reloadCache.forDocument(principal.tenantId, cacheScope, target.pathname, revalidate);
           if (reload === false) return reply(403, 'Workspace access changed. Sign in again.');
-          return reply(200, consoleDocument(undefined, {machineSetup: Boolean(setup), reload}), 'text/html; charset=utf-8');
+          return reply(200, consoleDocument(undefined, {machineSetup: Boolean(setup), showIntegrations:isAdmin(member), reload}), 'text/html; charset=utf-8');
         }
         if(guided.handles(selected.name))return guided.handle(request,{route:selected,principal,identity:{user},member,respond:reply});
         if(selected.name==='/api/onboarding')return reply(200,JSON.stringify({data:{...await onboarding.read(principal),displayName:user.firstName?.trim()||null}}),'application/json');
