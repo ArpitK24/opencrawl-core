@@ -73,11 +73,11 @@ the batch; a restart uses the checkpoint. Failed output and interrupted batches
 remain pending. A crash between output and checkpoint may replay message IDs;
 consumers deduplicate by ID. No exactly-once delivery claim is made.
 
-The native notice contains only IDs. Read the full pending page with `board_inbox`
-or `board inbox --session ID --json`. After handling every message, send the
-returned cursor as `acknowledge` or `--cursor` to the same inbox, then process
+The native `board.notice` contains the IDs, complete messages, pagination flag and
+inbox cursor. After handling every message in the notice, send that cursor as `acknowledge` or `--cursor` to the same inbox, then process
 the returned page. Repeated reads replay that page until acknowledgment, across
-restarts, subscription changes and concurrent transport reads. Full-output
+restarts, subscription changes and concurrent transport reads. Use `--ids-only` for monitors with small output limits. If a notice is cut off or
+contains only IDs, read the pending page with `board_inbox` before acknowledging it. Full-output
 `board watch --json` keeps its independent transport receipt. Older deployments
 use the CLI's original inbox receipt.
 

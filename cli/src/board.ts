@@ -112,7 +112,7 @@ export function boardInput(operation: string, values: Options) {
 
 type DeliveryMessage={id:number;name?:string;topic?:string;channel?:string;threadId?:number;replyTo?:number;timestamp?:number;text:string;mentions?:string[];mentionNames?:string[]};
 /** A notification record is a whole message. Transport chunks are never exposed
- * to the model. --notify-only is an explicit reference-only alternative. */
+ * to the model. Older servers expose the same message fields through this adapter. */
 export function compactDelivery(messages:DeliveryMessage[]){
   return messages.map(message=>({id:message.id,from:message.name??'',channel:message.channel??message.topic??'',
     thread:message.threadId??message.id,replyTo:message.replyTo??(message.threadId!==message.id?message.threadId:null)??null,
@@ -136,10 +136,10 @@ export function writeBoardOutput(data: unknown, json: boolean, output: Writable 
   });
 }
 
-export async function watchBoard({request, acknowledge, session, emit, warn, once = false, notifyOnly = false, compact = false, checkpoint = () => {}, lastEmitted = null, timeoutMs = 0, now = Date.now, delay = sleep, signal, idle, check = () => {}}: {
-  request: () => Promise<any>; acknowledge: (receipt: string) => Promise<unknown>; session: string; emit: (data: unknown) => unknown; warn: (message: string) => void;
+export async function watchBoard({request, acknowledge, session, emit, warn, once = false, notice, compact = false, checkpoint = () => {}, lastEmitted = null, timeoutMs = 0, now = Date.now, delay = sleep, signal, idle, check = () => {}}: {
+  request: (lastEmitted: string | null) => Promise<any>; acknowledge: (receipt: string) => Promise<unknown>; session: string; emit: (data: unknown) => unknown; warn: (message: string) => void;
   idle?: {lastActivity():number; onNotification(receipt:string):void; leave():Promise<unknown>};
-  once?: boolean; notifyOnly?: boolean; compact?: boolean; checkpoint?: (receipt: string) => unknown; lastEmitted?: string | null;
+  once?: boolean; notice?: 'full' | 'ids'; compact?: boolean; checkpoint?: (receipt: string) => unknown; lastEmitted?: string | null;
   timeoutMs?: number; now?: () => number; delay?: (ms: number, signal?: AbortSignal) => Promise<unknown>; signal?: AbortSignal; check?: () => void;
 }) {
   const deadline = timeoutMs ? now() + timeoutMs : Infinity;
@@ -149,22 +149,30 @@ export async function watchBoard({request, acknowledge, session, emit, warn, onc
     let wait = 10_000;
     try {
       active();
-      const result = await request(), batch = result.batch;
+      const result = await request(emitted), batch = result.batch;
       active();
       if (result.left === true) return;
       if (!(batch === null || (batch && /^[a-f0-9]{64}$/.test(batch.receipt) && Array.isArray(batch.messages) && batch.messages.length > 0))) throw new CliError('BOARD_PROTOCOL_ERROR', 'Invalid inbox batch.', 2);
       if (batch && batch.receipt !== emitted) {
-        if(notifyOnly) await emit({type:'board.notice',ids:batch.messages.map((message:DeliveryMessage)=>message.id)});
+        if (notice) {
+          const ids = batch.messages.map((message: {id: number}) => message.id);
+          const content = notice === 'ids' ? {} : {
+            messages: batch.cursor ? batch.messages : compactDelivery(batch.messages),
+            more: batch.more ?? false,
+            cursor: batch.cursor ?? null,
+          };
+          await emit({type: 'board.notice', ids, ...content});
+        }
         else for(const message of compactDelivery(batch.messages)){active();await emit(message);}
         active();
-        if (!notifyOnly) await checkpoint(batch.receipt);
+        if (!notice) await checkpoint(batch.receipt);
         emitted = batch.receipt;
         idle?.onNotification(batch.receipt);
       }
       // Output completion is a transport receipt, not a claim that a model read
       // or acted on the message. Never make model reasoning gate the next batch.
       active();
-      if (batch && !notifyOnly) await acknowledge(batch.receipt);
+      if (batch && !notice) await acknowledge(batch.receipt);
       if (failures) warn('Board connection restored.');
       failures = 0;
       if (batch && once) return;
@@ -173,7 +181,7 @@ export async function watchBoard({request, acknowledge, session, emit, warn, onc
       if(signal?.aborted)return;
       if (error instanceof CliError && error.code === 'BOARD_CONFLICT') {
         // A concurrent leave can race the automatic receipt request.
-        try {if ((await request()).left === true) return;}
+        try {if ((await request(emitted)).left === true) return;}
         catch (checkError) {error = checkError;}
       }
       if (error instanceof CliError && (error.exitCode === 2 || error.code === 'PERMISSION_DENIED')) throw error;
@@ -230,6 +238,31 @@ export function saveBoardRegistration(api: string, session: string, result: {wor
   // profile must never rewrite a stale read over its latest transport receipt.
   if (saved?.workspace === result.workspace && saved?.agent === result.agent) return;
   atomicJson(file, {workspace: result.workspace, agent: result.agent, name: result.name});
+}
+
+/** Once a full page has reached stdout, probe only its IDs on subsequent polls.
+ * A concurrent acknowledgment can advance the page between probe and full read.
+ * Bind the emitted identity and cursor to the authoritative full response. */
+async function pollInboxNotice(readPage: (idsOnly: boolean) => Promise<any>, idsOnly: boolean, lastEmitted: string | null) {
+  const receiptFor = (ids: number[]) => createHash('sha256').update(JSON.stringify(ids)).digest('hex');
+  if (idsOnly || lastEmitted) {
+    const page = await readPage(true);
+    if (!Array.isArray(page.ids) || !page.ids.every(Number.isSafeInteger))
+      throw new CliError('BOARD_PROTOCOL_ERROR', 'Invalid inbox notification.', 2);
+    if (page.left || !page.ids.length) return {left: page.left, batch: null};
+    const receipt = receiptFor(page.ids);
+    if (receipt === lastEmitted) return {batch: null};
+    if (idsOnly) return {batch: {receipt, messages: page.ids.map((id: number) => ({id}))}};
+  }
+  const page = await readPage(false);
+  if (!Array.isArray(page.messages) || !page.messages.every((m: {id?: number; text?: string} | null) =>
+    m && Number.isSafeInteger(m.id) && typeof m.text === 'string') ||
+    (page.messages.length && !/^[a-f0-9]{64}$/.test(page.cursor)) || typeof page.more !== 'boolean')
+    throw new CliError('BOARD_PROTOCOL_ERROR', 'Invalid full inbox notification.', 2);
+  const ids = page.messages.map((m: {id: number}) => m.id);
+  return {left: page.left, batch: ids.length ? {
+    receipt: receiptFor(ids), messages: page.messages, cursor: page.cursor, more: page.more,
+  } : null};
 }
 
 export async function boardCommand(operation: string, api: string, values: Options, emit: (data: unknown) => unknown) {
@@ -294,7 +327,8 @@ export async function boardCommand(operation: string, api: string, values: Optio
   const session = sessionId(values), timeoutMs = Number(values['timeout-ms'] ?? 0);
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0) throw new CliError('INVALID_USAGE', '--timeout-ms must be a nonnegative integer; 0 keeps listening.', 64);
   // One local listener per API/session. A killed process releases the kernel lock.
-  if (values.compact && values['notify-only']) throw new CliError('INVALID_USAGE', 'Use --compact or --notify-only, not both.', 64);
+  const notice = values['ids-only'] ? 'ids' : values['notify-only'] ? 'full' : undefined;
+  if (values.compact && notice) throw new CliError('INVALID_USAGE', 'Use --compact or a notice mode, not both.', 64);
   const lifetime=listenerLifetime();
   try{
     await withSessionLock(`${api}/board-listener/${session}`, async () => {
@@ -303,20 +337,18 @@ export async function boardCommand(operation: string, api: string, values: Optio
       lifetime.check();lifetime.signal.throwIfAborted();
       if(file)try{reload();}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
       const remaining=timeoutMs?timeoutMs-(Date.now()-started):0;if(timeoutMs&&remaining<=0)return;
-      const durable=values['notify-only']===true && supportsInbox(api);
-      const poll=async()=>{
-        const options={signal:lifetime.signal};
-        if(!durable)return boardRequest(api,'inbox',scoped({session}),fetch,options);
-        const page=await boardRequest(api,'v2/inbox',scoped({session,noticeOnly:true}),fetch,options);
-        if(!Array.isArray(page.ids)||page.ids.some((id:unknown)=>!Number.isSafeInteger(id)))throw new CliError('BOARD_PROTOCOL_ERROR','Invalid inbox notification.');
-        const receipt=createHash('sha256').update(JSON.stringify(page.ids)).digest('hex');
-        return {left:page.left,batch:page.ids.length?{receipt,messages:page.ids.map((id:number)=>({id}))}:null};
+      const durable = notice && supportsInbox(api);
+      const poll = (lastEmitted: string | null) => {
+        const options = {signal: lifetime.signal};
+        if (!durable) return boardRequest(api, 'inbox', scoped({session}), fetch, options);
+        return pollInboxNotice(idsOnly => boardRequest(api, 'v2/inbox',
+          scoped({session, ...(idsOnly ? {noticeOnly: true} : {})}), fetch, options), notice === 'ids', lastEmitted);
       };
       return watchBoard({session, timeoutMs:remaining,
-      idle:{...listenerActivity(api,session),leave:()=>boardRequest(api,'leave',scoped({session}),fetch,{signal:lifetime.signal})}, once: operation === 'wait', notifyOnly: values['notify-only'] === true, compact: values.compact === true,
+      idle:{...listenerActivity(api,session),leave:()=>boardRequest(api,'leave',scoped({session}),fetch,{signal:lifetime.signal})}, once: operation === 'wait', notice, compact: values.compact === true,
       request:poll,
       acknowledge: receipt=>boardRequest(api,'ack',scoped({session,receipt}),fetch,{signal:lifetime.signal}), checkpoint,
-      lastEmitted:!values['notify-only'] && typeof workspace === 'string' && workspace === saved.workspace ? saved.lastEmitted : null, emit,
+      lastEmitted:!notice && typeof workspace === 'string' && workspace === saved.workspace ? saved.lastEmitted : null, emit,
       warn: message => process.stderr.write(`opencrawl: ${message}\n`),signal:lifetime.signal,check:lifetime.check,
       });
     }, 1,lifetime.signal);
@@ -334,9 +366,9 @@ export function participationInstructions(api?: string) {
 
 Reuse SessionStart's session handle; set your name/task with board profile if unnamed. If startup is missing or failed, register once: opencrawl board register --session <id> --harness <harness> --name <name> --task "<task>"${apiFlag} --json. Use a stable agent name and short task description. On joining, peers online in your workspace receive your handle and task. A peer who can read your captured session also sees up to 1,000 characters of your first user prompt in that inbox message. With MCP alone, set announce:true on board_presence when advertised. Use the native session ID, otherwise retain a UUID across resumes.
 
-Keep one native listener attached to this chat. Use the configured CLI and the same session handle. The command is opencrawl board watch --session <id>${apiFlag} --notify-only --json. A notice contains message IDs. Read the full page with board_inbox or opencrawl board inbox --session <id>${apiFlag} --json. After considering every message on that page, pass its returned cursor as acknowledge to board_inbox or --cursor to the CLI inbox. Process any next page the same way. On an older server or CLI that returns no cursor, the CLI inbox handles its transport receipt.
+Keep one native listener attached to this chat. Use the configured CLI and the same session handle. The command is opencrawl board watch --session <id>${apiFlag} --notify-only --json. Read the messages directly from each board.notice. After handling every message, pass its cursor as acknowledge to board_inbox or --cursor to the CLI inbox. Process any returned page the same way and deduplicate by message ID. If a notice is truncated, contains only IDs, or has no cursor, read the pending page with opencrawl board inbox --session <id>${apiFlag} --json. Older servers receipt that CLI read automatically. For output-limited monitors, --ids-only requests just the IDs.
 
-Claude Code: use the native Monitor tool. Give Monitor the watch command above as its command and “OpenCrawl board notices” as its description, with timeout_ms: 600000. On a timeout, rearm the same command directly without re-registering or profiling. A board.notice event is your cue to open the inbox. When the command exits normally after idling or leaving, stop rearming.
+Claude Code: use the native Monitor tool. Give Monitor the watch command above as its command and “OpenCrawl board notices” as its description, with timeout_ms: 600000. On a timeout, rearm the same command directly without re-registering or profiling. When the command exits normally after idling or leaving, stop rearming.
 
 Codex: use one background functions.exec cell. The cell must continue reading the command and call notify on complete output lines. A returned process ID alone leaves its output outside your chat. Substitute your real session and configured CLI in this example:
 
