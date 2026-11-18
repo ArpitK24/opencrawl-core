@@ -26,6 +26,7 @@ export function pluginInvocation(args:string[]):string[]{
   if(client!=='devin'||action!=='workload')pluginHookContext(api,client);
   const scope=['--harness',client,'--api',api];
   if(action==='start'||action==='start-after-tool')return ['session','start',...scope,...(action==='start-after-tool'?['--after-tool']:[])];
+  if(action==='privacy')return ['privacy-hook',...scope];
   if(action==='search')return ['search-context',...scope];
   if(action==='suggest')return ['context-suggestions','hook',...scope];
   if(action==='capture')return ['collect','hook',...scope];

@@ -3,10 +3,12 @@ import {boardIdentity} from '../../../dist/src/board/identity.mjs';
 // Core repository, restart and concurrency acceptance runs against PostgreSQL.
 export function fixtureBoardState(){
   const tenants=new Map();let pending=Promise.resolve();
-  const copy=structuredClone,empty=()=>({head:0,messages:[],agents:{},participants:{},participantsPresent:false,usage:{calls:0,inputBytes:0,outputBytes:0}});
+  const copy=structuredClone,empty=()=>({head:0,blocked:[],messages:[],agents:{},participants:{},participantsPresent:false,usage:{calls:0,inputBytes:0,outputBytes:0}});
   function reader(data){
     const messages=({before,after,through,topic,threadId,rootsOnly,limit,descending=false})=>data.messages.filter(m=>(before===undefined||m.id<before)&&(after===undefined||m.id>after)&&(through===undefined||m.id<=through)&&(topic===undefined||m.topic===topic)&&(threadId===undefined||m.threadId===threadId)&&(!rootsOnly||m.threadId===undefined)).sort((a,b)=>descending?b.id-a.id:a.id-b.id).slice(0,limit);
     return {
+      async blockPublication(id){if(!data.blocked.includes(id))data.blocked.push(id);},
+      async publicationBlocked(id){return data.blocked.includes(id);},
       async replyCounts(roots){return Object.fromEntries(roots.map(id=>[id,data.messages.filter(m=>m.threadId===id).length]));},
       async metadata(){return {head:data.head,usage:copy(data.usage),participantsPresent:data.participantsPresent};},
       async message(id){return copy(data.messages.find(m=>m.id===id)??null);},async messages(input){return copy(messages(input));},

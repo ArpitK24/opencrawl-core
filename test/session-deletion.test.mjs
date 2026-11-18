@@ -124,6 +124,24 @@ test('legacy owner-scoped attachment bytes are purged before deleting their last
   assert.equal(await f.store.get(`${prefix}/${sessionScope(owner)}/attachments/${sha}`),null);
 });
 
+test('a shared historical attachment survives until the last referencing chat is erased',async()=>{
+  const f=fixture(), bytes=Buffer.from('shared attachment'), sha=digest(bytes);
+  const blob=`${prefix}/${sessionScope(owner)}/attachments/${sha}`;
+  await f.store.put(blob,bytes);
+  for(const id of ['first','second']){
+    const value=batch({sessionId:id,attachments:[{status:'captured',sha256:sha}]});
+    const {key}=await f.upload(value);
+    const stored=JSON.parse(gunzipSync(await f.store.get(key)));
+    assert.notEqual(stored.attachments[0].objectKey,blob,'current clients always persist a scoped reference');
+    stored.attachments[0].objectKey=blob; // Immutable manifest written by an old installation.
+    await f.store.put(key,gzipSync(JSON.stringify(stored)));
+  }
+  assert.equal((await f.library().delete(owner,{harness:'codex',sessionId:'first'})).deleted,true);
+  assert.deepEqual(await f.store.get(blob),bytes);
+  assert.equal((await f.library().delete(owner,{harness:'codex',sessionId:'second'})).deleted,true);
+  assert.equal(await f.store.get(blob),null);
+});
+
 test('S3 erasure enumerates old versions and delete markers, paginates and verifies absence',async()=>{
   const versions=new Map([['raw/a:001',{key:'raw/a',id:'001',body:'old text'}],['raw/a:002',{key:'raw/a',id:'002',body:'new text'}],['raw/a:003',{key:'raw/a',id:'003',marker:true}],['raw/b:001',{key:'raw/b',id:'001',body:'keep'}]]);
   const reads=[],deleted=[];
