@@ -7,7 +7,7 @@ import {join,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import {configuration,plan,airbyteValues,prepareAirbyteChart,applicationName,airbyteWorkspaceReceipt} from './install.mts';
-import {connectProbePostgres} from './runtime/postgres-connect.mts';
+import {connectPostgres} from './runtime/postgres-connect.mts';
 const root=dirname(fileURLToPath(import.meta.url));
 const input={context:'test',url:'https://opencrawl.example.com',image:{tag:'sha-test'}};
 test('release packaging versions both archives without changing source or building images',()=>{
@@ -34,7 +34,7 @@ test('all shipped agent tools parse without installing dependencies',()=>{
 test('conformance retries only refused PostgreSQL connections and closes each failed client',async()=>{
   async function exercise(errors:string[]) {
     let created=0, closed=0;
-    const db=await connectProbePostgres(()=>{
+    const db=await connectPostgres(()=>{
       created++;
       return {
         async connect(){const code=errors.shift();if(code)throw Object.assign(new Error(code),{code});},

@@ -3,7 +3,7 @@ import {setTimeout as delay} from 'node:timers/promises';
 type Client = {connect(): Promise<unknown>; end(): Promise<unknown>};
 
 // A new pod can receive a TCP reset before its network policy is ready.
-export async function connectProbePostgres<T extends Client>(createClient: () => T): Promise<T> {
+export async function connectPostgres<T extends Client>(createClient: () => T): Promise<T> {
   for (let attempt = 1; ; attempt++) {
     const client = createClient();
     try {
