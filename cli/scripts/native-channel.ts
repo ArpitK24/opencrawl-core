@@ -28,6 +28,9 @@ export function promoteNative(release: NativeRelease) {
       if (!isDeepStrictEqual(previous, release)) throw new Error('Native release identity or checksums changed');
       return;
     }
+    const comparison = repo+'/compare/'+previous.revision+'...'+release.revision+'?per_page=1';
+    const status = execFileSync('gh',['api',comparison,'--jq','.status'],{encoding:'utf8'}).trim();
+    if (status !== 'ahead' && status !== 'identical') throw new Error('Refusing to replace native CLI with older or divergent source');
   } else if (!head.stderr.includes('HTTP 404')) throw new Error('Could not read native release channel: ' + head.stderr);
   const tree = github('git/trees', {tree: [{path: 'release.json', mode: '100644', type: 'blob', content: JSON.stringify(release, null, 2) + '\n'}]});
   const commit = github('git/commits', {message: 'Release native CLI ' + release.version, tree: tree.sha, parents: parent ? [parent] : []});

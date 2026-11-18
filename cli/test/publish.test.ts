@@ -22,7 +22,7 @@ function registry(dist: string) {
     tags: {latest: '0.9.0', next: '0.9.0', 'next-pending': '0.9.0'} as Record<string, string>,
     packageTags: new Map<string, Record<string, string>>(),
     published: new Set<string>(), downloaded: new Set<string>(),
-    publishCalls: [] as string[], promotions: [] as string[],
+    publishCalls: [] as string[], promotions: [] as string[], uploadsInFlight: 0, peakUploads: 0,
     blocked: new Set<string>(), clock: 0, onSleep: () => {}, failPromotion: false, failAfterPromotions: Infinity,
     stalePackumentTags: false, tagResponse: undefined as string | undefined,
     metadata: new Map<string,Record<string,unknown>>(),
@@ -72,7 +72,12 @@ function registry(dist: string) {
     return Response.json(state.metadata.get(name)??{version:'1.0.0',opencrawlRevision:revision,dist: {integrity,tarball: `https://registry.npmjs.org/${name}`}});
   }) as typeof fetch;
   const execute = (dryRun = false) => publish({dist, dryRun, run, fetcher,
-    upload: async (args, directory) => run(args, {cwd: directory}).exitCode,
+    upload: async (args, directory) => {
+      state.peakUploads = Math.max(state.peakUploads, ++state.uploadsInFlight);
+      await Promise.resolve();
+      try { return run(args, {cwd: directory}).exitCode; }
+      finally { state.uploadsInFlight--; }
+    },
     now: () => state.clock, sleep: async () => { state.onSleep(); state.clock += 20 * 60_000; }});
   return {state, execute, cli,dist,revision,integrity};
 }
@@ -122,6 +127,7 @@ test('all six uploads are staged before the first availability wait, and one mis
   state.blocked.add(`${cli}-linux-x64`);
   await expect(execute()).rejects.toThrow('not downloadable');
   expect(state.publishCalls).toHaveLength(6);
+  expect(state.peakUploads).toBe(6);
   expect(state.promotions).toEqual([]);
 }));
 
