@@ -13,12 +13,14 @@ type Reply = {status: number; body: unknown};
 async function fixture(operation: (context: {
   api: string;
   file: string;
+  directory: string;
+  env: NodeJS.ProcessEnv;
   auth: {clientId: string; deviceAuthorizationEndpoint: string; tokenEndpoint: string};
-  state: {identity: Reply; oauthDenied: boolean; devices: number; polls: number; identityCalls: number; unexpected: string[]};
+  state: {identity: Reply; holdApproval?: Promise<void>; oauthDenied: boolean; devices: number; polls: number; identityCalls: number; unexpected: string[]};
   run: (command: string, environmentToken?: string) => Promise<{code: number; body: {schemaVersion: number; data?: Record<string, unknown>; error?: {code: string; message: string}}; output: string}>;
 }) => Promise<void>) {
   const state = {identity: {status: 403, body: {schemaVersion: 1, error: {code: 'ORGANIZATION_REQUIRED'}}} as Reply,
-    oauthDenied: false, devices: 0, polls: 0, identityCalls: 0, unexpected: [] as string[]};
+    oauthDenied: false, holdApproval: undefined as Promise<void> | undefined, devices: 0, polls: 0, identityCalls: 0, unexpected: [] as string[]};
   const server = Bun.serve({hostname: '127.0.0.1', port: 0, async fetch(request): Promise<Response> {
     const path = new URL(request.url).pathname;
     if (path === '/.well-known/opencrawl-cli') return Response.json({schemaVersion: 1, auth});
@@ -30,6 +32,7 @@ async function fixture(operation: (context: {
       state.polls++;
       const form = new URLSearchParams(await request.text());
       if (form.get('grant_type') !== 'urn:ietf:params:oauth:grant-type:device_code') return Response.json({error: 'invalid_grant'}, {status: 400});
+      await state.holdApproval;
       if (state.oauthDenied) return Response.json({error: 'access_denied'}, {status: 400});
       return Response.json({access_token: accessToken, refresh_token: refreshToken, expires_in: 3600});
     }
@@ -57,9 +60,74 @@ async function fixture(operation: (context: {
     expect(output).not.toContain('never-print');
     return {code, body: JSON.parse(stdout), output};
   }
-  try { await operation({api, file, auth, state, run}); }
+  try { await operation({api, file, directory, env, auth, state, run}); }
   finally { await server.stop(true); rmSync(directory, {recursive: true, force: true}); }
 }
+
+// Bun's terminal API is POSIX-only. Replace the platform opener so no real browser is launched.
+test.skipIf(process.platform === 'win32')('setup shows the code before opening a browser and supports cancellation and manual approval', () => fixture(async ({api, directory, env, state}) => {
+  const opener = join(directory, process.platform === 'darwin' ? 'open' : 'xdg-open');
+  const opened = join(directory, 'opened');
+  writeFileSync(opener, '#!/bin/sh\nprintf "%s\\n" "$1" >> "$OPENED"\n', {mode: 0o755});
+  state.oauthDenied = true;
+  for (const mode of ['cancel', 'open', 'no-browser', 'ssh']) {
+    const local = mode === 'open' || mode === 'cancel';
+    const before = state.polls;
+    const approval = Promise.withResolvers<void>();
+    state.holdApproval = approval.promise;
+    const childEnv = {...env, PATH: directory, OPENED: opened, SSH_CONNECTION: mode === 'ssh' ? 'fixture' : '', SSH_TTY: ''};
+    let output = '';
+    // Fresh setup is offered on macOS. Resuming uses the same interactive sign-in on Linux.
+    const resume = process.platform !== 'darwin' || mode === 'ssh';
+    const args = ['setup', ...(resume ? ['resume'] : []), '--api', api, ...(mode === 'no-browser' ? ['--no-browser'] : [])];
+    const child = Bun.spawn([process.execPath, resolve(import.meta.dir, '../src/cli.ts'), ...args], {
+      env: childEnv,
+      terminal: {cols: 90, rows: 28, data: (_terminal, bytes) => {output += new TextDecoder().decode(bytes);}},
+    });
+    const waitFor = async (text: string) => {
+      const deadline = Date.now() + 3000;
+      while (!output.includes(text) && Date.now() < deadline) await Bun.sleep(10);
+      expect(output).toContain(text);
+    };
+    try {
+      if (!resume) {
+        await waitFor('› [ Continue ]');
+        child.terminal!.write('\r');
+      }
+      await waitFor('Device code: TEST-CODE');
+      if (local) {
+        await waitFor('› [ Open browser ]');
+        await Bun.sleep(80);
+        expect(existsSync(opened)).toBe(false);
+        expect(state.polls).toBe(before);
+        child.terminal!.write(mode === 'open' ? '\r' : '\u001b');
+      }
+      if (mode !== 'cancel') {
+        await waitFor(local ? 'Confirm the code in your browser.' : 'Open this link in your browser and confirm the code.');
+        if (mode === 'open') {
+          const deadline = Date.now() + 3000;
+          while (!existsSync(opened) && Date.now() < deadline) await Bun.sleep(10);
+          expect(readFileSync(opened, 'utf8')).toBe(api + '/approve\n');
+        }
+        approval.resolve();
+        await waitFor('› [ Retry ]');
+        expect(state.polls).toBe(before + 1);
+        child.terminal!.write('\u001b');
+      }
+      expect(await child.exited).toBe(mode === 'cancel' ? 130 : 1);
+      expect(output).not.toContain('never-print');
+      if (mode === 'open') {
+        expect(readFileSync(opened, 'utf8')).toBe(api + '/approve\n');
+        rmSync(opened);
+      } else expect(existsSync(opened)).toBe(false);
+    } finally {
+      approval.resolve();
+      child.kill();
+      child.terminal?.close();
+      await child.exited;
+    }
+  }
+}), 20000);
 
 test('device-approved sign-in survives workspace setup and whoami succeeds without another approval', () => fixture(async ({api, file, state, run}) => {
   const pending = await run('login');

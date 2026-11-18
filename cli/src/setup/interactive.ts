@@ -24,6 +24,16 @@ async function nativeCommand(command:string,args:string[],ui:SetupUi,title?:stri
  return nativeLogin(command,args,ui,title);
 }
 
+export async function showDeviceCode(ui:Pick<SetupUi,'action'|'progress'>,url:string,code:string,canOpenBrowser:boolean){
+ const title='Sign in to OpenCrawl';
+ const details=[`Device code: ${code}`,url];
+ if(canOpenBrowser){
+  const choice=await ui.action({title,description:'Press Enter to open your browser, then check that the codes match.',details,actions:[{id:'open',label:'Open browser'},{id:'cancel',label:'Cancel'}]});
+  if(choice!=='open')throw new CliError('SETUP_CANCELLED','Sign-in cancelled.',130);
+ }
+ ui.progress(title,canOpenBrowser?'Confirm the code in your browser.':'Open this link in your browser and confirm the code.',details);
+}
+
 /** Human setup and resume share a terminal. Machine commands keep their contracts. */
 export async function runInteractiveSetup(options:Options,{createUi,setup=setupCommand,which=Bun.which,native=nativeCommand,inspectCodex=currentCodexReview,pause=async signal=>{await delay(3000,undefined,{signal});}}:Dependencies={}){
  const ui=createUi?createUi():(await import('./tui.tsx')).createSetupUi();
@@ -158,7 +168,7 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
      }
     });
    }catch(error){
-    if(ui.signal.aborted)return 130;
+    if(ui.signal.aborted||error instanceof CliError&&error.code==='SETUP_CANCELLED')return 130;
     const failure=filesystemError(error),known=failure instanceof CliError;
     const action=await ui.action({title:'Setup needs attention',description:known?failure.message:'Setup could not finish. Your saved choices are kept. Retry when ready.',error:true,actions:[{id:'retry',label:'Retry'},{id:'address',label:'Change workspace'},{id:'close',label:'Close'}]});
     if(action==='address'){destination={};continue;}

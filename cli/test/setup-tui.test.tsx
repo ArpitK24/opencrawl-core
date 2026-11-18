@@ -5,16 +5,18 @@ import {WelcomeScreen,HostingScreen,WorkspaceScreen,NoticeScreen,type Hosting,ty
 
 const tick=()=>new Promise(resolve=>setTimeout(resolve,25));
 const down='\u001b[B',up='\u001b[A',right='\u001b[C',enter='\r';
-test('welcome explains sharing and optional history before Continue or Exit',async()=>{
+test('welcome explains recording, sharing and privacy controls before Continue or Exit',async()=>{
  for(const key of ['continue','exit','escape','interrupt']){
   let proceed:boolean|undefined;
   const app=await renderReady(<WelcomeScreen onComplete={value=>{proceed=value;}}/>);
   try{
    await waitForFrame(app,'› [ Continue ]');
    const frame=app.lastFrame()!.replace(/\s+/g,' ');
-   expect(frame).toContain('shared with your team by default');
-   expect(frame).toContain('Importing past sessions is a separate choice');
-   expect(frame).toContain('https://app.getopencrawl.com/privacy');
+   expect(frame).toContain('OpenCrawl lets you and your coding agents search your team’s past conversations. Find out why a decision was made or pick up where a teammate left off.');
+   expect(frame).toContain('Sign in to OpenCrawl and choose which local agents to record.');
+   expect(frame).toContain('Messages, tool results and attachments will be uploaded to your workspace and shared with your team by default. You can delete or hide sessions from your team later.');
+   expect(frame).toContain('OpenCrawl Cloud privacy settings: https://app.getopencrawl.com/sessions');
+   expect(frame).toContain('OpenCrawl Cloud privacy notice: https://app.getopencrawl.com/privacy');
    if(key==='exit')await pressAndRead(app,right,'› [ Exit ]');
    app.stdin.write(key==='escape'?'\u001b':key==='interrupt'?'\u0003':enter);
    await tick();expect(proceed).toBe(key==='continue');
