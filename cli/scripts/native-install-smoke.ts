@@ -11,7 +11,7 @@ const systemBin=join(scratch,'system-bin');mkdirSync(systemBin);
 const env={...process.env,HOME:scratch,USERPROFILE:scratch,OPENCRAWL_CONFIG_HOME:join(scratch,'config'),XDG_CONFIG_HOME:join(scratch,'config'),XDG_CACHE_HOME:join(scratch,'cache'),XDG_DATA_HOME:join(scratch,'data'),OPENCRAWL_INSTALL_DIR:join(scratch,'bin'),CLAUDE_CONFIG_DIR:join(scratch,'claude'),CODEX_HOME:join(scratch,'codex'),CURSOR_CONFIG_DIR:join(scratch,'.cursor'),ANTIGRAVITY_HOME:join(scratch,'.gemini'),OPENCRAWL_NO_UPDATE:'1',PATH:systemBin};
 for(const key of Object.keys(env))if(key.startsWith('OPENCRAWL_PLUGIN_')||['OPENCRAWL_TOKEN','OPENCRAWL_SESSIONS_TOKEN','OPENCRAWL_AUTH','OPENCRAWL_LAUNCHER','OPENCRAWL_NODE'].includes(key))delete (env as NodeJS.ProcessEnv)[key];
 if(process.platform==='win32')env.PATH=join(process.env.SystemRoot||'C:\\Windows','System32');
-else for(const name of ['sh','curl','uname','sed','grep','awk','sha256sum','shasum','mktemp','rm','tar','gzip','chmod','sysctl','ldd']){const file=Bun.which(name);if(file)symlinkSync(file,join(systemBin,name));}
+else for(const name of ['sh','curl','uname','sed','grep','awk','sha256sum','shasum','mktemp','rm','tar','gzip','chmod','sysctl','ldd','tty']){const file=Bun.which(name);if(file)symlinkSync(file,join(systemBin,name));}
 async function run(command:string[],extra:Record<string,string|undefined>={}){const child=Bun.spawn(command,{env:{...env,...extra},stdout:'pipe',stderr:'pipe'});const [out,err,code]=await Promise.all([new Response(child.stdout).text(),new Response(child.stderr).text(),child.exited]);if(code)throw new Error('Native smoke failed: '+err+out);return out.trim();}
 function snapshot(paths:string[]) {
   const rows:unknown[]=[];
@@ -55,6 +55,28 @@ try{
   const entry=join(env.OPENCRAWL_INSTALL_DIR,windows?'opencrawl.cmd':'opencrawl');
   if(!existsSync(entry))throw new Error('Installer did not create its command: '+installed);
   const command=(args:string[])=>windows?[powershell,'-NoProfile','-Command',`& '${entry.replace(/'/g,"''")}' ${args.map(v=>"'"+v.replace(/'/g,"''")+"'").join(' ')}`]:[entry,...args];
+  if(!windows){
+    const guidedPipe=['/bin/sh','-c','/bin/cat "$1" | /bin/sh -s -- --setup "$2"','sh',join(root,'install.sh'),pkg.version];
+    for(const invocation of [guidedPipe,[entry]]){
+      let output='',continued=false,cancelled=false;
+      const child=Bun.spawn(invocation,{env:{...env,TERM:'xterm-256color',OPENCRAWL_DOWNLOAD_BASE:server.url.origin},terminal:{
+        cols:110,rows:40,data(terminal,chunk){
+          output=(output+new TextDecoder().decode(chunk)).slice(-16000);
+          if(!continued&&output.includes('› [ Continue ]')){
+            continued=true;
+            setTimeout(()=>terminal.write('\r'),100);
+          }
+          if(!cancelled&&output.includes('Where is your workspace?')){
+            cancelled=true;
+            setTimeout(()=>terminal.write('\x1b'),100);
+          }
+        },
+      }});
+      const timeout=setTimeout(()=>child.kill('SIGKILL'),45000);
+      try{if(await child.exited!==0||!cancelled)throw new Error('Guided install or bare CLI did not accept keyboard input: '+output.slice(-2000));}
+      finally{clearTimeout(timeout);child.terminal?.close();}
+    }
+  }
   if(await run(command(['--version']))!==pkg.version)throw new Error('Native install version mismatch');
   // A rejected launcher replacement must not run the finally-path legacy hook
   // upgrade. This config is synthetic and removed before explicit enrollment.

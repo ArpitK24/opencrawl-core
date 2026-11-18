@@ -37,9 +37,9 @@ if [ "$setup" = true ]; then
   entry="${OPENCRAWL_INSTALL_DIR:-$HOME/.local/bin}/opencrawl"
   if [ -t 0 ] && [ -t 2 ]; then
     "$entry" setup
-  elif [ -t 2 ] && ( : </dev/tty ) 2>/dev/null; then
-    # curl | sh occupies standard input. Give the wizard the caller's terminal.
-    "$entry" setup </dev/tty
+  elif [ -t 2 ] && terminal=$(tty <&2) && [ -r "$terminal" ]; then
+    # Bun needs the actual terminal device for keyboard input on macOS.
+    "$entry" setup <"$terminal"
   else
     echo 'Run opencrawl setup in a terminal to continue.'
   fi
