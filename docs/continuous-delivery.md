@@ -84,3 +84,17 @@ Merge changes only when they are ready for normal deployment. A one-time data
 transition must be encoded in the deployment path before merging dependent
 runtime changes. Failed validation leaves the current release serving; reruns
 and hosted reconciliation resume incomplete delivery.
+## CLI delivery
+
+Native installers and managed native updates follow the public `cli-stable` branch's
+`release.json`. A release job advances it atomically after verifying anonymous
+downloads of the versioned GitHub assets. npm installations follow the npm
+`latest` tag. All six packages upload under a staging tag, and promotion waits
+until every package has the expected source, integrity and downloadable tarball.
+
+The CLI release workflow rechecks a PR's proposed version against occupied Git
+tags and npm versions on main. It rebuilds from main, checks the Git tree and
+compares the executable and package contents against the successful PR receipt.
+A version collision, changed payload or missing receipt runs the full platform
+checks on main. Core CI owns the full core test suite.
+

@@ -3,6 +3,7 @@ import {join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
 import {nativeArchive} from './native-archive.ts';
+import {promoteNative} from './native-channel.ts';
 
 const root=resolve(import.meta.dir,'..'),dist=join(root,'dist'),output=join(root,'native');
 const manifest=JSON.parse(readFileSync(join(dist,'cli/package.json'),'utf8'));
@@ -66,5 +67,10 @@ if(!process.argv.includes('--publish')){
         }catch(error){if(String(error).includes('Published native asset differs:')||Date.now()>=deadline)throw error;await Bun.sleep(5000);}
       }
     }
+    const checksums=Object.fromEntries(platforms.map(platform=>{
+      const name='opencrawl-'+platform+'.tgz';
+      return [name,digest(join(output,name))];
+    }));
+    promoteNative({version:receipt.version,revision:receipt.revision,checksums});
   }finally{rmSync(scratch,{recursive:true,force:true});}
 }

@@ -2,9 +2,9 @@ name: CLI
 on:
   push:
     branches: [main]
-    paths: ['cli/**', 'plugins/opencrawl-sessions/**', 'src/search/suggestion-events.mts', 'tools/delivery.mts', '.github/workflows/cli.yml']
+    paths: ['cli/**', 'plugins/opencrawl-sessions/**', 'src/search/suggestion-events.mts', 'tools/delivery.mts', 'tools/validated-tree.mts', '.github/workflows/cli.yml']
   pull_request:
-    paths: ['cli/**', 'plugins/opencrawl-sessions/**', 'src/search/suggestion-events.mts', 'tools/delivery.mts', '.github/workflows/cli.yml']
+    paths: ['cli/**', 'plugins/opencrawl-sessions/**', 'src/search/suggestion-events.mts', 'tools/delivery.mts', 'tools/validated-tree.mts', '.github/workflows/cli.yml']
   workflow_dispatch:
     inputs:
       publish:
@@ -20,10 +20,14 @@ jobs:
   build:
     outputs:
       version: ${{ steps.version.outputs.version }}
+      reuse: ${{ steps.proof.outputs.reuse }}
+      payload: ${{ steps.artifacts.outputs.payload }}
     runs-on: blacksmith-6vcpu-macos-15
     timeout-minutes: 20
-    env:
-      OPENCRAWL_TEST_POSTGRES_URL: postgres://postgres@127.0.0.1:55473/capture_test
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -38,25 +42,22 @@ jobs:
         id: version
         run: node tools/delivery.mts cli-version
       - run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Start disposable PostgreSQL for the core test suite
-        run: |
-          brew install postgresql@17
-          pg_bin="$(brew --prefix postgresql@17)/bin"
-          "$pg_bin/initdb" -D "$RUNNER_TEMP/opencrawl-core-postgres" --username=postgres --auth=trust --encoding=UTF8
-          "$pg_bin/pg_ctl" -D "$RUNNER_TEMP/opencrawl-core-postgres" -l "$RUNNER_TEMP/opencrawl-core-postgres.log" -o '-h 127.0.0.1 -p 55473' -w start
-          "$pg_bin/createdb" -h 127.0.0.1 -p 55473 -U postgres capture_test
-      - run: npm test
-      - name: Stop the disposable core test database
-        if: always()
-        run: |
-          if test -f "$RUNNER_TEMP/opencrawl-core-postgres/postmaster.pid"; then
-            "$(brew --prefix postgresql@17)/bin/pg_ctl" -D "$RUNNER_TEMP/opencrawl-core-postgres" -m fast -w stop
-          fi
+      - run: npm run build
       - run: bun install --cwd cli --frozen-lockfile --ignore-scripts
       - run: bun run --cwd cli typecheck
       - run: bun cli/scripts/build.ts
       - run: bun cli/scripts/native-release.ts
       - run: bun cli/scripts/publish.ts --dry-run
+      - name: Identify the release contents tested on this tree
+        id: artifacts
+        run: bun cli/scripts/release-payload.ts
+      - name: Check for prior cross-platform validation of these same bytes
+        id: proof
+        env:
+          CLI_PAYLOAD: ${{ steps.artifacts.outputs.payload }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: node tools/validated-tree.mts check --cli
       - run: tar -czf cli-dist.tgz -C cli dist native
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -64,9 +65,10 @@ jobs:
           path: cli-dist.tgz
           compression-level: 0
           retention-days: 1
-  checks:
-    name: checks (${{ matrix.os }})
+  unit:
+    name: CLI tests (${{ matrix.os }})
     needs: build
+    if: needs.build.outputs.reuse != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -93,11 +95,40 @@ jobs:
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run build
       - run: bun install --cwd cli --frozen-lockfile --ignore-scripts
-      - run: bun run --cwd cli typecheck
       - name: Windows subprocess timeout uses the current call clock
         if: runner.os == 'Windows'
         run: bun cli/scripts/windows-spawn-timeout-smoke.ts
       - run: bun run --cwd cli test
+  checks:
+    name: checks (${{ matrix.os }})
+    needs: build
+    if: needs.build.outputs.reuse != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-24.04, runner: blacksmith-4vcpu-ubuntu-2404}
+          - {os: macos-15, runner: blacksmith-6vcpu-macos-15}
+          - {os: windows-2025, runner: blacksmith-4vcpu-windows-2025}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.22.2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.4
+      - name: Use the version built for this source revision
+        env:
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+        run: node tools/delivery.mts cli-version
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run build
+      - run: bun install --cwd cli --frozen-lockfile --ignore-scripts
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: cli-dist-${{ github.sha }}
@@ -178,14 +209,68 @@ jobs:
           path: ${{ runner.temp }}/daemon-supervisor-evidence/
           retention-days: 7
           if-no-files-found: warn
+  process-ownership:
+    needs: build
+    if: needs.build.outputs.reuse != 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.22.2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: cli-dist-${{ github.sha }}
+      - run: tar -xzf cli-dist.tgz -C cli
       - name: Capture ownership under non-reaping PID 1
-        if: runner.os == 'Linux'
         run: |
           cc -std=c11 -O2 -Wall -Wextra -Werror cli/scripts/process-ownership-init.c -o "$RUNNER_TEMP/process-ownership-init"
           sudo unshare --fork --pid --mount-proc "$RUNNER_TEMP/process-ownership-init" "$(command -v node)" "$PWD/cli/scripts/process-ownership.mts" "$PWD/cli/dist"
+  validation:
+    name: CLI release validation
+    needs: [build, unit, checks, process-ownership]
+    if: always() && !cancelled()
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - name: Require every CLI lane or an identical previously tested payload on main
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          REUSE: ${{ needs.build.outputs.reuse }}
+        run: |
+          node --input-type=module <<'JS'
+          const jobs = JSON.parse(process.env.RESULTS);
+          const reuse = process.env.REUSE === 'true';
+          const expected = reuse ? 'skipped' : 'success';
+          if (jobs.build.result !== 'success' || (reuse && process.env.GITHUB_EVENT_NAME !== 'push') ||
+              !['unit', 'checks', 'process-ownership'].every(name => jobs[name]?.result === expected)) process.exit(1);
+          JS
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        if: github.event_name == 'pull_request'
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        if: github.event_name == 'pull_request'
+        with:
+          node-version: 24.22.2
+      - name: Record validated CLI payload and source
+        if: github.event_name == 'pull_request'
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+          CLI_PAYLOAD: ${{ needs.build.outputs.payload }}
+        run: node tools/validated-tree.mts record --cli
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: github.event_name == 'pull_request'
+        with:
+          name: cli-validation
+          path: validation.json
+          retention-days: 2
   publish:
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))
-    needs: [build, checks]
+    if: always() && !cancelled() && needs.validation.result == 'success' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))
+    needs: [build, validation]
     # npm provenance requires a GitHub-hosted runner. Build and test artifacts
     # can still come from Blacksmith; publish the exact validated artifact here.
     runs-on: ubuntu-24.04
