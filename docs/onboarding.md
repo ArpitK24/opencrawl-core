@@ -1,4 +1,34 @@
-# Guided onboarding
+# Onboarding
+
+Sign in to your OpenCrawl workspace. You can open Sessions, search workspace
+content, and use the sidebar as soon as you join an organization. **Setup** stays
+in the sidebar so you can return to it at any time.
+
+## Set up an agent on your Mac
+
+1. Install the [OpenCrawl CLI](https://github.com/getopencrawl/opencrawl-core/tree/main/cli#install) and run `opencrawl setup`.
+2. Select **Cloud** or **Self-hosted**. For self-hosted, paste your workspace address. If sign-in is needed, follow the approval in your browser and return to the terminal.
+3. Choose which agents should record new sessions. Use the arrow keys to move, Space to toggle items, and Enter to select a button. You can also choose **Do not record any sessions on this machine**.
+4. Choose whether to import past sessions when setup offers history for a selected agent. On eligible Macs, setup also offers a background capture service. Keeping the default uses recording hooks directly.
+5. Follow the selected agent’s native connection prompts. After a new session is captured, the agent verifies its connection and whether that session can be found. Open **Setup** in the workspace to see which checks have finished.
+
+Claude Code, Codex, Cursor and Antigravity appear in Mac setup. Available history
+and native approval steps vary by agent. To continue an interrupted setup,
+run `opencrawl setup resume`. To read the choices saved on this machine,
+run `opencrawl setup status --local --json`.
+
+## Run setup on someone's behalf
+
+On a supported machine, run `opencrawl setup --json` to read the machine's plan.
+Use the plan's `applyCommand` after the person has approved the recording and
+history choices. It carries the API origin, selections and plan ID. The CLI
+returns any remaining native approval or sign-in tasks. Inspect the workspace
+with `opencrawl setup status --json`.
+
+## Earlier guided web flow
+
+Deployments serving the earlier guided flow use the following receipts and
+navigation. The CLI-first workspace uses the optional Setup page described above.
 
 The shared product renderers live in `src/onboarding*.mts`. The document frame,
 icons, controls and browser JSON transport are reused across all three steps.
@@ -13,7 +43,7 @@ prefers `npm install -g @getopencrawl/cli`, with the native installer as the
 alternative. Installing the CLI is separate from
 sign-in, recording consent, hook trust and proof of a stored session.
 
-## Progress and gates
+### Progress and gates
 
 `createOnboardingStatus` persists individual receipts under the authenticated
 user and tenant scope. Step one requires CLI authentication, a successful native
@@ -52,7 +82,7 @@ Disconnecting sources later does not relock an already completed workspace.
 Existing receipts are retained; absent new milestones are shown rather than
 inferred from clicks or stored browser state.
 
-## Presentation and recovery
+### Presentation and recovery
 
 All steps share the boxed, left-aligned shell and bounded header with Sign out.
 Forward navigation sits outside the panel at the right; Back stays quiet with

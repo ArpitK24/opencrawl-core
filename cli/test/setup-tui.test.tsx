@@ -1,5 +1,6 @@
 import {test,expect} from 'bun:test';
 import {render} from 'ink-testing-library';
+import {pressAndRead} from './setup-ink.ts';
 import {HostingScreen,WorkspaceScreen,NoticeScreen,type Hosting,type WorkspaceAnswer} from '../src/setup/tui-view.tsx';
 
 const tick=()=>new Promise(resolve=>setTimeout(resolve,25));
@@ -40,10 +41,13 @@ test('workspace entry pastes and edits an origin, validates in place, then submi
  let answer:WorkspaceAnswer|undefined;
  const app=render(<WorkspaceScreen onComplete={value=>{answer=value;}}/>);
  try{
-  await tick();app.stdin.write('https://example.test/setup');await tick();app.stdin.write(enter);await tick();
-  expect(answer).toBeUndefined();expect(app.lastFrame()).toContain('without a path');
-  for(let i=0;i<6;i++){app.stdin.write('\u007f');await tick();}
-  app.stdin.write(down);await tick();expect(app.lastFrame()).toContain('› [ Continue ]');
+  await tick();const address='https://example.test/setup';
+  await pressAndRead(app,address,address);
+  await pressAndRead(app,enter,'without a path');expect(answer).toBeUndefined();
+  for(let length=address.length-1;length>='https://example.test'.length;length--){
+   await pressAndRead(app,'\u007f',address.slice(0,length)+' ');
+  }
+  await pressAndRead(app,down,'› [ Continue ]');
   app.stdin.write(enter);await tick();expect(answer).toEqual({kind:'address',api:'https://example.test'});
  }finally{app.unmount();}
 });

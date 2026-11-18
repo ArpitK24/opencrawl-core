@@ -1,5 +1,6 @@
 import {test,expect} from 'bun:test';
 import {render} from 'ink-testing-library';
+import {pressAndRead,waitForFrame} from './setup-ink.ts';
 import {SetupSelection} from '../src/setup/select-view.tsx';
 import {chooseSetupItems,type SelectionItem,type SelectionScreen} from '../src/setup/select.ts';
 const screen:SelectionScreen={phase:1,title:'Record new sessions',description:'Connect and record selected agents.',noneLabel:'Do not record any sessions on this machine',items:[{id:'claude-code',label:'Claude Code',detail:'Detected',selected:true},{id:'codex',label:'Codex',detail:'Detected',selected:true},{id:'antigravity',label:'Antigravity',detail:'Not detected',disabled:true,selected:false},{id:'cursor',label:'Cursor',detail:'Detected',selected:false}]};
@@ -8,16 +9,18 @@ const down='\u001b[B',up='\u001b[A',right='\u001b[C',enter='\r';
 test('arrow navigation, Space checkboxes, exclusive opt-out and Enter on the focused button',async()=>{
  let answer:SelectionItem[]|null|undefined;const app=render(<SetupSelection screen={screen} onComplete={value=>{answer=value;}}/>);
  try{
-  await tick();expect(app.lastFrame()).toContain('› [x] Claude Code');
-  app.stdin.write(' ');await tick();expect(app.lastFrame()).toContain('› [ ] Claude Code');expect(answer).toBeUndefined();
-  app.stdin.write(down);await tick();expect(app.lastFrame()).toContain('› [x] Codex');
-  app.stdin.write(down);await tick();expect(app.lastFrame()).toContain('› [ ] Cursor'); // Undetected rows stay visible but cannot be checked.
-  app.stdin.write(down);await tick();app.stdin.write(' ');await tick();expect(app.lastFrame()).toContain('› [x] Do not record');
+  await waitForFrame(app,'› [x] Claude Code');
+  await tick(); // The initially focused choice subscribes to input after its first render.
+  await pressAndRead(app,' ','› [ ] Claude Code');expect(answer).toBeUndefined();
+  await pressAndRead(app,down,'› [x] Codex');
+  await pressAndRead(app,down,'› [ ] Cursor');
+  await pressAndRead(app,down,'› [ ] Do not record');
+  await pressAndRead(app,' ','› [x] Do not record');
   expect(app.lastFrame()).toContain('[ ] Codex');
-  app.stdin.write(down);await tick();expect(app.lastFrame()).toContain('› [ Continue ]');expect(answer).toBeUndefined();
-  app.stdin.write(right);await tick();expect(app.lastFrame()).toContain('› [ Cancel ]');
-  app.stdin.write(up);await tick();expect(app.lastFrame()).toContain('› [x] Do not record');
-  app.stdin.write(down);await tick();app.stdin.write(enter);await tick();
+  await pressAndRead(app,down,'› [ Continue ]');expect(answer).toBeUndefined();
+  await pressAndRead(app,right,'› [ Cancel ]');
+  await pressAndRead(app,up,'› [x] Do not record');
+  await pressAndRead(app,down,'› [ Continue ]');app.stdin.write(enter);await tick();
   expect(answer?.every(item=>!item.selected)).toBe(true);
  }finally{app.unmount();}
 });

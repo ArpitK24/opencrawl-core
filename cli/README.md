@@ -64,8 +64,8 @@ background daemon migration for existing enabled capture. The old collector
 continues until the supervised daemon reports readiness. If service installation
 or startup fails, capture stays on the existing collector and a later invocation
 retries. Hooks do not wait for installation or startup. Disabled capture and
-custom launchers are preserved. The new plugin installer uses the explicit optional choice above. A selected
-service must report readiness; failure leaves setup incomplete.
+custom launchers are preserved. On eligible Macs, setup offers background capture
+as a separate choice. A selected service must report readiness to finish setup.
 `opencrawl setup resume` retries without changing saved choices.
 
 Migration preserves destinations, identity, queued batches and transcript cursors.
