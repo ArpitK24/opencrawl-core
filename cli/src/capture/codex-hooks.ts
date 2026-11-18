@@ -4,24 +4,20 @@ import {createHash} from 'node:crypto';
 import {configDir} from '../session.ts';
 import {verifyPluginBundle} from '../setup/plugin-context.ts';
 import {spawn} from 'node:child_process';
-import {searchContextMarker} from '../search-context.ts';
 import {powershellQuote} from '../hook-runner.ts';
 
 const owned=new Set(['OpenCrawl session capture','OpenCrawl session startup']);
-// Review every bundled permission together; search context must not become a
-// second surprise after the capture hooks have already been approved.
-const pluginOwned=new Set([...owned,searchContextMarker,'OpenCrawl context suggestions']);
 export type CodexHookReview={state:'not_applicable'|'unknown'|'observed';total:number;pending:number|null;disabled:number|null};
-type Snapshot={review:CodexHookReview;file:string;bytes:string;config:string;keys:Set<string>;binding?:string;pluginId?:string};
+type Snapshot={review:CodexHookReview;file:string;bytes:string;config:string;keys:Map<string,string>;binding?:string;pluginId?:string};
 function globalSnapshot(root:string):Snapshot {
- const file=join(root,'hooks.json'),keys=new Set<string>();let bytes='',config='';
+ const file=join(root,'hooks.json'),keys=new Map<string,string>();let bytes='',config='';
  try {
   bytes=readFileSync(file,'utf8');
   const value=JSON.parse(bytes) as {hooks?:Record<string,unknown>};
   for(const [event,groups] of Object.entries(value.hooks??{}))if(Array.isArray(groups))groups.forEach((group:unknown,g:number)=>{
    if(!group||typeof group!=='object'||!('hooks' in group)||!Array.isArray(group.hooks))return;
    group.hooks.forEach((hook:unknown,h:number)=>{
-    if(hook&&typeof hook==='object'&&'statusMessage' in hook&&typeof hook.statusMessage==='string'&&owned.has(hook.statusMessage))keys.add(`${file}:${event.replace(/([a-z0-9])([A-Z])/g,'$1_$2').toLowerCase()}:${g}:${h}`);
+    if(hook&&typeof hook==='object'&&'statusMessage' in hook&&typeof hook.statusMessage==='string'&&owned.has(hook.statusMessage))keys.set(`${file}:${event.replace(/([a-z0-9])([A-Z])/g,'$1_$2').toLowerCase()}:${g}:${h}`,hook.statusMessage);
    });
   });
   if(existsSync(join(root,'config.toml')))config=readFileSync(join(root,'config.toml'),'utf8');
@@ -34,7 +30,7 @@ function snapshot(root:string):Snapshot {
  let captureBytes='',capture:{hookOwnership?:string;harnesses?:string[];api:string;roots?:{codex?:string}}|undefined;
  try{captureBytes=readFileSync(join(configDir(),'capture/config.json'),'utf8');capture=JSON.parse(captureBytes);}catch{}
  if(capture?.hookOwnership!=='plugin'||typeof capture.roots?.codex!=='string'||resolve(capture.roots.codex)!==resolve(root))return globalSnapshot(root);
- const keys=new Set<string>();
+ const keys=new Map<string,string>();
  const result:Snapshot={file:'',bytes:'',config:'',keys,binding:captureBytes,review:{state:'unknown',total:0,pending:null,disabled:null}};
  // This is capture readiness, not a requirement to enable recording for search.
  if(!capture.harnesses?.includes('codex'))return {...result,review:{state:'not_applicable',total:0,pending:0,disabled:0}};
@@ -45,11 +41,12 @@ function snapshot(root:string):Snapshot {
   if(receipt.schemaVersion!==2||receipt.api!==capture.api||receipt.client!=='codex'||receipt.pluginName!==name||receipt.pluginId!==pluginId||typeof receipt.nativeRoot!=='string')return result;
   const bundle=verifyPluginBundle({nativeRoot:receipt.nativeRoot,api:capture.api,client:'codex',pluginName:name,configHome:dirname(configDir())});
   if(bundle.digest!==receipt.digest||!('hooks/hooks.json' in bundle.files))return result;
+  // The verified manifest owns these hooks, including bundles with older display labels.
   const file=join(bundle.root,'hooks/hooks.json'),bytes=readFileSync(file,'utf8'),value=JSON.parse(bytes) as {hooks?:Record<string,unknown>};
   for(const [event,groups] of Object.entries(value.hooks??{}))if(Array.isArray(groups))groups.forEach((group:unknown,g:number)=>{
    if(!group||typeof group!=='object'||!('hooks' in group)||!Array.isArray(group.hooks))return;
    group.hooks.forEach((hook:unknown,h:number)=>{
-    if(hook&&typeof hook==='object'&&'statusMessage' in hook&&typeof hook.statusMessage==='string'&&pluginOwned.has(hook.statusMessage))keys.add(`${pluginId}:hooks/hooks.json:${event.replace(/([a-z0-9])([A-Z])/g,'$1_$2').toLowerCase()}:${g}:${h}`);
+    if(hook&&typeof hook==='object'&&'statusMessage' in hook&&typeof hook.statusMessage==='string')keys.set(`${pluginId}:hooks/hooks.json:${event.replace(/([a-z0-9])([A-Z])/g,'$1_$2').toLowerCase()}:${g}:${h}`,hook.statusMessage);
    });
   });
   const config=existsSync(join(root,'config.toml'))?readFileSync(join(root,'config.toml'),'utf8'):'';
@@ -106,17 +103,17 @@ export async function inspectCodexHooks(root:string,query=nativeCodexHooks):Prom
   if(after.file!==before.file||after.bytes!==before.bytes||after.config!==before.config||after.binding!==before.binding||after.pluginId!==before.pluginId||!value||typeof value!=='object'||!('data' in value)||!Array.isArray(value.data))return before.review;
   const hooks:Record<string,unknown>[]=[];
   for(const entry of value.data){if(!entry||typeof entry!=='object'||!Array.isArray(entry.hooks)||!Array.isArray(entry.errors)||entry.errors.length)return before.review;
-   for(const hook of entry.hooks)if(hook&&typeof hook==='object'&&typeof hook.sourcePath==='string'&&(before.pluginId?pluginOwned:owned).has(hook.statusMessage)){
+   for(const hook of entry.hooks)if(hook&&typeof hook==='object'&&typeof hook.sourcePath==='string'&&(before.pluginId||owned.has(hook.statusMessage))){
     const matches=before.pluginId?hook.source==='plugin'&&hook.pluginId===before.pluginId&&realpathSync(hook.sourcePath)===realpathSync(before.file):resolve(hook.sourcePath)===resolve(before.file);
     if(matches)hooks.push(hook);
    }
   }
-  if(!before.keys.size||hooks.length!==before.keys.size||new Set(hooks.map(h=>h.key)).size!==before.keys.size||hooks.some(h=>!before.keys.has(String(h.key))||typeof h.enabled!=='boolean'||!['managed','trusted','untrusted','modified'].includes(String(h.trustStatus))))return before.review;
+  if(!before.keys.size||hooks.length!==before.keys.size||new Set(hooks.map(h=>h.key)).size!==before.keys.size||hooks.some(h=>typeof h.statusMessage!=='string'||before.keys.get(String(h.key))!==h.statusMessage||typeof h.enabled!=='boolean'||!['managed','trusted','untrusted','modified'].includes(String(h.trustStatus))))return before.review;
   return {state:'observed',total:hooks.length,pending:hooks.filter(h=>h.enabled&&['untrusted','modified'].includes(String(h.trustStatus))).length,disabled:hooks.filter(h=>!h.enabled).length};
  } catch {return before.review;}
 }
 export function codexHookReviewMessage(review:CodexHookReview):string|null{
- if(review.state==='unknown')return 'Codex hook trust could not be verified. Open /hooks (or desktop Settings > Hooks) to review the listed OpenCrawl session capture, session startup, search context and context suggestions hooks; trust any new or changed definitions you approve, then start a new session.';
- if(review.pending)return `Codex will not run ${review.pending} OpenCrawl hook${review.pending===1?'':'s'} until you review and trust their current definitions: open /hooks (or desktop Settings > Hooks), review the listed OpenCrawl session capture, session startup, search context and context suggestions hooks, then start a new session.${review.disabled?` Another ${review.disabled} OpenCrawl hook${review.disabled===1?' is':'s are'} disabled; keep intentional opt-outs.`:''}`;
+ if(review.state==='unknown')return 'Codex hook trust could not be verified. Open /hooks (or desktop Settings > Hooks) to review the hooks installed by OpenCrawl. Trust the ones you want to run, then start a new session.';
+ if(review.pending)return `Codex will not run ${review.pending} OpenCrawl hook${review.pending===1?'':'s'} until you approve them. Open /hooks (or desktop Settings > Hooks), review the hooks installed by OpenCrawl, then start a new session.${review.disabled?` Another ${review.disabled} OpenCrawl hook${review.disabled===1?' is':'s are'} disabled; keep intentional opt-outs.`:''}`;
  return review.disabled?`${review.disabled} OpenCrawl hook${review.disabled===1?' is':'s are'} disabled in Codex. Review /hooks (or desktop Settings > Hooks); keep intentional opt-outs, or enable the hooks you want to use.`:null;
 }

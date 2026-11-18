@@ -7,13 +7,13 @@
             "type": "command",
             "command": "/bin/sh \"$PLUGIN_ROOT/scripts/opencrawl-hook.sh\" start",
             "timeout": 7,
-            "statusMessage": "OpenCrawl session startup"
+            "statusMessage": "Register this chat on the OpenCrawl board"
           },
           {
             "type": "command",
             "command": "/bin/sh \"$PLUGIN_ROOT/scripts/opencrawl-hook.sh\" capture",
             "timeout": 120,
-            "statusMessage": "OpenCrawl session capture",
+            "statusMessage": "Start saving this chat to OpenCrawl",
             "async": true
           }
         ]
@@ -26,7 +26,7 @@
             "type": "command",
             "command": "/bin/sh \"$PLUGIN_ROOT/scripts/opencrawl-hook.sh\" capture",
             "timeout": 120,
-            "statusMessage": "OpenCrawl session capture",
+            "statusMessage": "Save your prompt to OpenCrawl",
             "async": true
           }
         ]
@@ -38,7 +38,7 @@
             "command": "/bin/sh \"$PLUGIN_ROOT/scripts/opencrawl-hook.sh\" suggest",
             "timeout": 45,
             "async": true,
-            "statusMessage": "OpenCrawl prompt context"
+            "statusMessage": "Find OpenCrawl sources relevant to your prompt"
           }
         ]
       }
@@ -50,7 +50,7 @@
             "type": "command",
             "command": "/bin/sh \"$PLUGIN_ROOT/scripts/opencrawl-hook.sh\" capture",
             "timeout": 120,
-            "statusMessage": "OpenCrawl session capture",
+            "statusMessage": "Record the tool call in OpenCrawl",
             "async": true
           }
         ]
@@ -62,7 +62,7 @@
             "type": "command",
             "command": "/bin/sh \"$PLUGIN_ROOT/scripts/opencrawl-hook.sh\" search",
             "timeout": 2,
-            "statusMessage": "OpenCrawl search context"
+            "statusMessage": "Identify this chat in OpenCrawl searches and board actions"
           }
         ]
       }
@@ -74,7 +74,7 @@
             "type": "command",
             "command": "/bin/sh \"$PLUGIN_ROOT/scripts/opencrawl-hook.sh\" capture",
             "timeout": 120,
-            "statusMessage": "OpenCrawl session capture",
+            "statusMessage": "Record the tool result in OpenCrawl",
             "async": true
           }
         ]
@@ -87,7 +87,7 @@
             "type": "command",
             "command": "/bin/sh \"$PLUGIN_ROOT/scripts/opencrawl-hook.sh\" capture",
             "timeout": 120,
-            "statusMessage": "OpenCrawl session capture",
+            "statusMessage": "Save the finished turn to OpenCrawl",
             "async": true
           }
         ]
@@ -100,7 +100,7 @@
             "type": "command",
             "command": "/bin/sh \"$PLUGIN_ROOT/scripts/opencrawl-hook.sh\" capture",
             "timeout": 120,
-            "statusMessage": "OpenCrawl session capture",
+            "statusMessage": "Save the subagent chat to OpenCrawl",
             "async": true
           }
         ]
@@ -113,7 +113,7 @@
             "type": "command",
             "command": "/bin/sh \"$PLUGIN_ROOT/scripts/opencrawl-hook.sh\" capture",
             "timeout": 3,
-            "statusMessage": "OpenCrawl session capture"
+            "statusMessage": "Save final chat updates to OpenCrawl"
           }
         ]
       }
