@@ -5,6 +5,7 @@ import {hostname,homedir} from 'node:os';
 import {join,dirname} from 'node:path';
 import {createHash} from 'node:crypto';
 import {CliError,apiOrigin} from '../oauth.ts';
+import {assertTokenDestination} from '../environment-token.ts';
 import {atomicJson,withSessionLock,configDir} from '../session.ts';
 import {readCaptureConfig,captureDir,captureDaemonHarnesses} from '../capture/runtime.ts';
 import {installCaptureDaemon,uninstallCaptureDaemon} from '../capture/daemon-service.ts';
@@ -188,6 +189,7 @@ export async function setupCommand(action:string,api:string,values:Values,{platf
  if(!['run','plan','status','next','wait','apply','resume','verify'].includes(action))throw new CliError('INVALID_USAGE','Use setup, setup --json, setup apply, setup status, setup next, setup wait, setup hooks, setup resume, or setup verify.',64);
  // Only the validated workload adapter supplies both contracts. Public CLI
  // arguments/environment cannot opt out of the local-client release policy.
+ if(process.env.OPENCRAWL_TOKEN||process.env.OPENCRAWL_SESSIONS_TOKEN)assertTokenDestination(api);
  const workload=Boolean(expectedScope&&validateCapturePrincipal);
  const changing=['run','plan','apply'].includes(action);
  let admitted:ReturnType<typeof localSetupStatus>|undefined;

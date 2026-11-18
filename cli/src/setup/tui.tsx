@@ -18,7 +18,7 @@ export function createSetupUi(){
  const show=(node:ReactElement)=>{
   const element=<>{node}</>;
   if(app)app.rerender(element);
-  else app=render(element,{stdout:process.stderr,stdin:process.stdin,stderr:process.stderr,patchConsole:false,exitOnCtrlC:false,alternateScreen:true});
+  else app=render(element,{stdout:process.stderr,stdin:process.stdin,stderr:process.stderr,patchConsole:false,exitOnCtrlC:false,alternateScreen:true,interactive:Boolean(process.stdin.isTTY&&process.stderr.isTTY)});
  };
  const notice=(props:Notice)=>show(<NoticeScreen key={++serial} {...props} description={clean(props.description)} details={props.details?.map(clean)}/>);
  const progress=(title:string,description:string,details?:string[],animate=false)=>{
