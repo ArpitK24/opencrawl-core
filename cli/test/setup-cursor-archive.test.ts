@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {fileHash} from '../src/setup/plugin-bundle.ts';
 import {pluginRelease,type PluginRelease} from '../src/setup/plugin-release.ts';
 import {installPublishedSetupPlugins,loadPublishedPackage,packageRelease} from '../src/setup/published-plugins.ts';
-import {setupPluginIdentity,type PluginOptions} from '../src/setup/plugins.ts';
+import {canInstallRecordingPlugin,setupPluginIdentity,type PluginOptions} from '../src/setup/plugins.ts';
 import {setupInventory} from '../src/setup/inventory.ts';
 import {nextSetupAction} from '../src/setup/next.ts';
 import type {SetupState} from '../src/setup/state.ts';
@@ -58,6 +58,17 @@ function environment(home:string){
  const install=(extra:PluginOptions={})=>installPublishedSetupPlugins(api,['cursor'],{...options,...extra});
  return {home,root,dir,configHome,owner,options,settings,install,calls};
 }
+
+test('Cursor offers use the same native version requirement as the archive installer',()=>fixture(async f=>{
+ mkdirSync(f.root,{recursive:true});
+ expect(await canInstallRecordingPlugin('cursor',{...f.options,which:name=>name==='cursor'?'/fixture/editor':null},'darwin')).toBe(false);
+ expect(f.calls).toEqual([]);
+ f.settings.version='2026.11.16-0000000';
+ expect(await canInstallRecordingPlugin('cursor',f.options,'darwin')).toBe(false);
+ f.settings.version=entry.minimumHarnessVersion!;
+ expect(await canInstallRecordingPlugin('cursor',f.options,'darwin')).toBe(true);
+ expect(existsSync(f.dir)).toBe(false);
+}));
 
 test('Cursor selection installs the pinned archive offline, binds both MCP files and resumes on current capture',()=>fixture(async f=>{
  const inventory=setupInventory({...f.options,api,platform:'darwin'});

@@ -9,6 +9,7 @@ import {apiOrigin, CliError} from '../oauth.ts';
 import {version} from '../distribution.ts';
 import {setupCommandForSelf,profileSetupCommand} from './invocation.ts';
 import {installCursorArchive,retireCursorSetupHooks} from './cursor-native-hooks.ts';
+import {pluginRelease} from './plugin-release.ts';
 import {pluginHookFiles} from './plugin-hooks.ts';
 import {powershellQuote} from '../hook-runner.ts';
 import {pluginActivationMatches,verifyPluginBundle} from './plugin-context.ts';
@@ -21,7 +22,7 @@ export type PluginResult = {client:PluginClient;status:'installed'|'unchanged'|'
 type CommandResult = {code:number;stdout?:string;timedOut?:boolean};
 export type PluginOptions = {onProgress?:(message:string)=>void;validateBinding?:()=>void;cursorCapture?:{installationId:string;observedAt:string};captureMode?:CaptureMode;bundles?:Partial<Record<LocalPluginClient,PublishedPackage>>;command?:string[];home?:string;env?:NodeJS.ProcessEnv;which?:(name:string)=>string|null;runner?:(command:string,args:string[],env:NodeJS.ProcessEnv)=>Promise<CommandResult>};
 const clients:PluginClient[] = ['claude-code','codex','cursor','antigravity','devin'];
-const labels:Record<PluginClient,string> = {'claude-code':'Claude Code',codex:'Codex',cursor:'Cursor',antigravity:'Antigravity',devin:'Devin Cloud'};
+export const labels:Record<PluginClient,string> = {'claude-code':'Claude Code',codex:'Codex',cursor:'Cursor',antigravity:'Antigravity',devin:'Devin Cloud'};
 const marker = '.opencrawl-setup-plugin.json';
 const hash = (text:string|Buffer) => createHash('sha256').update(text).digest('hex');
 const json = (value:unknown) => JSON.stringify(value,null,2)+'\n';
@@ -37,6 +38,20 @@ export function pluginInventory(options:PluginOptions={}) {
     const command=id==='claude-code'?'claude':id==='antigravity'?'agy':id;
     return {id,label:labels[id],supported:true,detected:roots.some(existsSync)||Boolean(which(command))||id==='cursor'&&Boolean(which('cursor-agent'))};
   });
+}
+const installerCommands:Record<LocalPluginClient,string>={'claude-code':'claude',codex:'codex',cursor:'cursor-agent',antigravity:'agy'};
+
+/** The recording picker uses the same native command and version rule as installation. */
+export async function canInstallRecordingPlugin(id:string,options:PluginOptions={},platform:NodeJS.Platform=process.platform){
+  const release=pluginRelease.packages.find(entry=>entry.harness===id);
+  if(!release?.captureAvailable||release.archives&&!release.archives[platform+'-'+process.arch])return false;
+  const {which,env,home}=context(options);
+  const binary=which(installerCommands[release.harness]);
+  if(!binary)return false;
+  if(!release.minimumHarnessVersion)return true;
+  const nativeEnv={...env,HOME:home,USERPROFILE:home};
+  const version=options.runner?await options.runner(binary,['--version'],nativeEnv):await run(binary,['--version'],nativeEnv,5000);
+  return version.code===0&&!version.timedOut&&supportsMinimumVersion(release.harness,version.stdout?.trim()??'',release.minimumHarnessVersion);
 }
 export function setupPluginIdentity(api:string) {
   const origin=apiOrigin(api),key=hash(origin).slice(0,12);
@@ -117,9 +132,9 @@ export function pluginCommand(command:string,args:string[],env:NodeJS.ProcessEnv
   if(platform!=='win32'||!/[.](cmd|bat)$/i.test(command))return [command,args];
   return [join(env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoProfile','-NonInteractive','-Command','& '+[command,...args].map(powershellQuote).join(' ')+'; exit $LASTEXITCODE']];
 }
-async function run(command:string,args:string[],env:NodeJS.ProcessEnv):Promise<CommandResult> {
+async function run(command:string,args:string[],env:NodeJS.ProcessEnv,timeout=45_000):Promise<CommandResult> {
   const [executable,arguments_]=pluginCommand(command,args,env);
-  return new Promise(resolve=>execFile(executable,arguments_,{env,timeout:45_000,maxBuffer:1024*1024,windowsHide:true},(error,stdout)=>resolve({code:error?typeof error.code==='number'?error.code:1:0,stdout,timedOut:error?.killed===true&&error.signal==='SIGTERM'})));
+  return new Promise(resolve=>execFile(executable,arguments_,{env,timeout,maxBuffer:1024*1024,windowsHide:true},(error,stdout)=>resolve({code:error?typeof error.code==='number'?error.code:1:0,stdout,timedOut:error?.killed===true&&error.signal==='SIGTERM'})));
 }
 function read(path:string):any {try{return JSON.parse(readFileSync(path,'utf8'));}catch{return null;}}
 function pluginRows(output:string):Record<string,unknown>[]|null {
@@ -223,7 +238,7 @@ export async function installSetupPlugins(api:string,selected:string[],options:P
       const prior=saved?.schemaVersion===2&&saved.api===origin&&saved.client===client&&saved.pluginName===identity.name&&saved.directory===directory?saved:null;
       const pluginId=client==='codex'||client==='claude-code'?identity.name+'@'+identity.marketplace:identity.name;
       try {
-        const binary=which(client==='cursor'?'cursor-agent':client==='claude-code'?'claude':client==='antigravity'?'agy':client);
+        const binary=which(installerCommands[client]);
         const nativeEnv={...env,HOME:home,USERPROFILE:home};
         const listArgs=client==='codex'?['plugin','list','--marketplace',identity.marketplace,'--json']:['plugin','list','--json'];
         const inventory=async(executable:string)=>{
@@ -233,7 +248,7 @@ export async function installSetupPlugins(api:string,selected:string[],options:P
           return result;
         };
         if(published?.minimumHarnessVersion){
-          if(!binary)throw new CliError('PLUGIN_CLIENT_MISSING','Setup could not find '+(client==='cursor'?'cursor-agent':client==='claude-code'?'claude':client==='antigravity'?'agy':client)+' on PATH. Install the '+labels[client]+' CLI or add it to PATH, then retry.');
+          if(!binary)throw new CliError('PLUGIN_CLIENT_MISSING','Setup could not find '+installerCommands[client]+' on PATH. Install the '+labels[client]+' CLI or add it to PATH, then retry.');
           options.onProgress?.('Checking the '+labels[client]+' version.');
           const result=await runner(binary,['--version'],nativeEnv);
           if(result.timedOut)throw new CliError('PLUGIN_VERSION_TIMEOUT',labels[client]+' took more than 45 seconds to report its version. Retry when the client is ready.');
