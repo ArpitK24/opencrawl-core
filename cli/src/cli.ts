@@ -9,6 +9,7 @@ import {collectCommand} from './capture/command.ts';
 import {readCaptureConfig} from './capture/runtime.ts';
 import {scheduleMemoryRefresh} from './capture/memory.ts';
 import {scheduleCliUpdate,updateCli} from './update.ts';
+import {launchClaudeSetup} from './setup/claude-launch.ts';
 import {spawn} from 'node:child_process';
 import {parseArgs, stripVTControlCharacters} from 'node:util';
 import {CliError, apiOrigin, discover, startDevice, pollDevice, jsonRequest, DEFAULT_API_ORIGIN} from './oauth.ts';
@@ -213,15 +214,18 @@ export async function identity(api: string, fetcher = fetch, initialToken?: stri
   return {user};
 }
 
-export async function loginIdentity(api:string,options:{organizationId?:string;noBrowser?:boolean}={}) {
+export async function loginIdentity(api:string,options:{organizationId?:string;noBrowser?:boolean;signal?:AbortSignal;onDevice?:(approval:{url:string;code:string;expiresIn:number})=>void}={}) {
   const organizationId=options.organizationId;
   if(organizationId&&readSession(api))return selectOrganization(api,organizationId,token=>identity(api,fetch,token));
       const auth = await discover(api);
       const device = await startDevice(auth);
       const url = device.verification_uri_complete ?? device.verification_uri;
-      process.stderr.write(`Open ${url}\nConfirm code: ${device.user_code}\nWaiting for browser approval (expires in ${device.expires_in} seconds)…\n`);
+      options.signal?.throwIfAborted();
+      if(options.onDevice)options.onDevice({url,code:device.user_code,expiresIn:device.expires_in});
+      else process.stderr.write(`Open ${url}\nConfirm code: ${device.user_code}\nWaiting for browser approval (expires in ${device.expires_in} seconds)…\n`);
       if (!options.noBrowser && process.stdin.isTTY && !process.env.SSH_CONNECTION && !process.env.SSH_TTY) openBrowser(url);
-      const tokens = await pollDevice(auth, device);
+      const tokens = await pollDevice(auth, device,{signal:options.signal});
+      options.signal?.throwIfAborted();
       let verified: Awaited<ReturnType<typeof identity>> | undefined;
       try { verified = await identity(api, fetch, tokens.accessToken); }
       catch (error) {
@@ -230,6 +234,7 @@ export async function loginIdentity(api:string,options:{organizationId?:string;n
         // workspace access or repeating device approval after browser setup.
         if (error instanceof CliError && error.code === 'ORGANIZATION_REQUIRED') {
           if (!organizationId) {
+            options.signal?.throwIfAborted();
             await saveSession(api, {auth, ...tokens});
             error.message = `Your sign-in is saved on this machine; workspace setup is still required. ${error.message}`;
             throw error;
@@ -238,6 +243,7 @@ export async function loginIdentity(api:string,options:{organizationId?:string;n
       }
       if (organizationId) verified = await selectOrganization(api, organizationId, token => identity(api, fetch, token), {auth, ...tokens});
       if (!verified) throw new CliError('INVALID_RESPONSE', 'Could not verify the selected workspace.');
+      options.signal?.throwIfAborted();
       if (!organizationId) await saveSession(api, {auth, ...tokens});
   return verified;
 }
@@ -269,7 +275,7 @@ export async function main(args = process.argv.slice(2)) {
   try {
     applyDaemonEnvironment(args);
     let parsed: ReturnType<typeof parseArgs>;
-    try { parsed = parseArgs({args, allowPositionals: true, options: {'text-file':{type:'string'},input:{type:'string'},jsonl:{type:'boolean'},from:{type:'string',multiple:true},agent:{type:'string'},since:{type:'string'},until:{type:'string'},'roots-only':{type:'boolean'},'no-follow':{type:'boolean'},all:{type:'boolean'},leave:{type:'boolean'},context:{type:'boolean'},'current-session':{type:'string'},'include-current-session':{type:'boolean'},'include-tool-outputs':{type:'boolean'},'worker-environment':{type:'string'},local:{type:'boolean'},plugins:{type:'string'},forward:{type:'string'},history:{type:'string'},'plan-id':{type:'string'},'scope-key':{type:'string'},'installation-id':{type:'string'},organization:{type:'string'},'env-file':{type:'string'},filters:{type:'string'},before:{type:'string'},role:{type:'string'},order:{type:'string'},facets:{type:'string'},select:{type:'string'},'group-by':{type:'string'},'excerpt-chars':{type:'string'},field:{type:'string'},client:{type:'string',multiple:true},compact:{type:'boolean'},project:{type:'string'},'notify-only':{type:'boolean'},workspace:{type:'string'},session:{type:'string'},name:{type:'string'},task:{type:'string'},channel:{type:'string',multiple:true},thread:{type:'string'},topic:{type:'string',multiple:true},mention:{type:'string',multiple:true},id:{type:'string'},text:{type:'string'},receipt:{type:'string'},after:{type:'string'},'timeout-ms':{type:'string'},'no-dedupe':{type:'boolean'},offset:{type:'string'},length:{type:'string'},'content-version':{type:'string'},source:{type:'string'},match:{type:'string'},limit:{type:'string'},'session-id':{type:'string'},cursor:{type:'string'},concurrency:{type:'string'},'batch-delay-ms':{type:'string'},backfill:{type:'string'},'dry-run':{type:'boolean'},'retry-rejected':{type:'boolean'},yes:{type:'boolean'},harness: {type:'string'}, event: {type:'string'}, 'no-background': {type:'boolean'}, managed:{type:'boolean'}, daemon:{type:'boolean'}, 'defer-auth':{type:'boolean'}, json: {type: 'boolean'}, 'no-browser': {type: 'boolean'}, api: {type: 'string'}, version: {type: 'boolean', short: 'v'}, help: {type: 'boolean', short: 'h'}}}); }
+    try { parsed = parseArgs({args, allowPositionals: true, options: {'text-file':{type:'string'},input:{type:'string'},jsonl:{type:'boolean'},from:{type:'string',multiple:true},agent:{type:'string'},since:{type:'string'},until:{type:'string'},'roots-only':{type:'boolean'},'no-follow':{type:'boolean'},all:{type:'boolean'},leave:{type:'boolean'},context:{type:'boolean'},'current-session':{type:'string'},'include-current-session':{type:'boolean'},'include-tool-outputs':{type:'boolean'},'worker-environment':{type:'string'},local:{type:'boolean'},plugins:{type:'string'},forward:{type:'string'},history:{type:'string'},'capture-mode':{type:'string'},'plan-id':{type:'string'},'scope-key':{type:'string'},'installation-id':{type:'string'},organization:{type:'string'},'env-file':{type:'string'},filters:{type:'string'},before:{type:'string'},role:{type:'string'},order:{type:'string'},facets:{type:'string'},select:{type:'string'},'group-by':{type:'string'},'excerpt-chars':{type:'string'},field:{type:'string'},client:{type:'string',multiple:true},compact:{type:'boolean'},project:{type:'string'},'notify-only':{type:'boolean'},workspace:{type:'string'},session:{type:'string'},name:{type:'string'},task:{type:'string'},channel:{type:'string',multiple:true},thread:{type:'string'},topic:{type:'string',multiple:true},mention:{type:'string',multiple:true},id:{type:'string'},text:{type:'string'},receipt:{type:'string'},after:{type:'string'},'timeout-ms':{type:'string'},'no-dedupe':{type:'boolean'},offset:{type:'string'},length:{type:'string'},'content-version':{type:'string'},source:{type:'string'},match:{type:'string'},limit:{type:'string'},'session-id':{type:'string'},cursor:{type:'string'},concurrency:{type:'string'},'batch-delay-ms':{type:'string'},backfill:{type:'string'},'dry-run':{type:'boolean'},'retry-rejected':{type:'boolean'},yes:{type:'boolean'},harness: {type:'string'}, event: {type:'string'}, 'no-background': {type:'boolean'}, managed:{type:'boolean'}, daemon:{type:'boolean'}, 'defer-auth':{type:'boolean'}, json: {type: 'boolean'}, 'no-browser': {type: 'boolean'}, api: {type: 'string'}, version: {type: 'boolean', short: 'v'}, help: {type: 'boolean', short: 'h'}}}); }
     catch { throw new CliError('INVALID_USAGE', 'Invalid arguments. Run opencrawl --help.', 64); }
     json = parsed.values.json === true;
     const command = parsed.positionals[0] ?? 'help';
@@ -293,8 +299,15 @@ export async function main(args = process.argv.slice(2)) {
     if(parsed.values.local){const data=localSetupStatus((parsed.values.api as string|undefined)??process.env.OPENCRAWL_API_URL);emit(data,formatSetupOutput(data));return 0;}
     if(command==='setup'&&parsed.positionals[1]==='hooks'){const data=await setupHookStatus((parsed.values.api as string|undefined)??process.env.OPENCRAWL_API_URL);emit(data,formatSetupOutput(data));return 0;}
     if(command==='setup'||command==='verify-installation'){
-      const api=apiOrigin((parsed.values.api as string|undefined)??process.env.OPENCRAWL_API_URL??readCaptureConfig()?.api??DEFAULT_API_ORIGIN);
-      return await withEnvironmentTokenOrigin((parsed.values.api as string|undefined)??process.env.OPENCRAWL_API_URL,async()=>{
+      const humanSetup=command==='setup'&&!parsed.positionals[1]&&!json&&Boolean(process.stdin.isTTY&&process.stderr.isTTY);
+      let explicitDestination=(parsed.values.api as string|undefined)??process.env.OPENCRAWL_API_URL;
+      if(humanSetup){
+        const {runInteractiveSetup}=await import('./setup/interactive.ts');
+        return runInteractiveSetup({values:parsed.values,readDestination:()=>({api:explicitDestination??readCaptureConfig()?.api,explicit:explicitDestination}),withOrigin:withEnvironmentTokenOrigin,login:(api,ui)=>loginIdentity(api,{noBrowser:parsed.values['no-browser']===true,signal:ui.signal,onDevice:({url,code})=>ui.progress('Sign in to OpenCrawl','Approve this connection in your browser. Setup continues automatically.',[url,`Confirm code: ${code}`])})});
+      }
+      let destination=explicitDestination??readCaptureConfig()?.api;
+      const api=apiOrigin(destination??DEFAULT_API_ORIGIN);
+      return await withEnvironmentTokenOrigin(explicitDestination,async()=>{
         if(command==='verify-installation'){
           const client=parsed.values.client as string[]|undefined,installationId=parsed.values['installation-id'] as string|undefined;
           if(client?.length!==1)throw new CliError('INVALID_USAGE','Use verify-installation --client CLIENT [--installation-id ID].',64);
@@ -302,6 +315,12 @@ export async function main(args = process.argv.slice(2)) {
           if(data!==null)emit(data,'proof' in data?formatInstallationVerification(data):formatSetupOutput(data));return 0;
         }
         const data=await setupCommand(parsed.positionals[1]??'run',api,parsed.values,{login:()=>loginIdentity(api,{noBrowser:parsed.values['no-browser']===true})});
+        if(data&&'client' in data&&data.client==='claude-code'&&'agentPrompt' in data&&typeof data.agentPrompt==='string'&&!parsed.values.json&&process.stdin.isTTY&&process.stderr.isTTY){
+          const claude=Bun.which('claude');
+          if(claude){
+            return launchClaudeSetup(claude,{api,prompt:data.agentPrompt,needsLogin:'nativeMcpLoginRequired' in data&&data.nativeMcpLoginRequired===true});
+          }
+        }
         if(data!==null)emit(data,formatSetupOutput(data));return 0;
       });
     }
@@ -416,7 +435,10 @@ export async function main(args = process.argv.slice(2)) {
   }
 }
 
-if (import.meta.main) {
+// Bun can report import.meta.main=false inside a compiled Windows executable.
+// Only the standalone build sets this flag. Importing the library stays inert.
+declare const OPENCRAWL_STANDALONE_ENTRY: boolean;
+if (import.meta.main || (typeof OPENCRAWL_STANDALONE_ENTRY !== 'undefined' && OPENCRAWL_STANDALONE_ENTRY)) {
   // Supervisor profile selection must precede native version delegation.
   try{applyDaemonEnvironment(process.argv.slice(2));}catch(error){process.stderr.write((error instanceof Error?error.message:'Invalid worker environment')+'\n');process.exit(64);}
   // Local inspection cannot delegate to a native child or run an update.

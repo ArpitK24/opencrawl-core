@@ -85,19 +85,22 @@ function tokens(body: any, now: number): Tokens {
   return {accessToken: body.access_token, refreshToken: body.refresh_token, expiresAt};
 }
 
-export async function pollDevice(auth: AuthConfig, device: Device, options: {fetcher?: typeof fetch; sleep?: (ms: number) => Promise<void>; now?: () => number} = {}): Promise<Tokens> {
+export async function pollDevice(auth: AuthConfig, device: Device, options: {fetcher?: typeof fetch; sleep?: (ms: number) => Promise<void>; now?: () => number;signal?:AbortSignal} = {}): Promise<Tokens> {
   const now = options.now ?? Date.now;
-  const sleep = options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
+  const sleep = options.sleep ?? (async(ms:number)=>{const {setTimeout}=await import('node:timers/promises');await setTimeout(ms,undefined,{signal:options.signal});});
   const deadline = now() + device.expires_in * 1000;
   let interval = device.interval * 1000;
   while (now() + interval < deadline) {
+    options.signal?.throwIfAborted();
     await sleep(interval);
+    options.signal?.throwIfAborted();
     if (now() >= deadline) break;
     let reply: Awaited<ReturnType<typeof form>>;
     // The person may still approve: a dropped connection or a temporary service
     // failure while polling must not abandon a valid device code.
     try { reply = await form(auth.tokenEndpoint, {client_id: auth.clientId, grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: device.device_code}, options.fetcher); }
     catch (error) { if (error instanceof CliError && error.code === 'NETWORK_ERROR') continue; throw error; }
+    options.signal?.throwIfAborted();
     const {response, body} = reply;
     if (response.ok) return tokens(body, now());
     if (!body.error && (response.status === 429 || response.status >= 500)) continue;

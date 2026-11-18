@@ -49,7 +49,7 @@ globalThis.fetch=()=>denied('fetch');Bun.spawn=()=>denied('Bun.spawn');Bun.spawn
 }
 
 test('local status reads only the exact saved binding, retains independent choices and makes no server claims',()=>fixture(async({config,state,invoke})=>{
- const result=await invoke();expect(result.code).toBe(0);expect(result.data).toEqual({schemaVersion:1,data:{status:'local_status',freshness:'local-only',serverChecked:false,scopeSource:'saved-capture-config',scope,installationId:config.installationId,savedSelections:state.selections,selections:{...state.selections,forward:{...state.selections.forward,cursor:false}}}});
+ const result=await invoke();expect(result.code).toBe(0);expect(result.data).toEqual({schemaVersion:1,data:{status:'local_status',freshness:'local-only',serverChecked:false,scopeSource:'saved-capture-config',scope,installationId:config.installationId,captureMode:'hook',savedSelections:state.selections,selections:{...state.selections,forward:{...state.selections.forward,cursor:false}}}});
  expect(result.output).not.toContain('"authenticated"');expect(result.output).not.toContain('"proof"');expect(result.output).not.toContain('"server":');
 }));
 

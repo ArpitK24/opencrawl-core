@@ -337,7 +337,7 @@ test('synchronous Antigravity hooks prefer transcript_full.jsonl, capture media,
  mkdirSync(logsDir,{recursive:true});mkdirSync(scratchDir,{recursive:true});mkdirSync(workspace,{recursive:true});
  const mediaFile=join(workspace,'mockup.png');writeFileSync(mediaFile,'fake-png-content');
  const fakeToolTarget=join(workspace,'never-read.txt');writeFileSync(fakeToolTarget,'do-not-read-as-attachment');
- writeFileSync(join(scratchDir,'temp.jsonl'),'{"step_index":99,"type":"USER_INPUT","content":"scratch"}\n');
+ writeFileSync(join(scratchDir,'temp.jsonl'),'{"step_index":99,"type":"USER_INPUT","content":"excluded-scratch-transcript-marker"}\n');
 
  // Compact transcript has truncated content; sibling transcript_full.jsonl has full content.
  const compactPath=join(logsDir,'transcript.jsonl'),fullPath=join(logsDir,'transcript_full.jsonl');
@@ -377,7 +377,7 @@ test('synchronous Antigravity hooks prefer transcript_full.jsonl, capture media,
  expect(JSON.stringify(allEvents)).toContain('Full untruncated user prompt');
  expect(JSON.stringify(allEvents)).not.toContain('compact-elided-prompt');
  expect(JSON.stringify(allEvents)).toContain('"mimeType":"image/png"');
- expect(JSON.stringify(allEvents)).not.toContain('scratch');
+ expect(JSON.stringify(allEvents)).not.toContain('excluded-scratch-transcript-marker');
  // Only media[] was uploaded as an attachment; fakeToolTarget in tool_calls args was NOT read!
  expect(f.attachments.size).toBe(1);
  expect([...f.attachments.values()][0]!.toString()).toBe('fake-png-content');

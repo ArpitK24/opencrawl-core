@@ -1,23 +1,30 @@
 const common='\nOptions: --json (versioned JSON), --api https://host (deployment), --help.\n';
 export function commandHelp(command:string, operation?:string):string|undefined {
   if(command==='setup')return `Usage: opencrawl setup [--api URL]
+       opencrawl setup --client claude-code [--api URL]
        opencrawl setup --json
        opencrawl setup hooks --json
        opencrawl setup apply --plugins IDS --forward IDS --history IDS --plan-id ID --yes
 
-New setup supports Claude Code, Codex, and Cursor on macOS.
-Review independent plugin, future-recording and history choices.
-Existing installations retain setup resume, status, and collect uninstall.
+On macOS, setup detects Claude Code, Codex, Antigravity (agy), and Cursor.
+Paste your workspace address when none is saved, then complete two short phases:
+1. Choose agents to install and record, or Do not record any sessions on this machine.
+2. Choose past sessions to import, or skip. Empty history needs no answer.
+Use arrows to move, Space to toggle, and Enter on a bottom button.
+Detected agents start selected; saved off choices stay off. History starts off.
+Installing a harness enables capture. New search-only/history-only installs are not offered.
+Existing installations retain their saved choices on setup resume.
 setup hooks inspects this installation's Codex hook trust locally without changing it.
-Detected supported clients and available histories start selected; saved off choices stay off.
-Import past sessions so your agents can find previous decisions, fixes, and context.
 
-  --plugins IDS   Plugin clients: comma-separated IDs, all, or none
-  --forward IDS   Record new sessions from these clients, all, or none
-  --history IDS   Import available past sessions from these clients, all, or none
+  --plugins IDS   Harness IDs to install: comma-separated IDs, all, or none
+  --forward IDS   Same harness IDs as --plugins; installation enables capture
+  --history IDS   Import available history for selected harnesses, all, or none
+  --capture-mode hook|daemon  Capture in hooks, or use an optional eligible background service
   --plan-id ID    Bind consent to the exact scope, choices and history preview
   --yes          Apply only after the user confirms the displayed choices
   setup status   Read saved choices, human tasks and background import progress
+  setup next --json  Return saved choices and one next action for the agent
+  setup wait --json  Wait for native capture and search, then return the next action
   setup status --local --json  Read only the exact saved installation and effective choices; no network or server verification
   setup resume   Resume a previously approved, interrupted history job
   setup verify --client ID  Prove a fresh native session is searchable
