@@ -34,7 +34,9 @@ toggle a checkbox, and Enter to select a button.
 
 Choose the agents whose new sessions you want to record. To skip recording,
 choose **Do not record any sessions on this machine**. Setup asks about importing
-past sessions separately. Open the selected agent when prompted to finish its
+past sessions separately. Workspace admins can then invite teammates one email at a
+time, or press Esc to skip. Self-hosted admins can share the private links from
+Team settings. Open the selected agent when prompted to finish its
 native connection. You can use the web app while setup is in progress.
 
 Agents can run `opencrawl setup --json` to get a plan and use `opencrawl setup apply`

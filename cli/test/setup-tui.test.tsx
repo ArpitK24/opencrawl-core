@@ -1,3 +1,4 @@
+import {InviteScreen} from '../src/setup/invite-view.tsx';
 import {test,expect} from 'bun:test';
 import {render} from 'ink-testing-library';
 import {pressAndRead,renderReady,waitForFrame} from './setup-ink.ts';
@@ -90,4 +91,25 @@ test('waiting screen cancels and error actions use the same arrow and Enter beha
  try{await tick();waiting.stdin.write('\u001b');await tick();expect(cancelled).toBe(true);}finally{waiting.unmount();}
  const error=render(<NoticeScreen title="Setup needs attention" description="Try again." actions={[{id:'retry',label:'Retry'},{id:'close',label:'Close'}]} onAction={value=>{answer=value;}}/>);
  try{await tick();error.stdin.write(right);await tick();error.stdin.write(enter);await tick();expect(answer).toBe('close');}finally{error.unmount();}
+});
+
+test('invite screen validates, sends once, allows another address, and skips without submitting a draft',async()=>{
+ const emails:string[]=[];
+ let continued=0,release!:()=>void;
+ const app=await renderReady(<InviteScreen workspace="Example Team" delivery="email" send={async email=>{emails.push(email);await new Promise<void>(resolve=>{release=resolve;});}} onContinue={()=>{continued++;}} onCancel={()=>{throw Error('Unexpected cancellation');}}/>);
+ try{
+  await pressAndRead(app,'alice','alice');
+  await pressAndRead(app,enter,'Enter one valid email address.');
+  await pressAndRead(app,'@example.test','alice@example.test');
+  await pressAndRead(app,enter,'Inviting…');
+  app.stdin.write(enter);await tick();expect(emails).toEqual(['alice@example.test']);
+  release();await waitForFrame(app,'Invitation sent to alice@example.test.');
+  await pressAndRead(app,'bob@example.test','bob@example.test');
+  app.stdin.write('\u001b');await tick();expect(continued).toBe(1);expect(emails).toHaveLength(1);
+ }finally{app.unmount();}
+});
+test('an empty invite prompt continues without an email or a private link',async()=>{
+ let continued=false;
+ const app=await renderReady(<InviteScreen workspace="Example Team" delivery="link" send={async()=>{throw Error('Unexpected invitation');}} onContinue={()=>{continued=true;}} onCancel={()=>{}}/>);
+ try{await waitForFrame(app,'Create invite link');app.stdin.write(enter);await tick();expect(continued).toBe(true);}finally{app.unmount();}
 });

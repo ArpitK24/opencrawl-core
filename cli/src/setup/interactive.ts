@@ -1,6 +1,7 @@
 import {setTimeout as delay} from 'node:timers/promises';
 import {CliError,apiOrigin,DEFAULT_API_ORIGIN} from '../oauth.ts';
 import {filesystemError} from '../filesystem.ts';
+import {offerInvitations} from './invites.ts';
 import {setupCommand} from './command.ts';
 import {launchClaudeSetup} from './claude-launch.ts';
 import {launchCodexSetup} from './codex-launch.ts';
@@ -64,6 +65,10 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
      let result=await setup(action,api,options.values,{interactive:true,choose:ui.choose,onProgress,login:()=>options.login(api,ui)});
      if(ui.signal.aborted)return 130;
      if(!result||'status' in result&&result.status==='cancelled')return 0;
+     if(action==='run' && 'scope' in result && result.scope && !('historyDecision' in result)){
+      await offerInvitations(result.scope,ui);
+      if(ui.signal.aborted)return 130;
+     }
      if('status' in result&&result.status==='recording_off'){
       await ui.action({title:'Setup saved',description:'No sessions will be recorded on this machine. No history import was started.',actions:[{id:'done',label:'Done'}]});return 0;
      }
