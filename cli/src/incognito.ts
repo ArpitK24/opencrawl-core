@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto';
 import {join} from 'node:path';
 import {readSearchContextEvent} from './search-context.ts';
 import {parseArgs} from 'node:util';
-import {atomicJson,syncDirectory,withSessionLock} from './session.ts';
+import {atomicJson,configDir,syncDirectory,withSessionLock} from './session.ts';
 import {recoverLiveSeals} from './capture/live-batches.ts';
 import {boardRequest} from './board.ts';
 import {captureDir,readCaptureConfig,type CaptureConfig} from './capture/runtime.ts';
@@ -68,6 +68,20 @@ export async function purgePrivateQueue(config:CaptureConfig,session:PrivateSess
     const current=readCaptureConfig();
     if(!current||privacyRoot(current)!==privacyRoot(config)||!sessionPrivate(config,session))throw Error('Privacy profile changed');
     recoverLiveSeals(dir);
+    // A standalone plugin and the CLI may race to acknowledge the same intent.
+    // Either participant must clean the plugin's session-local capture receipts.
+    const owner={tenantId:config.owner.tenantId,userId:config.owner.userId};
+    const plugin=join(configDir(),'plugin-state',hash(JSON.stringify([config.api,config.installationId,owner,session.harness])));
+    const sessionHash=hash(session.sessionId);
+    for(const path of [join(plugin,'observed',sessionHash),join(plugin,'cursor-notices',sessionHash),join(plugin,sessionHash+'.json')]){
+      rmSync(path,{recursive:true,force:true});
+    }
+    const suggestions=join(plugin,'suggestions'),suggestionId=hash(JSON.stringify([session.harness,session.sessionId]));
+    rmSync(join(suggestions,'latest',suggestionId+'.json'),{force:true});
+    for(const file of spoolFiles(join(suggestions,'tasks'))){
+      const path=join(suggestions,'tasks',file);
+      if(spoolRecord(path)?.session===suggestionId)rmSync(path,{force:true});
+    }
     const erasedBlobs=new Set<string>(),remainingBlobs=new Set<string>();
     for(const name of spoolFiles(join(dir,'queue'))){
       const file=join(dir,'queue',name),batch=spoolRecord(file);

@@ -1,5 +1,5 @@
 import {join,resolve,relative,sep,basename} from 'node:path';
-import {mkdirSync} from 'node:fs';
+import {mkdirSync,rmSync} from 'node:fs';
 import {randomUUID} from 'node:crypto';
 import {atomicJson} from '../session.ts';
 import {CliError} from '../oauth.ts';
@@ -67,8 +67,13 @@ export function recordNativeDaemonHook(harness:Harness,event:any,pid=process.ppi
   if(harness==='claude-code'&&(!Number.isSafeInteger(pid)||pid<=0))throw Error('Invalid Claude process identity');
   const inbox=join(captureDir(),'daemon','inbox');mkdirSync(inbox,{recursive:true,mode:0o700});
   const current=readCaptureConfig();
-  if(!current||current.disabled||!captureDaemonEnabled(current)||!current.harnesses?.includes(harness)||!sameDaemonBinding(notice,current)||captureExcluded(current,{sessionId:session.sessionId,cwd:session.cwd??undefined}))return false;
-  atomicJson(join(inbox,sequence+'-'+id+'.json'),notice);return true;
+  if(!current||current.disabled||!captureDaemonEnabled(current)||!current.harnesses?.includes(harness)||!sameDaemonBinding(notice,current)||captureExcluded(current,{harness,sessionId:session.sessionId,cwd:session.cwd??undefined}))return false;
+  const path=join(inbox,sequence+'-'+id+'.json');
+  atomicJson(path,notice);
+  if(captureExcluded(current,{harness,sessionId:session.sessionId,cwd:session.cwd??undefined})){
+    rmSync(path,{force:true});return false;
+  }
+  return true;
 }
 
 export function daemonRegistration(config:CaptureConfig,notice:DaemonNotice):DaemonRegistration|null {

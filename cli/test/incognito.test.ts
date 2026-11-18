@@ -1,5 +1,6 @@
 import {expect,test} from 'bun:test';
 import {mkdtempSync,rmSync,existsSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {atomicJson} from '../src/session.ts';
@@ -36,7 +37,12 @@ test('offline activation fences only this owner and harness and removes its pend
     expect(captureExcluded({...config,owner:{...config.owner,userId:'different'}},session)).toBe(false);
     expect(denyBoardSend('codex',{tool_name:'mcp__opencrawl__board_post'})?.hookSpecificOutput?.permissionDecision).toBe('deny');
     expect(denyBoardSend('codex',{tool_name:'mcp__opencrawl__opencrawl_search'})).toBeUndefined();
+    const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
+    const plugin=join(home,'opencrawl','plugin-state',hash(JSON.stringify([config.api,config.installationId,config.owner,'codex'])),'observed');
+    const observation=(id:string)=>{const file=join(plugin,hash(id),'users','earlier.json');atomicJson(file,{prompt:'pre-activation fixture'});return file;};
+    const removed=observation('chat'),preserved=observation('other');
     await purgePrivateQueue(config,session);
+    expect([removed,preserved].map(existsSync)).toEqual([false,true]);
     expect([mine,other,same].map(existsSync)).toEqual([false,true,true]);
   }finally{if(prev===undefined)delete process.env.OPENCRAWL_CONFIG_HOME;else process.env.OPENCRAWL_CONFIG_HOME=prev;rmSync(home,{recursive:true,force:true});}
 });
