@@ -1,6 +1,8 @@
 #!/bin/sh
-# Native install: no Node, npm, Bun installation, login or capture enrollment.
+# Native install; --setup opens the setup wizard after a successful install.
 set -eu
+setup=false
+if [ "${1:-}" = --setup ]; then setup=true; shift; fi
 version=${1:-latest}
 case "$version" in
   latest|next)
@@ -9,7 +11,7 @@ case "$version" in
     ;;
 esac
 if ! printf '%s\n' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
-  echo 'Usage: install.sh [latest|VERSION]' >&2; exit 1
+  echo 'Usage: install.sh [--setup] [latest|VERSION]' >&2; exit 1
 fi
 case "$(uname -s)" in Darwin) os=darwin ;; Linux) os=linux ;; *) echo 'Use install.ps1 on Windows.' >&2; exit 1 ;; esac
 case "$(uname -m)" in arm64|aarch64) arch=arm64 ;; x86_64|amd64) arch=x64 ;; *) echo 'Unsupported CPU architecture.' >&2; exit 1 ;; esac
@@ -30,3 +32,15 @@ tar -xzf "$scratch/$archive" -C "$scratch"
 if [ ! -s "$scratch/package/bin/opencrawl" ]; then echo 'OpenCrawl archive has no executable.' >&2; exit 1; fi
 chmod 755 "$scratch/package/bin/opencrawl"
 "$scratch/package/bin/opencrawl" install
+
+if [ "$setup" = true ]; then
+  entry="${OPENCRAWL_INSTALL_DIR:-$HOME/.local/bin}/opencrawl"
+  if [ -t 0 ] && [ -t 2 ]; then
+    "$entry" setup
+  elif [ -t 2 ] && terminal=$(tty <&2) && [ -r "$terminal" ]; then
+    # Bun needs the actual terminal device for keyboard input on macOS.
+    "$entry" setup <"$terminal"
+  else
+    echo 'Run opencrawl setup in a terminal to continue.'
+  fi
+fi
