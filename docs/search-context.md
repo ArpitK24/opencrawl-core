@@ -27,6 +27,15 @@ quoted inside another ordinary message is not automatically removed.
 
 ## Client attachment
 
+For a manually configured Claude Code HTTP MCP server, the native hook reads
+the connection from the configuration scope named by Claude. The configured
+endpoint identifies the OpenCrawl deployment, so the server label can be
+changed independently. User, local and project scopes and the Replicas
+workspace-identity relay are supported. This requires Claude's
+`mcp_server` hook metadata (Claude Code 2.1.274 or newer). Older hosts
+retain the previously supported tool names. An unrecognized transport can
+still use an explicit registered board handle.
+
 A synchronous native pre-tool hook merges the native chat identity into the
 original `opencrawl_search_v1` arguments on each request. The versioned alias
 is advertised only by servers supporting these context options. Antigravity

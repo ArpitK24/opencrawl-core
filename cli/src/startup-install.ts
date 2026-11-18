@@ -8,7 +8,7 @@ import {commandForSelf} from './capture/runtime.ts';
 import {hookRunner, commandQuote as quote} from './hook-runner.ts';
 import {reconcileHookEntries, reconcileHookGroups} from './hook-config.ts';
 import {retryWindowsSharing} from './filesystem.ts';
-import {searchContextMarker, searchContextMatcher, cursorSearchContextMatcher, antigravitySearchContextMatcher} from './search-context.ts';
+import {searchContextMarker, searchContextMatcher, claudeSearchContextMatcher, cursorSearchContextMatcher, antigravitySearchContextMatcher} from './search-context.ts';
 
 export const startupMarker = 'OpenCrawl session startup';
 export type StartupOptions = {home?: string; env?: NodeJS.ProcessEnv; command?: string[]; node?: string; requirementsFile?: string; preserveProfile?: boolean};
@@ -130,7 +130,7 @@ export function startupHooks(clients: string[], action: 'status' | 'install', {h
           preToolUse: {matcher:cursorSearchContextMatcher,command:cursorCommand+' search-context --harness cursor',timeout:2},
         }, entry => entry !== null && typeof entry === 'object' && 'command' in entry && typeof entry.command === 'string' && /[\\/]startup[\\/]runner\.(?:sh|cmd)\b.* (?:session start --harness cursor(?: --after-tool)?|search-context --harness cursor)$/.test(entry.command))
         : reconcileHookGroups(config.hooks ?? {}, {SessionStart: hook, PreToolUse: {type:'command',...invocation,command:invocation.command+' search-context --harness '+client,timeout:2,statusMessage:searchContextMarker}},
-          entry => entry !== null && typeof entry === 'object' && 'statusMessage' in entry && [startupMarker,searchContextMarker].includes(entry.statusMessage as string),{PreToolUse:searchContextMatcher});
+          entry => entry !== null && typeof entry === 'object' && 'statusMessage' in entry && [startupMarker,searchContextMarker].includes(entry.statusMessage as string),{PreToolUse:client==='claude-code'?claudeSearchContextMatcher:searchContextMatcher});
       const next = {...config, ...(cursor?{version:1}:{}), hooks};
       const hooksCurrent = isDeepStrictEqual(config, next);
       const current = hooksCurrent && existsSync(runner.file) && readFileSync(runner.file,'utf8')===runner.script;
