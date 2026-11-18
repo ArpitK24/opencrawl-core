@@ -1,5 +1,5 @@
 # Native Windows install. Requires only PowerShell and the Windows tar command.
-param([string]$Version = 'latest')
+param([string]$Version = 'latest', [switch]$Setup)
 $ErrorActionPreference = 'Stop'
 if ($Version -in @('latest', 'next')) {
   $epoch = [math]::Floor([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() / 30)
@@ -33,3 +33,13 @@ try {
   & (Join-Path $scratch 'package/bin/opencrawl.exe') install
   if ($LASTEXITCODE -ne 0) { throw 'OpenCrawl installation failed.' }
 } finally { Remove-Item -Recurse -Force $scratch }
+
+if ($Setup) {
+  if ([Environment]::UserInteractive -and ![Console]::IsInputRedirected -and ![Console]::IsErrorRedirected) {
+    $bin = if ($env:OPENCRAWL_INSTALL_DIR) { $env:OPENCRAWL_INSTALL_DIR } else { Join-Path $HOME '.local/bin' }
+    & (Join-Path $bin 'opencrawl.cmd') setup
+    if ($LASTEXITCODE -ne 0) { throw "OpenCrawl setup exited with code $LASTEXITCODE." }
+  } else {
+    Write-Host 'Run opencrawl setup in a terminal to continue.'
+  }
+}

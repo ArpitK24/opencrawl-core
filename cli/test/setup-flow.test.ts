@@ -18,9 +18,34 @@ import {validTranscriptIdentity} from '../src/capture/transcript-checkpoint.ts';
 import {installCapture} from '../src/capture/install.ts';
 import {installSetupPlugins,setupPluginIdentity} from '../src/setup/plugins.ts';
 import type {SelectionScreen} from '../src/setup/select.ts';
+import {needsFirstRunSetup} from '../src/setup/first-run.ts';
 import {runInteractiveSetup} from '../src/setup/interactive.ts';
 import type {SetupUi} from '../src/setup/tui.tsx';
 const setupCommand=(action:string,api:string,values:Parameters<typeof realSetupCommand>[2],dependencies:NonNullable<Parameters<typeof realSetupCommand>[3]>={})=>realSetupCommand(action,api,values,{platform:'darwin',modeEligibility:()=>({eligible:values['capture-mode']==='daemon'||Boolean(readCaptureConfig()?.captureWorker||readCaptureConfig()?.daemonRequested),reason:'Fixture supervisor'}),daemonReady:async()=>true,installDaemon:async()=>({kind:'launchd',status:'installed',supervised:true,label:'fixture',path:'fixture'}),...dependencies});
+
+test('first run stays open after interruption and remembers an explicit opt-out without capture',()=>fixture(async api=>{
+ expect(await needsFirstRunSetup()).toBe(true);
+ const selectNone=(screen:SelectionScreen)=>screen.items.map(item=>({...item,selected:false}));
+ await setupCommand('run',api,{}, {interactive:true,choose:async screen=>screen.phase===2?null:selectNone(screen)});
+ expect(await needsFirstRunSetup()).toBe(true);
+ await setupCommand('run',api,{}, {interactive:true,choose:async screen=>selectNone(screen)});
+ expect(readCaptureConfig()).toBeNull();
+ expect(await needsFirstRunSetup()).toBe(false);
+ expect(await needsFirstRunSetup('https://different.example')).toBe(true);
+}));
+
+test('first run checks legacy installation proof once and keeps completed help offline',()=>fixture(async(api,_dir,_observations,setClient)=>{
+ await setupCommand('apply',api,{yes:true,plugins:'codex',forward:'codex',history:'none'}, {installPlugins:async()=>({results:[{client:'codex',status:'installed'}],humanTasks:[]})});
+ const scope={api,tenantId:'tenant',userId:'user'};
+ await updateSetupState(scope,current=>{const {firstRun,...legacy}=current!;return legacy;});
+ expect(await needsFirstRunSetup(api)).toBe(true);
+ setClient({installed:true,mcp:{state:'authenticated'},proof:{state:'verified'}});
+ expect(await needsFirstRunSetup(api)).toBe(false);
+ expect(readSetupState(scope)?.firstRun).toBe('complete');
+ let reads=0;
+ expect(await needsFirstRunSetup(api,async()=>{reads++;throw Error('offline');})).toBe(false);
+ expect(reads).toBe(0);
+}));
 
 test('full human TUI keeps installation, history and pending verification in its own screens',async()=>fixture(async(api,_dir,_observations,setCodex)=>{
  const screens:string[]=[],controller=new AbortController();let closed=false,polls=0;

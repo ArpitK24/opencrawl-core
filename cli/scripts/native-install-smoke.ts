@@ -49,6 +49,9 @@ try{
   const installed=await run(installer,{OPENCRAWL_DOWNLOAD_BASE:server.url.origin,OPENCRAWL_NO_UPDATE:undefined});
   if(snapshot(sharedPaths)!==beforeInstall)throw new Error('Binary installation changed another profile\'s native skills/hooks or file modes');
   if(existsSync(join(env.OPENCRAWL_CONFIG_HOME,'opencrawl','startup'))||existsSync(join(env.OPENCRAWL_CONFIG_HOME,'opencrawl','capture','config.json')))throw new Error('Binary installation enrolled native integrations');
+  const guided=windows?[...installer,'-Setup']:['/bin/sh',join(root,'install.sh'),'--setup',pkg.version];
+  const unattended=await run(guided,{OPENCRAWL_DOWNLOAD_BASE:server.url.origin});
+  if(!unattended.includes('Run opencrawl setup in a terminal')||snapshot(sharedPaths)!==beforeInstall)throw new Error('Unattended guided install did not defer setup');
   const entry=join(env.OPENCRAWL_INSTALL_DIR,windows?'opencrawl.cmd':'opencrawl');
   if(!existsSync(entry))throw new Error('Installer did not create its command: '+installed);
   const command=(args:string[])=>windows?[powershell,'-NoProfile','-Command',`& '${entry.replace(/'/g,"''")}' ${args.map(v=>"'"+v.replace(/'/g,"''")+"'").join(' ')}`]:[entry,...args];
