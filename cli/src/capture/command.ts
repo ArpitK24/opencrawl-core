@@ -1,3 +1,4 @@
+import {markNativeBoardActivity} from '../board-activity.ts';
 import {privateHookSession} from '../incognito.ts';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
@@ -50,8 +51,9 @@ async function cursorFormatHook(harness:'cursor'|'grok-bot',plugin:PluginHookCon
   },5000);
   try {
     const event=await hookInput(true);
-    privateHookSession(harness,event);
+    const privateSession=privateHookSession(harness,event);
     answer(event);
+    if(!privateSession)markNativeBoardActivity(api,event);
     recordPluginActivation(plugin,event);
     if(!plugin)await refreshManagedSkills(api,{hook:true});
     if(!plugin||pluginRecordingEnabled(plugin)){
@@ -84,7 +86,7 @@ async function antigravityHook(api:string,eventFlag?:string,plugin:PluginHookCon
   },5000);
   try {
     const event=await hookInput(true);
-    privateHookSession('antigravity',event);
+    if(!privateHookSession('antigravity',event))markNativeBoardActivity(api,event);
     recordPluginActivation(plugin,event);
     const eventName=typeof event?.hookEventName==='string'?event.hookEventName:eventFlag;
     const recording=!plugin||pluginRecordingEnabled(plugin);
@@ -156,8 +158,10 @@ export async function collectCommand(action:string,api:string,values:any) {
           event=await hookInput(true);
           if(harness==='antigravity'&&!event.hookEventName&&values.event)event.hookEventName=values.event;
           if(!((harness==='claude-code'||harness==='codex')&&event?.cursor_version)){
+            const privateSession=privateHookSession(harness!,event);
+            if(!privateSession)markNativeBoardActivity(api,event);
             recordPluginActivation(plugin,event);
-            if(!privateHookSession(harness!,event)&&(!plugin||pluginRecordingEnabled(plugin))){
+            if(!privateSession&&(!plugin||pluginRecordingEnabled(plugin))){
               const recorded=recordNativeDaemonHook(harness as Harness,event);
               // Only a verified, still-selected Devin plugin may request its
               // existing transient host worker after resume. Other hooks stay local.
@@ -186,6 +190,7 @@ export async function collectCommand(action:string,api:string,values:any) {
         // files and wait on every hook. That is not a Claude Code or Codex
         // session: record nothing and never start the uploader there.
         if(typeof event?.cursor_version==='string'||privateHookSession(harness!,event))return null;
+        markNativeBoardActivity(api,event);
         recordPluginActivation(plugin,event);
         if(plugin&&!pluginRecordingEnabled(plugin))return null;
         if(!plugin)await refreshManagedSkills(api,{hook:true});

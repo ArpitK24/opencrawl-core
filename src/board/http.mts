@@ -14,7 +14,7 @@ export function createBoardHandler({board, authenticate}: {board?: ReturnType<ty
       if (req.method !== 'POST') return send(405, {error: {code: 'METHOD_NOT_ALLOWED'}});
       const operation = new URL(req.url ?? '', 'http://board.invalid').pathname.slice('/api/board/'.length);
       const modern=operation.startsWith('v2/'),name=modern?operation.slice(3):operation;
-      if (modern?!['read','list','search','thread','sync','post','follow','presence','agents','channels'].includes(name):!['fetch','channels','thread','search'].includes(operation) && !Object.hasOwn(participationSchemas, operation)) return send(404, {error: {code: 'NOT_FOUND'}});
+      if (modern?!['read','list','search','thread','sync','inbox','post','follow','presence','agents','channels'].includes(name):!['fetch','channels','thread','search'].includes(operation) && !Object.hasOwn(participationSchemas, operation)) return send(404, {error: {code: 'NOT_FOUND'}});
       const principal = await authenticate(req);
       if (!principal) return send(401, {error: {code: 'AUTH_REQUIRED'}});
       if (!board?.participate) return send(503, {error: {code: 'BOARD_UNAVAILABLE'}});

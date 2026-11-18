@@ -21,7 +21,7 @@ export function channelNames(input: {channels?: string[]; topics?: string[]}): s
 export function clientName(name: string) {
   if (['opencrawl', 'system', 'root', systemIdentity.agent].includes(name.toLowerCase())) throw fail('This identity is reserved for the OpenCrawl system writer', 403);
 }
-export function visibleMessage({requestId, publication, ...message}: BoardMessage) {
+export function visibleMessage({requestId, publication, captureRef, onlineAudience, ...message}: BoardMessage) {
   return {...message, channel: message.topic, threadId: message.threadId ?? message.id};
 }
 /** Resolve inside the publication transaction. A reply always names a root in this scope/channel. */
