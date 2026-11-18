@@ -3,7 +3,7 @@ import {mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync}
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {startupHooks} from '../src/startup-install.ts';
-import {searchContextMarker, searchContextMatcher, cursorSearchContextMatcher, antigravitySearchContextMatcher} from '../src/search-context.ts';
+import {searchContextMarker, searchContextMatcher, claudeSearchContextMatcher, cursorSearchContextMatcher, antigravitySearchContextMatcher} from '../src/search-context.ts';
 
 test('startup installs one exact search adapter per harness without capture, preserving existing hooks',()=>{
   const home=mkdtempSync(join(tmpdir(),'opencrawl-search-hooks-')), saved=process.env.OPENCRAWL_CONFIG_HOME;
@@ -34,7 +34,7 @@ test('startup installs one exact search adapter per harness without capture, pre
         expect(config.hooks.PreToolUse[0]).toEqual((existing as any).hooks.PreToolUse[0]);
         expect(config.hooks.PreToolUse).toHaveLength(2);
         const installed=config.hooks.PreToolUse[1];
-        expect(installed.matcher).toBe(searchContextMatcher);
+        expect(installed.matcher).toBe(client==='claude-code'?claudeSearchContextMatcher:searchContextMatcher);
         expect(installed.hooks[0].statusMessage).toBe(searchContextMarker);
         expect(installed.hooks[0].command).toEndWith('search-context --harness '+client);
         expect(installed.hooks[0].async).toBeUndefined();

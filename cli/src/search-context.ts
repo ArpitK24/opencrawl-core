@@ -1,5 +1,6 @@
 import type {Readable} from 'node:stream';
 import {parseArgs} from 'node:util';
+import {claudeMcpTool} from './claude-mcp-context.ts';
 
 export const searchContextMarker = 'OpenCrawl search context';
 // Advertised aliases prove the server accepts currentSession. Older servers
@@ -24,6 +25,8 @@ export const cursorSearchContextMatcher = '^(?:' + cursorSearchTools.join('|') +
 const antigravitySearchTools = ['mcp_opencrawl_opencrawl_search_v1', 'mcp_opencrawl_opencrawl_opencrawl_search_v1',...boardContextTools.flatMap(tool=>[`mcp_opencrawl_${tool}`,`mcp_opencrawl_opencrawl_${tool}`])];
 export const antigravitySearchContextMatcher = '^(?:' + [...antigravitySearchTools, 'call_mcp_tool'].join('|') + ')$';
 const aliases = ['opencrawl_search','opencrawl_search_v1',...boardContextTools];
+// Candidate filter only. Claude supplies the server provenance at call time.
+export const claudeSearchContextMatcher = '^(?:' + searchTools.join('|') + '|mcp__.+__(?:' + aliases.join('|') + '))$';
 /** Match only this installed deployment, including the native identifier's
  * underscore spelling. Cursor's documented payload omits the server name. */
 function selectedTools(harness:string,pluginName?:string) {
@@ -47,7 +50,7 @@ const sessionId = (value: unknown): value is string => typeof value === 'string'
 
 /** Native hook identity is independent of credentials, board presence and the
  * model's arguments. Never consult a latest-session file or read a transcript. */
-export function searchContext(harness: string, event: unknown, pluginName?:string, boardSupported=false): Record<string, unknown> | undefined {
+export function searchContext(harness: string, event: unknown, pluginName?:string, boardSupported=false, api?:string): Record<string, unknown> | undefined {
   const tools=selectedTools(harness,pluginName);
   if(object(event)&&harness!=='cursor'&&typeof event.cursor_version==='string')return;
   if (object(event) && harness === 'antigravity') {
@@ -79,7 +82,11 @@ export function searchContext(harness: string, event: unknown, pluginName?:strin
     return {updated_input: {...event.tool_input, currentSession: {harness, sessionId: nativeId}}};
   }
   if (!object(event) || !['codex', 'claude-code'].includes(harness) || event.hook_event_name !== 'PreToolUse'
-      || !tools.standard.includes(event.tool_name as string) || !object(event.tool_input)) return;
+      || typeof event.tool_name !== 'string' || !object(event.tool_input)) return;
+  if (harness === 'claude-code' && !pluginName && event.mcp_server !== undefined &&
+      !(object(event.mcp_server) && event.mcp_server.source === 'plugin')) {
+    if (!api || !aliases.includes(claudeMcpTool(event, api) ?? '')) return;
+  } else if (!tools.standard.includes(event.tool_name)) return;
   if (!sessionId(event.session_id)) return;
   if(boardContextTools.some(tool=>String(event.tool_name).endsWith('_'+tool))&&!boardSupported)return;
   let nativeId = event.session_id;
@@ -141,7 +148,7 @@ export async function searchContextCommand(args: string[], input: Readable = pro
     const {DEFAULT_API_ORIGIN}=await import('./oauth.ts');
     const {readCaptureConfig}=await import('./capture/runtime.ts');
     const api=parsed.values.api??process.env.OPENCRAWL_PLUGIN_API??process.env.OPENCRAWL_API_URL??readCaptureConfig()?.api??DEFAULT_API_ORIGIN;
-    const result = searchContext(harness,event,pluginName,supportsAgentBoard(api));
+    const result = searchContext(harness,event,pluginName,supportsAgentBoard(api),api);
     if (result) output.write(JSON.stringify(result) + '\n');
   } catch { /* Unknown identity or malformed native input must never guess. */ }
   return 0;
