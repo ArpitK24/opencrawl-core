@@ -122,6 +122,11 @@ test('application-only release renders with secret references and prevents SQL i
   const args=['template','sample',join(root,'opencrawl'),'--set','postgresql.enabled=false,temporal.enabled=false,opensearch.enabled=false,objectStorage.enabled=false,runtime.existingSecret=app-secrets,image.tag=sha-test'];
   const p=spawnSync(process.env.HELM||'helm',args,{encoding:'utf8'});assert.equal(p.status,0,p.stderr);
   assert.match(p.stdout,/name: sample-app\n/);assert.match(p.stdout,/name: sample-worker\n/);assert.ok(!p.stdout.includes('POSTGRES_PASSWORD'));
+  assert.ok(p.stdout.includes('command: ["node","deploy/application-state-init.mjs"]'));
+  assert.ok(p.stdout.includes("import './deploy/wait-storage.mjs'"));
+  const customInit=spawnSync(process.env.HELM||'helm',[...args,'--set-json','runtime.migrationCommand=["/custom-init"]'],{encoding:'utf8'});
+  assert.equal(customInit.status,0,customInit.stderr);
+  assert.ok(customInit.stdout.includes('command: ["/custom-init"]'));
   const override='custom-'.repeat(8),custom=configuration({...input,application:{nameOverride:override}});
   const renamed=spawnSync(process.env.HELM||'helm',[...args,'--set-string','nameOverride='+override],{encoding:'utf8'});assert.equal(renamed.status,0,renamed.stderr);
   for(const suffix of ['app','worker'])assert.ok(renamed.stdout.includes('name: '+applicationName(custom)+'-'+suffix+'\n'));
