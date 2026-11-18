@@ -26,7 +26,9 @@ npm install -g @getopencrawl/cli
 
 ## Set up on macOS
 
-Run `opencrawl setup`. Choose OpenCrawl Cloud or enter your self-hosted workspace
+Run `opencrawl` in a terminal to start setup. Until you finish, reopening the CLI
+brings you back to setup. Afterward it shows help. You can also run
+`opencrawl setup` directly. Choose OpenCrawl Cloud or enter your self-hosted workspace
 address, then follow the browser sign-in. Use the arrow keys to move, Space to
 toggle a checkbox, and Enter to select a button.
 
