@@ -1,10 +1,26 @@
 import {test,expect} from 'bun:test';
 import {render} from 'ink-testing-library';
 import {pressAndRead,renderReady,waitForFrame} from './setup-ink.ts';
-import {HostingScreen,WorkspaceScreen,NoticeScreen,type Hosting,type WorkspaceAnswer} from '../src/setup/tui-view.tsx';
+import {WelcomeScreen,HostingScreen,WorkspaceScreen,NoticeScreen,type Hosting,type WorkspaceAnswer} from '../src/setup/tui-view.tsx';
 
 const tick=()=>new Promise(resolve=>setTimeout(resolve,25));
 const down='\u001b[B',up='\u001b[A',right='\u001b[C',enter='\r';
+test('welcome explains sharing and optional history before Continue or Exit',async()=>{
+ for(const key of ['continue','exit','escape','interrupt']){
+  let proceed:boolean|undefined;
+  const app=await renderReady(<WelcomeScreen onComplete={value=>{proceed=value;}}/>);
+  try{
+   await waitForFrame(app,'› [ Continue ]');
+   const frame=app.lastFrame()!.replace(/\s+/g,' ');
+   expect(frame).toContain('shared with your team by default');
+   expect(frame).toContain('Importing past sessions is a separate choice');
+   expect(frame).toContain('https://app.getopencrawl.com/privacy');
+   if(key==='exit')await pressAndRead(app,right,'› [ Exit ]');
+   app.stdin.write(key==='escape'?'\u001b':key==='interrupt'?'\u0003':enter);
+   await tick();expect(proceed).toBe(key==='continue');
+  }finally{app.unmount();}
+ }
+});
 test('setup hints span the bottom row and wrap as whole shortcuts on resize',async()=>{
  const app=render(<HostingScreen onComplete={()=>{}}/>);
  try{

@@ -24,25 +24,25 @@ const setupCommand=(action:string,api:string,values:Parameters<typeof realSetupC
 
 test('full human TUI keeps installation, history and pending verification in its own screens',async()=>fixture(async(api,_dir,_observations,setCodex)=>{
  const screens:string[]=[],controller=new AbortController();let closed=false;
- const ui:SetupUi={signal:controller.signal,hosting:async()=>'self-hosted',workspace:async()=>({kind:'address',api}),progress:title=>{screens.push(title);if(title==='Finish connecting your agents')setCodex({installed:true,mcp:{state:'authenticated'},proof:{state:'verified'}});},choose:async screen=>screen.items.map(item=>({...item,selected:screen.phase===1&&item.id==='codex'})),action:async screen=>{
+ const ui:SetupUi={signal:controller.signal,welcome:async()=>true,hosting:async()=>'self-hosted',workspace:async()=>({kind:'address',api}),progress:title=>{screens.push(title);if(title==='Finish connecting your agents')setCodex({installed:true,mcp:{state:'authenticated'},proof:{state:'verified'}});},choose:async screen=>screen.items.map(item=>({...item,selected:screen.phase===1&&item.id==='codex'})),action:async screen=>{
   screens.push(screen.title);
   return 'done';
  },close:()=>{closed=true;},native:async run=>run()};
  const result=await runInteractiveSetup({values:{},readDestination:()=>({}),withOrigin:async(origin,run)=>{expect(origin).toBe(api);return run();},login:async()=>{throw Error('Unexpected sign-in');}},{createUi:()=>ui,which:()=>null,pause:async()=>{},setup:(action,origin,values,dependencies)=>setupCommand(action,origin,values,{...dependencies,installPlugins:async()=>({results:[{client:'codex',status:'installed'}],humanTasks:[]}),launchHistory:()=>({state:'not_started'})})});
- expect(result).toBe(0);expect(closed).toBe(true);expect(screens).toContain('Installing your agents');expect(screens).toContain('Finish connecting your agents');expect(screens.at(-1)).toBe('Setup complete');
+ expect(result).toBe(0);expect(closed).toBe(true);expect(screens).toContain('Installing session capture tooling');expect(screens).toContain('Finish connecting your agents');expect(screens.at(-1)).toBe('Setup complete');
  expect(readCaptureConfig()?.harnesses).toEqual(['codex']);expect(readSetupState({api,tenantId:'tenant',userId:'user'})?.selections.history.codex).toBe(false);
 }));
 
 test('cancelling workspace entry never runs auth or setup and the TUI always closes',async()=>{
  let closed=false;
- const ui:SetupUi={signal:new AbortController().signal,hosting:async()=>'self-hosted',workspace:async()=>null,progress:()=>{},choose:async()=>null,action:async()=>null,close:()=>{closed=true;},native:async run=>run()};
+ const ui:SetupUi={signal:new AbortController().signal,welcome:async()=>true,hosting:async()=>'self-hosted',workspace:async()=>null,progress:()=>{},choose:async()=>null,action:async()=>null,close:()=>{closed=true;},native:async run=>run()};
  expect(await runInteractiveSetup({values:{},readDestination:()=>({}),withOrigin:async()=>{throw Error('Unexpected network binding');},login:async()=>{throw Error('Unexpected login');}},{createUi:()=>ui})).toBe(0);
  expect(closed).toBe(true);
 });
 
 test('TUI service retry preserves selections and does not ask for native verification first',async()=>fixture(async(api,_dir,_observations,setCodex)=>{
  let ready=false,choices=0,installs=0;const screens:string[]=[],operations:string[]=[];
- const ui:SetupUi={signal:new AbortController().signal,hosting:async()=>'self-hosted',workspace:async()=>({kind:'address',api}),progress:title=>{screens.push(title);},choose:async screen=>{choices++;return screen.items.map(item=>({...item,selected:screen.phase===1&&item.id==='codex'||screen.phase===3&&item.id==='daemon'}));},action:async screen=>{
+ const ui:SetupUi={signal:new AbortController().signal,welcome:async()=>true,hosting:async()=>'self-hosted',workspace:async()=>({kind:'address',api}),progress:title=>{screens.push(title);},choose:async screen=>{choices++;return screen.items.map(item=>({...item,selected:screen.phase===1&&item.id==='codex'||screen.phase===3&&item.id==='daemon'}));},action:async screen=>{
   screens.push(screen.title);
   if(screen.title==='Background capture needs attention'){expect(screen.actions?.map(a=>a.label)).toEqual(['Record without a background service','Retry service','Close']);ready=true;setCodex({installed:true,mcp:{state:'authenticated'},proof:{state:'verified'}});return 'retry';}
   return 'done';
@@ -55,14 +55,14 @@ test('TUI service retry preserves selections and does not ask for native verific
 
 test('failed supervision stops before launching Claude native sign-in',async()=>fixture(async api=>{
  let nativeCalls=0;const screens:string[]=[];
- const ui:SetupUi={signal:new AbortController().signal,hosting:async()=>'self-hosted',workspace:async()=>({kind:'address',api}),progress:()=>{},choose:async screen=>screen.items.map(item=>({...item,selected:screen.phase===1&&item.id==='claude-code'||screen.phase===3&&item.id==='daemon'})),action:async screen=>{screens.push(screen.title);return 'close';},close:()=>{},native:async run=>run()};
+ const ui:SetupUi={signal:new AbortController().signal,welcome:async()=>true,hosting:async()=>'self-hosted',workspace:async()=>({kind:'address',api}),progress:()=>{},choose:async screen=>screen.items.map(item=>({...item,selected:screen.phase===1&&item.id==='claude-code'||screen.phase===3&&item.id==='daemon'})),action:async screen=>{screens.push(screen.title);return 'close';},close:()=>{},native:async run=>run()};
  const code=await runInteractiveSetup({values:{client:['claude-code']},readDestination:()=>({api}),withOrigin:async(_origin,run)=>run(),login:async()=>{}},{createUi:()=>ui,which:()=>'/fixture/claude',native:async()=>{nativeCalls++;return 0;},pause:async()=>{throw Error('Unexpected wait');},setup:(action,origin,values,dependencies)=>setupCommand(action,origin,values,{...dependencies,modeEligibility:()=>({eligible:true,reason:'Fixture'}),daemonReady:async()=>false,installPlugins:async()=>({results:[{client:'claude-code',status:'installed',captureAvailable:true,daemonHandoff:true}],humanTasks:[]}),launchHistory:()=>({state:'not_started'})})});
  expect(code).toBe(2);expect(nativeCalls).toBe(0);expect(screens).toEqual(['Background capture needs attention']);
 }));
 
 test('Codex setup sends no task until native hook review completes, then starts a fresh task automatically',async()=>fixture(async(api,_dir,_observations,setCodex)=>{
  let trusted=false,choices=0;const calls:string[][]=[],screens:string[]=[];
- const ui:SetupUi={signal:new AbortController().signal,hosting:async()=>'self-hosted',workspace:async()=>({kind:'address',api}),progress:()=>{},choose:async screen=>{choices++;return screen.items.map(item=>({...item,selected:screen.phase===1&&item.id==='codex'}));},action:async screen=>{screens.push(screen.title);return screen.title==='Review Codex hooks'?'review':'done';},close:()=>{},native:async run=>run()};
+ const ui:SetupUi={signal:new AbortController().signal,welcome:async()=>true,hosting:async()=>'self-hosted',workspace:async()=>({kind:'address',api}),progress:()=>{},choose:async screen=>{choices++;return screen.items.map(item=>({...item,selected:screen.phase===1&&item.id==='codex'}));},action:async screen=>{screens.push(screen.title);return screen.title==='Review Codex hooks'?'review':'done';},close:()=>{},native:async run=>run()};
  const code=await runInteractiveSetup({values:{},readDestination:()=>({api}),withOrigin:async(_origin,run)=>run(),login:async()=>{}},{createUi:()=>ui,which:()=>'/native/codex',inspectCodex:async()=>({state:'observed',total:12,pending:trusted?0:12,disabled:0}),native:async(command,args)=>{
   calls.push([command,...args]);
   if(!args.length){expect(trusted).toBe(false);trusted=true;}
@@ -74,7 +74,7 @@ test('Codex setup sends no task until native hook review completes, then starts 
 
 test('unknown or disabled Codex hooks can close without OAuth, model task, or changed recording choices',async()=>{
  for(const review of [{state:'unknown',total:12,pending:null,disabled:null},{state:'observed',total:12,pending:0,disabled:1}] as CodexHookReview[])await fixture(async api=>{
-  const ui:SetupUi={signal:new AbortController().signal,hosting:async()=>'self-hosted',workspace:async()=>({kind:'address',api}),progress:()=>{},choose:async screen=>screen.items.map(item=>({...item,selected:screen.phase===1&&item.id==='codex'})),action:async screen=>{expect(screen.title).toBe('Review Codex hooks');return 'close';},close:()=>{},native:async run=>run()};
+  const ui:SetupUi={signal:new AbortController().signal,welcome:async()=>true,hosting:async()=>'self-hosted',workspace:async()=>({kind:'address',api}),progress:()=>{},choose:async screen=>screen.items.map(item=>({...item,selected:screen.phase===1&&item.id==='codex'})),action:async screen=>{expect(screen.title).toBe('Review Codex hooks');return 'close';},close:()=>{},native:async run=>run()};
   expect(await runInteractiveSetup({values:{},readDestination:()=>({api}),withOrigin:async(_origin,run)=>run(),login:async()=>{}},{createUi:()=>ui,which:()=>'/native/codex',inspectCodex:async()=>review,native:async()=>{throw Error('Unreviewed native task');},setup:(action,origin,values,dependencies)=>setupCommand(action,origin,values,{...dependencies,installPlugins:async()=>({results:[{client:'codex',status:'installed',captureAvailable:true}],humanTasks:[]}),launchHistory:()=>({state:'not_started'})})})).toBe(2);
   expect(readSetupState({api,tenantId:'tenant',userId:'user'})?.selections.forward.codex).toBe(true);
  });
@@ -82,7 +82,7 @@ test('unknown or disabled Codex hooks can close without OAuth, model task, or ch
 
 test('failed service can switch to direct recording inside the TUI without another questionnaire or queue loss',async()=>fixture(async(api,_dir,_observations,setCodex)=>{
  let choices=0,stops=0,installs=0;let installationId:string|undefined;const queued=()=>join(captureDir(),'queue','preserved.json');
- const ui:SetupUi={signal:new AbortController().signal,hosting:async()=>'self-hosted',workspace:async()=>({kind:'address',api}),progress:()=>{},choose:async screen=>{choices++;return screen.items.map(item=>({...item,selected:screen.phase===1&&item.id==='codex'||screen.phase===3&&item.id==='daemon'}));},action:async screen=>{
+ const ui:SetupUi={signal:new AbortController().signal,welcome:async()=>true,hosting:async()=>'self-hosted',workspace:async()=>({kind:'address',api}),progress:()=>{},choose:async screen=>{choices++;return screen.items.map(item=>({...item,selected:screen.phase===1&&item.id==='codex'||screen.phase===3&&item.id==='daemon'}));},action:async screen=>{
   if(screen.title==='Background capture needs attention'){installationId=readCaptureConfig()?.installationId;mkdirSync(dirname(queued()),{recursive:true});writeFileSync(queued(),'retain queued bytes');setCodex({installed:true,mcp:{state:'authenticated'},proof:{state:'verified'}});return 'direct';}
   expect(screen.title,screen.description).toBe('Setup complete');return 'done';
  },close:()=>{},native:async run=>run()};
@@ -125,7 +125,7 @@ test('Antigravity opens native consent first and resumes its saved task after an
   const calls: string[][] = [];
   const ui: SetupUi = {
    signal: new AbortController().signal, close() {}, progress() {}, native: run => run(),
-   hosting: async () => 'self-hosted', workspace: async () => ({kind: 'address', api}),
+   welcome: async () => true, hosting: async () => 'self-hosted', workspace: async () => ({kind: 'address', api}),
    choose: async screen => screen.items.map(item => ({...item, selected: screen.phase === 1 && item.id === 'antigravity'})),
    action: async screen => {
     screens.push(screen.title);
@@ -652,19 +652,29 @@ test('machine-wide opt-out skips installation and history; cancellation saves no
  const saved=readSetupState(scope)!;for(const group of ['plugins','forward','history'] as const)expect(Object.values(saved.selections[group]).every(value=>!value)).toBe(true);
 }));
 
-test('optional daemon is a separate TUI choice; declining survives resume without a worker',()=>fixture(async api=>{
+test('eligible setup offers the utility by default and preserves a declined installation',()=>fixture(async api=>{
  const phases:number[]=[];let installs=0;
  const dependencies={modeEligibility:()=>({eligible:true,reason:'Fixture local supervisor'}),installPlugins:async(_api:string,_clients:string[],options?:Parameters<typeof installSetupPlugins>[2])=>{expect(options?.captureMode).toBe('hook');return {results:[{client:'codex' as const,status:'installed' as const,captureAvailable:true,daemonHandoff:true}],humanTasks:[]};},installDaemon:async()=>{installs++;throw Error('Declined service must not install');},launchHistory:()=>({state:'not_started'})};
- await setupCommand('run',api,{}, {...dependencies,interactive:true,choose:async screen=>{phases.push(screen.phase);return screen.items.map(item=>({...item,selected:screen.phase===1&&item.id==='codex'}));}});
+ const declineService=(expectedDefault:boolean)=>async(screen:SelectionScreen)=>{
+  phases.push(screen.phase);
+  if(screen.phase===1)expect(screen.description).toBe('Choose local coding agents to record sessions from');
+  if(screen.phase===3){
+   expect(screen.description).toBe('Install background utility for more reliable session capture?');
+   expect(screen.items.find(item=>item.id==='daemon')?.selected).toBe(expectedDefault);
+  }
+  return screen.items.map(item=>({...item,selected:screen.phase===1&&item.id==='codex'}));
+ };
+ await setupCommand('run',api,{}, {...dependencies,interactive:true,choose:declineService(true)});
  expect(phases).toEqual([1,3,2]);expect(installs).toBe(0);expect(readSetupState({api,tenantId:'tenant',userId:'user'})?.captureMode).toBe('hook');
  expect(readCaptureConfig()?.backgroundStartup).toBe(false);expect(readCaptureConfig()?.captureWorker).toBeUndefined();
+ await setupCommand('run',api,{}, {...dependencies,interactive:true,choose:declineService(false)});
  await setupCommand('resume',api,{}, {...dependencies,choose:async()=>{throw Error('Resume must not ask again');}});expect(installs).toBe(0);
 }));
 
-test('selected daemon installs only after supported plugin, persists through resume, and opt-out preserves queue',()=>fixture(async(api,dir)=>{
+test('accepting the default installs the utility after its plugin, and opt-out preserves the queue',()=>fixture(async(api,dir)=>{
  let installs=0,stops=0;const modes:string[]=[];
  const dependencies={modeEligibility:()=>({eligible:true,reason:'Fixture supervisor'}),stopDaemon:()=>{stops++;},installPlugins:async(_api:string,_clients:string[],options?:Parameters<typeof installSetupPlugins>[2])=>{modes.push(options?.captureMode??'missing');return {results:[{client:'codex' as const,status:'installed' as const,captureAvailable:true,daemonHandoff:true}],humanTasks:[]};},installDaemon:async()=>{installs++;return {kind:'launchd',status:'installed',supervised:true,label:'fixture',path:'fixture'};},launchHistory:()=>({state:'not_started'})};
- await setupCommand('run',api,{}, {...dependencies,interactive:true,choose:async screen=>screen.items.map(item=>({...item,selected:screen.phase===3||screen.phase===1&&item.id==='codex'}))});
+ await setupCommand('run',api,{}, {...dependencies,interactive:true,choose:async screen=>screen.phase===3?screen.items:screen.items.map(item=>({...item,selected:screen.phase===1&&item.id==='codex'}))});
  expect(installs).toBe(1);expect(readSetupState({api,tenantId:'tenant',userId:'user'})?.captureMode).toBe('daemon');
  await setupCommand('resume',api,{},dependencies);expect(installs).toBe(2);
  const queue=join(dir,'config/opencrawl/capture/queue/keep.json');writeFileSync(queue,'pending bytes');

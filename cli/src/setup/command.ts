@@ -274,7 +274,7 @@ export async function setupCommand(action:string,api:string,values:Values,{platf
   return {...configured,client,nativeMcpLoginRequired:!['authenticated','observed'].includes(nativeClient?.mcp?.state??'pending'),agentPrompt:`Finish OpenCrawl setup in this conversation. Run ${nextCommand} and follow nextAction. Reuse my saved choices. After the native verify_installation call, run setup wait --json with this same profile-bound CLI and follow its nextAction. Never ask me to reply just to wait for capture. After any reconciliation, read setup next again before reporting completion.`,nextAction:nextSetupAction(state,latest)};
  };
  if(action==='run'&&interactive){
-  const selected=await choose({phase:1,title:'Record new sessions',description:'Select the agents to connect and record. Messages, tool results and attachments are shared with this workspace.',noneLabel:'Do not record any sessions on this machine',items:clients.filter(client=>client.plugin&&client.forward).map(client=>({id:client.id,label:client.label,detail:client.detected?'Detected':'Not detected',disabled:!client.detected&&!previous?.selections.forward[client.id],selected:selections.forward[client.id]===true}))});
+  const selected=await choose({phase:1,title:'Record new sessions',description:'Choose local coding agents to record sessions from',noneLabel:'Do not record any sessions on this machine',items:clients.filter(client=>client.plugin&&client.forward).map(client=>({id:client.id,label:client.label,detail:client.detected?'Detected':'Not detected',disabled:!client.detected&&!previous?.selections.forward[client.id],selected:selections.forward[client.id]===true}))});
   if(selected===null)return {status:'cancelled',humanTasks:[]};
   const capture=new Set(selected.filter(row=>row.selected).map(row=>row.id));
   for(const group of ['plugins','forward'] as const)selections[group]=Object.fromEntries([...new Set([...Object.keys(selections[group]),...clients.map(client=>client.id)])].map(id=>[id,capture.has(id)]));
@@ -284,12 +284,13 @@ export async function setupCommand(action:string,api:string,values:Values,{platf
   assertCaptureSelections(selections,previous?.selections);
   const offered=eligibility(selections);
   if(offered.eligible){
-   const service=await choose({phase:3,title:'Background capture',description:'Optionally install a background service to retry uploads after your agent closes.',noneLabel:'Record without a background service',items:[{id:'daemon',label:'Install background service',selected:captureMode==='daemon'}]});
+   const firstInstall=!previous&&!sameOwner&&values['capture-mode']===undefined;
+   const service=await choose({phase:3,title:'Background capture',description:'Install background utility for more reliable session capture?',noneLabel:'Record without a background service',items:[{id:'daemon',label:'Install background service',selected:firstInstall||captureMode==='daemon'}]});
    if(service===null)return {status:'cancelled',humanTasks:[]};
    captureMode=service.some(item=>item.id==='daemon'&&item.selected)?'daemon':'hook';
   }
   checkMode(selections);
-  onProgress?.('Installing your agents','Connecting the selected agents and enabling session recording.','installing');
+  onProgress?.('Installing session capture tooling','Connecting the selected agents and enabling session recording.','installing');
   let state=await applyClients(scope,selections,installPlugins,command,installDaemon,validateCapturePrincipal,['darwin','linux'].includes(platform)&&!process.env.OPENCRAWL_AUTH,daemonReady,captureMode,eligibility(selections).eligible,stopDaemon);
   if(state.pluginResults?.some(row=>row.captureAvailable===false))return completed(state);
   const available=availableHistory().filter(file=>capture.has(file.harness)),historyClients=clients.filter(client=>capture.has(client.id)&&client.history&&available.some(file=>file.harness===client.id));

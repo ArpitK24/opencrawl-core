@@ -1,7 +1,7 @@
 import {render,useApp,type Instance} from 'ink';
 import {useEffect,type ReactElement} from 'react';
 import {stripVTControlCharacters} from 'node:util';
-import {HostingScreen,WorkspaceScreen,NoticeScreen,type Notice,type Hosting,type WorkspaceAnswer} from './tui-view.tsx';
+import {WelcomeScreen,HostingScreen,WorkspaceScreen,NoticeScreen,type Notice,type Hosting,type WorkspaceAnswer} from './tui-view.tsx';
 import {SetupSelection} from './select-view.tsx';
 import type {SelectionScreen,SelectionItem} from './select.ts';
 
@@ -28,6 +28,7 @@ export function createSetupUi(){
  const close=()=>{app?.unmount();app?.cleanup();app=undefined;};
  return {
   signal:controller.signal,progress,close,
+  welcome:()=>new Promise<boolean>(resolve=>show(<WelcomeScreen key={++serial} onComplete={resolve}/>)),
   hosting:()=>new Promise<Hosting|null>(resolve=>show(<HostingScreen key={++serial} onComplete={resolve}/>)),
   workspace:()=>new Promise<WorkspaceAnswer>(resolve=>show(<WorkspaceScreen key={++serial} onComplete={resolve}/>)),
   choose:async(screen:SelectionScreen):Promise<SelectionItem[]|null>=>{

@@ -29,6 +29,7 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
  const ui=createUi?createUi():(await import('./tui.tsx')).createSetupUi();
  let destination:ReturnType<Options['readDestination']>|undefined;
  try{
+  if(!await ui.welcome())return 0;
   for(;;){
    try{
     destination??=options.readDestination();
