@@ -15,6 +15,15 @@
       "hooks": [
         {
           "type": "command",
+          "command": "/bin/sh \"$PLUGIN_ROOT/scripts/opencrawl-hook.sh\" privacy",
+          "timeout": 7
+        }
+      ]
+    },
+    {
+      "hooks": [
+        {
+          "type": "command",
           "command": "/bin/sh \"$PLUGIN_ROOT/scripts/opencrawl-hook.sh\" capture",
           "timeout": 5
         }

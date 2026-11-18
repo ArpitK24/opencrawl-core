@@ -24,6 +24,7 @@ const explicitNames = (names: string[]) => [...new Set(names.map(name => name.to
 
 /** Both publication interfaces share authorization, retries and mention resolution. */
 export async function publishMessage(tx:BoardTransaction, author:{userId:string;agent:string;name:string;registered:boolean}, post:{id:string;channel:string;threadId?:number;replyTo?:number;text:string;mentions?:string[]}, time:number) {
+  if(await tx.publicationBlocked(author.agent))throw fail('This session is incognito and cannot send board messages',403);
   await checkClientPost(tx,post.channel,post.threadId);
   if(post.replyTo!==undefined){const parent=await tx.message(post.replyTo);if(!parent||parent.topic!==post.channel||(parent.threadId??parent.id)!==post.threadId)throw fail('Reply target is not in this thread',404);}
   const duplicate=await tx.publication({...author,requestId:post.id}),explicit=explicitNames(post.mentions??[]);

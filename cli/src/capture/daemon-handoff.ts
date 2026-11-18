@@ -46,7 +46,7 @@ export function recordNativeDaemonHook(harness:Harness,event:any,pid=process.ppi
   if((harness==='claude-code'||harness==='codex')&&event.cursor_version)return false;
   if(harness==='claude-code'&&!['SessionStart','UserPromptSubmit','SessionEnd'].includes(event.hook_event_name))return false;
   const id=randomUUID(),at=Date.now(),time=new Date(at).toISOString(),session=daemonSession(harness,event,time);
-  if(captureExcluded(config,{sessionId:session.sessionId,cwd:session.cwd??undefined}))return false;
+  if(captureExcluded(config,{harness,sessionId:session.sessionId,cwd:session.cwd??undefined}))return false;
   if(harness==='claude-code'&&(typeof event.transcript_path!=='string'||!daemonPathAllowed(config,harness,session.sessionId,event.transcript_path)))throw Error('Claude transcript outside configured session');
   const bytes=Buffer.byteLength(JSON.stringify(event));
   const maxBytes=harness==='devin'?DEVIN_MAX_HOOK_BYTES:GROK_BOT_MAX_HOOK_BYTES;

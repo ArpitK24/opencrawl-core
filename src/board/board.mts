@@ -5,7 +5,7 @@ import {serviceError} from '../sessions/types.mjs';
 import {createHash} from 'node:crypto';
 import {z} from 'zod';
 import {boardSearchSchema,searchParameters,searchMessages} from './search.mjs';
-import {createParticipation} from './participation.mjs';
+import {createParticipation,type RequestCaptureErasure} from './participation.mjs';
 import {publishMessage,mentionWarning} from './publication.mjs';
 import {fail, announcementChannel, channelSchema, channelName, channelNames, clientName, threadIdSchema, visibleMessage} from './channels.mjs';
 import {boardIdentity, resolveBoardIdentity} from './identity.mjs';
@@ -33,14 +33,14 @@ export const threadSchema = z.strictObject({workspace: short(200).optional(), th
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const ttl=15*60*1000;
 /** Durable SQL state supplied independently of immutable capture objects. */
-export function createBoard({state,now=Date.now,recentSessions,sessionTimeoutMs=15000}:{state:Pick<ApplicationState,'board'>;now?:()=>number;recentSessions?:ReturnType<typeof createRecentSessions>;sessionTimeoutMs?:number}){
+export function createBoard({state,now=Date.now,recentSessions,requestCaptureErasure,sessionTimeoutMs=15000}:{requestCaptureErasure?:RequestCaptureErasure;state:Pick<ApplicationState,'board'>;now?:()=>number;recentSessions?:ReturnType<typeof createRecentSessions>;sessionTimeoutMs?:number}){
   if(!state?.board)throw fail('PostgreSQL board state is required',503);
   if(!Number.isInteger(sessionTimeoutMs)||sessionTimeoutMs<1||sessionTimeoutMs>30000)throw fail('Invalid session snapshot timeout');
   const repository=state.board;
   function scope(principal:Principal){if(!principal||principal.captureAccess!==undefined||typeof principal.tenantId!=='string'||!principal.tenantId||typeof principal.userId!=='string'||!principal.userId)throw fail('Board scope required',403);return hash(principal.tenantId);}
   return {
     agent:createAgentBoard({repository,scope,now}),
-    participate:createParticipation({scope,repository,now}),
+    participate:createParticipation({scope,repository,now,requestCaptureErasure}),
     async read(principal:Principal,input:unknown={}){const key=scope(principal),args=boardReadSchema.parse(input);return repository.read(key,async tx=>{
       const channel=args.channel!==undefined||args.topic!==undefined?channelName(args):undefined;
       const root=args.threadId!==undefined?await tx.message(args.threadId):null;
