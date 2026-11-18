@@ -11,7 +11,7 @@ import {nativeTerminal} from './native-terminal.ts';
 import {inspectCodexHooks,type CodexHookReview} from '../capture/codex-hooks.ts';
 import {readCaptureConfig} from '../capture/runtime.ts';
 
-type Options={values:Record<string,unknown>;readDestination:()=>{api?:string;explicit?:string};withOrigin:(api:string|undefined,run:()=>Promise<number>)=>Promise<number>;login:(api:string,ui:SetupUi)=>Promise<unknown>};
+type Options={action?:'run'|'resume';values:Record<string,unknown>;readDestination:()=>{api?:string;explicit?:string};withOrigin:(api:string|undefined,run:()=>Promise<number>)=>Promise<number>;login:(api:string,ui:SetupUi)=>Promise<unknown>};
 type Dependencies={createUi?:()=>SetupUi;setup?:typeof setupCommand;which?:(name:string)=>string|null;native?:(command:string,args:string[],ui:SetupUi,title?:string)=>Promise<number>;inspectCodex?:()=>Promise<CodexHookReview>;pause?:(signal:AbortSignal)=>Promise<void>};
 
 async function currentCodexReview():Promise<CodexHookReview>{
@@ -24,15 +24,17 @@ async function nativeCommand(command:string,args:string[],ui:SetupUi,title?:stri
  return nativeLogin(command,args,ui,title);
 }
 
-/** This entry point is exclusive to bare, interactive setup. Machine commands keep their contracts. */
+/** Human setup and resume share a terminal. Machine commands keep their contracts. */
 export async function runInteractiveSetup(options:Options,{createUi,setup=setupCommand,which=Bun.which,native=nativeCommand,inspectCodex=currentCodexReview,pause=async signal=>{await delay(3000,undefined,{signal});}}:Dependencies={}){
  const ui=createUi?createUi():(await import('./tui.tsx')).createSetupUi();
+ let action=options.action??'run';
  let destination:ReturnType<Options['readDestination']>|undefined;
  try{
-  if(!await ui.welcome())return 0;
+  if(action==='run'&&!await ui.welcome())return 0;
   for(;;){
    try{
     destination??=options.readDestination();
+    if(action==='resume'&&!destination.api)destination={api:DEFAULT_API_ORIGIN};
     while(!destination.api){
      const hosting=await ui.hosting();
      if(hosting===null)return 0;
@@ -44,9 +46,11 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
     }
     const api=apiOrigin(destination.api??''),explicit=destination.explicit;
     destination={api,explicit};
-    ui.progress('Connecting to your workspace','Checking your sign-in and available agents.',[api]);
+    if(action==='resume')ui.progress('Resuming setup','Checking your saved installation and workspace sign-in.',[api]);
+    else ui.progress('Connecting to your workspace','Checking your sign-in and available agents.',[api]);
     return await options.withOrigin(explicit,async()=>{
-     let result=await setup('run',api,options.values,{interactive:true,choose:ui.choose,onProgress:(title,description,phase)=>ui.progress(title,description,undefined,phase==='installing'),login:()=>options.login(api,ui)});
+     const onProgress=(title:string,description:string,phase?:'installing')=>ui.progress(title,description,undefined,phase==='installing');
+     let result=await setup(action,api,options.values,{interactive:true,choose:ui.choose,onProgress,login:()=>options.login(api,ui)});
      if(ui.signal.aborted)return 130;
      if(!result||'status' in result&&result.status==='cancelled')return 0;
      if('status' in result&&result.status==='recording_off'){
@@ -66,7 +70,7 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
      ui.progress('Checking setup','Waiting for native connection and session verification.');
      for(;;){
       const kind='nextAction' in result?result.nextAction?.kind:undefined;
-      if(!launched&&handoff&&kind!=='repair_worker'&&(handoff.client!=='antigravity'||kind==='native_tool')){
+      if(!launched&&handoff&&kind!=='repair_worker'&&kind!=='repair_plugin'&&(handoff.client!=='antigravity'||kind==='native_tool')){
        launched=true;
        displayedInstruction=undefined;
        if(handoff.client==='antigravity'){
@@ -97,6 +101,18 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
       }
       let next=await setup('wait',api,{json:true},{interactive:false});
       if(ui.signal.aborted)return 130;
+      if(next&&'nextAction' in next&&next.nextAction?.kind==='repair_plugin'){
+       const repair=next.nextAction;
+       const choice=await ui.action({title:repair.title??('Repair '+repair.client+' plugin installation'),description:repair.reason??repair.instruction,details:repair.reason&&repair.instruction!==repair.reason?[repair.instruction]:undefined,actions:[{id:'retry',label:'Retry installation'},{id:'close',label:'Close'}]});
+       if(choice!=='retry')return 2;
+       action='resume';
+       displayedInstruction=undefined;
+       ui.progress('Retrying plugin installation','Checking the selected plugins with your saved choices.');
+       const resumed=await setup('resume',api,{json:true},{interactive:false,onProgress});
+       if(!resumed)return 2;
+       result=resumed;
+       continue;
+      }
       if(next&&'nextAction' in next&&next.nextAction?.kind==='repair_worker'){
        displayedInstruction=undefined;
        const status=await setup('status',api,{json:true},{interactive:false});
@@ -104,7 +120,7 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
        const action=await ui.action({title:'Background capture needs attention',description:worker?.reason??next.nextAction.instruction,error:true,actions:[{id:'direct',label:'Record without a background service'},{id:'retry',label:'Retry service'},{id:'close',label:'Close'}]});
        if(action!=='retry'&&action!=='direct')return 2;
        ui.progress(action==='direct'?'Keeping session recording':'Starting background capture',action==='direct'?'Removing the background service. Your recording choices and queued uploads are kept.':'Retrying the service with your saved choices.',undefined,true);
-       const resumed=await setup('resume',api,{json:true,...(action==='direct'?{'capture-mode':'hook'}:{})},{interactive:false,...(action==='direct'?{confirmedCaptureMode:'hook' as const}:{})});
+       const resumed=await setup('resume',api,{json:true,...(action==='direct'?{'capture-mode':'hook'}:{})},{interactive:false,onProgress,...(action==='direct'?{confirmedCaptureMode:'hook' as const}:{})});
        if(!resumed)return 2;
        result=resumed;
        continue;

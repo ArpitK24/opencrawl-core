@@ -65,7 +65,8 @@ test('canonical Cursor rule delivers retrieval and native notifications for its 
 });
 test('native registration prepares a plugin and resumes without reinstalling before activation',()=>fixture(async(home,options,calls)=>{
  const first=await installSetupPlugins(origin,['codex'],options);expect(first.results[0]?.status).toBe('prepared');
- expect(calls.map(c=>c.slice(1,4))).toEqual([['plugin','list','--json'],['plugin','marketplace','add'],['plugin','add',identity.name+'@'+identity.marketplace],['plugin','list','--json']]);
+ expect(calls.filter(c=>c[2]==='list').map(c=>c.slice(1))).toEqual(Array(2).fill(['plugin','list','--marketplace',identity.marketplace,'--json']));
+ expect(calls.map(c=>c.slice(1,3))).toEqual([['plugin','list'],['plugin','marketplace'],['plugin','add'],['plugin','list']]);
  const directory=first.results[0]!.directory!,marketplace=read(join(directory,'../.agents/plugins/marketplace.json'));
  expect(marketplace.name).toBe(identity.marketplace);expect(marketplace.plugins[0].policy.authentication).toBe('ON_USE');
  const metadata=read(join(directory,'.opencrawl-setup-plugin.json'));
@@ -105,6 +106,22 @@ test('Cursor local discovery is prepared and names the exact plugin while preser
  expect(result.humanTasks[0]?.instruction).toContain('/plugin list');expect(result.humanTasks[0]?.instruction).toContain(identity.name);expect(result.humanTasks[0]?.instruction).toContain('local imports are blocked');
  expect(readFileSync(production,'utf8')).toBe(before);
 }));
+test('scoped Codex inventory preserves a conflicting marketplace in the local config',()=>fixture(async(home,options,calls)=>{
+ mkdirSync(join(home,'.codex'),{recursive:true});
+ writeFileSync(join(home,'.codex','config.toml'),'[plugins."'+identity.name+'@foreign"]\nenabled = true\n');
+ const result=await installSetupPlugins(origin,['codex'],options);
+ expect(result.results[0]?.status).toBe('pending');
+ expect(result.results[0]?.message).toContain('Another installation owns');
+ expect(calls.map(call=>call.slice(1))).toEqual([['plugin','list','--marketplace',identity.marketplace,'--json']]);
+}));
+
+test('Codex inventory timeouts name the operation without suggesting that access was denied',()=>fixture(async(_home,options)=>{
+ const progress:string[]=[];
+ const result=await installSetupPlugins(origin,['codex'],{...options,onProgress:line=>progress.push(line),runner:async()=>({code:1,timedOut:true})});
+ expect(result.results[0]?.message).toContain('more than 45 seconds to list plugins');
+ expect(progress).toContain('Reading the Codex plugin inventory.');
+}));
+
 test('foreign same-deployment identity is preserved, unrelated named plugins do not shadow new identity',()=>fixture(async(_home,options,calls)=>{
  const native=options.runner!;
  options.runner=async(command,args,env)=>{const result=await native(command,args,env);if(args[1]==='list'){const body=JSON.parse(result.stdout!);body.installed.push({id:'opencrawl@synced',enabled:true});return {...result,stdout:JSON.stringify(body)};}return result;};
