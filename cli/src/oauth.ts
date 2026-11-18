@@ -85,10 +85,10 @@ function tokens(body: any, now: number): Tokens {
   return {accessToken: body.access_token, refreshToken: body.refresh_token, expiresAt};
 }
 
-export async function pollDevice(auth: AuthConfig, device: Device, options: {fetcher?: typeof fetch; sleep?: (ms: number) => Promise<void>; now?: () => number;signal?:AbortSignal} = {}): Promise<Tokens> {
+export async function pollDevice(auth: AuthConfig, device: Device, options: {fetcher?: typeof fetch; sleep?: (ms: number) => Promise<void>; now?: () => number;signal?:AbortSignal;expiresAt?:number} = {}): Promise<Tokens> {
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? (async(ms:number)=>{const {setTimeout}=await import('node:timers/promises');await setTimeout(ms,undefined,{signal:options.signal});});
-  const deadline = now() + device.expires_in * 1000;
+  const deadline = options.expiresAt ?? now() + device.expires_in * 1000;
   let interval = device.interval * 1000;
   while (now() + interval < deadline) {
     options.signal?.throwIfAborted();

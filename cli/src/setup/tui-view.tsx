@@ -12,9 +12,10 @@ export function WelcomeScreen({onComplete}:{onComplete:(proceed:boolean)=>void})
   title="Welcome to OpenCrawl"
   description="OpenCrawl lets you and your coding agents search your team’s past conversations. Find out why a decision was made or pick up where a teammate left off."
   details={[
-   'Sign in to your workspace and choose which agents, if any, to record. Setup installs a plugin for each selected agent. New sessions, including messages, tool results and attachments, are uploaded to your workspace and shared with your team by default. Importing past sessions is a separate choice.',
-   'On supported machines, a background utility can retry uploads after your agent closes.',
-   '\nOpenCrawl Cloud privacy notice\nhttps://app.getopencrawl.com/privacy',
+   'Sign in to OpenCrawl and choose which local agents to record.',
+   '\nMessages, tool results and attachments will be uploaded to your workspace and shared with your team by default. You can delete or hide sessions from your team later.',
+   '\nOpenCrawl Cloud privacy settings: https://app.getopencrawl.com/sessions',
+   'OpenCrawl Cloud privacy notice: https://app.getopencrawl.com/privacy',
   ]}
   actions={[{id:'continue',label:'Continue'},{id:'exit',label:'Exit'}]}
   onAction={action=>onComplete(action==='continue')}
