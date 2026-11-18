@@ -12,13 +12,13 @@ Paste your workspace address when none is saved, then complete two short phases:
 2. Choose past sessions to import, or skip. Empty history needs no answer.
 Use arrows to move, Space to toggle, and Enter on a bottom button.
 Detected agents start selected; saved off choices stay off. History starts off.
-Installing a harness enables capture. New search-only/history-only installs are not offered.
+Each selected plugin records new sessions. You can import history with recording off.
 Existing installations retain their saved choices on setup resume.
 setup hooks inspects this installation's Codex hook trust locally without changing it.
 
   --plugins IDS   Harness IDs to install: comma-separated IDs, all, or none
   --forward IDS   Same harness IDs as --plugins; installation enables capture
-  --history IDS   Import available history for selected harnesses, all, or none
+  --history IDS   One-time import from supported harness IDs, all, or none
   --capture-mode hook|daemon  Capture in hooks, or use an optional eligible background service
   --plan-id ID    Bind consent to the exact scope, choices and history preview
   --yes          Apply only after the user confirms the displayed choices

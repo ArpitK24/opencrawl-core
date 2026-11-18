@@ -29,6 +29,7 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
  const ui=createUi?createUi():(await import('./tui.tsx')).createSetupUi();
  let destination:ReturnType<Options['readDestination']>|undefined;
  try{
+  if(!await ui.welcome())return 0;
   for(;;){
    try{
     destination??=options.readDestination();
@@ -54,11 +55,20 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
      if('nextAction' in result&&result.nextAction?.kind==='plugin_unavailable'){await ui.action({title:'Capture is not available yet',description:'This plugin version cannot record sessions yet. Your choices are saved.',actions:[{id:'close',label:'Close'}]});return 2;}
      const handoff='client' in result&&['claude-code','codex','antigravity'].includes(result.client)&&'agentPrompt' in result&&typeof result.agentPrompt==='string'?{client:result.client,prompt:result.agentPrompt,needsLogin:'nativeMcpLoginRequired' in result&&result.nativeMcpLoginRequired===true}:undefined;
      const history='history' in result?result.history:undefined;
+     if('selections' in result&&result.selections&&!Object.values(result.selections.plugins).some(Boolean)){
+      const state=history&&typeof history==='object'&&'state' in history?history.state:undefined;
+      const description=state==='complete'?'Your history import is complete.':state==='queued'||state==='running'?'Past sessions are importing in the background.':'Check setup status for your history import.';
+      await ui.action({title:'Setup saved',description,details:['New-session recording is off.'],actions:[{id:'done',label:'Done'}]});
+      return 0;
+     }
+     let displayedInstruction:string|undefined;
      let reconciled=false,launched=false;
+     ui.progress('Checking setup','Waiting for native connection and session verification.');
      for(;;){
       const kind='nextAction' in result?result.nextAction?.kind:undefined;
       if(!launched&&handoff&&kind!=='repair_worker'&&(handoff.client!=='antigravity'||kind==='native_tool')){
        launched=true;
+       displayedInstruction=undefined;
        if(handoff.client==='antigravity'){
         const agy=which('agy');
         if(!agy){
@@ -85,10 +95,10 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
         }
        }
       }
-      ui.progress('Checking setup','Waiting for native connection and session verification.');
       let next=await setup('wait',api,{json:true},{interactive:false});
       if(ui.signal.aborted)return 130;
       if(next&&'nextAction' in next&&next.nextAction?.kind==='repair_worker'){
+       displayedInstruction=undefined;
        const status=await setup('status',api,{json:true},{interactive:false});
        const worker=status&&'worker' in status?status.worker:undefined;
        const action=await ui.action({title:'Background capture needs attention',description:worker?.reason??next.nextAction.instruction,error:true,actions:[{id:'direct',label:'Record without a background service'},{id:'retry',label:'Retry service'},{id:'close',label:'Close'}]});
@@ -101,6 +111,7 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
       }
       if(!reconciled&&next&&'nextAction' in next&&next.nextAction?.kind==='reconcile_activation'){
        reconciled=true;
+       displayedInstruction=undefined;
        ui.progress('Finishing setup','Saving the verified native installation.');
        await setup('resume',api,{json:true},{interactive:false});
        next=await setup('wait',api,{json:true},{interactive:false});
@@ -121,7 +132,12 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
       const status=await setup('status',api,{json:true},{interactive:false});
       const tasks=status&&'humanTasks' in status?status.humanTasks:[];
       const task=tasks?.[0];
-      ui.progress('Finish connecting your agents','Your choices are saved. Setup will continue automatically.',task?[task.title,task.instruction]:['Open your selected agents to load OpenCrawl and finish their native connection.']);
+      const details=task?[task.title,task.instruction]:['Open your selected agents to load OpenCrawl and finish their native connection.'];
+      const instruction=JSON.stringify(details);
+      if(instruction!==displayedInstruction){
+       ui.progress('Finish connecting your agents','Your choices are saved. Setup will continue automatically.',details);
+       displayedInstruction=instruction;
+      }
       await pause(ui.signal);
      }
     });
