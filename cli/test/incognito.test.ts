@@ -16,6 +16,8 @@ test('invocation comes from the native prompt or a selected skill',()=>{
     expect(invokesPrivacy('claude-code',{hook_event_name:'PreToolUse',tool_name:'Skill',tool_input:{skill:'opencrawl:'+name}})).toBe(true);
     expect(invokesPrivacy('codex',{hook_event_name:'PostToolUse',prompt:'/'+name})).toBe(false);
   }
+  expect(invokesPrivacy('codex',{hook_event_name:'UserPromptSubmit',prompt:'/opencrawl-000000000000:oc-private'})).toBe(false);
+  expect(invokesPrivacy('antigravity',{hookEventName:'PreInvocation',lastUserInput:'/oc-private'})).toBe(false);
   expect(nativePrivacySession('claude-code',{session_id:'parent',agent_id:'child'})?.sessionId).toBe('parent:child');
   expect(nativePrivacySession('codex',{session_id:'parent',agent_id:'child'})?.sessionId).toBe('child');
 });

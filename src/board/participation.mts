@@ -3,7 +3,7 @@ import type {BoardRepository,BoardReader} from '../state/board.mjs';
 import {createHash} from 'node:crypto';
 import {z} from 'zod';
 import {fail,channelSchema,channelName,channelNames,clientName,threadIdSchema,visibleMessage} from './channels.mjs';
-import {publishMessage,mentionWarning} from './publication.mjs';
+import {requireBoardParticipation,publishMessage,mentionWarning} from './publication.mjs';
 import {currentSessionSchema} from '../search/context.mjs';
 import {boardIdentity} from './identity.mjs';
 
@@ -43,7 +43,13 @@ export function createParticipation({scope,repository,now,requestCaptureErasure}
       const session=args.currentSession;
       // A shared workload principal can represent multiple people's conversations.
       if(principal.owner)throw fail('A personal session owner is required for erasure',403);
-      await repository.transaction(key,tx=>tx.blockPublication(boardIdentity(principal.userId,session.sessionId)));
+      await repository.transaction(key,async tx=>{
+        const id=boardIdentity(principal.userId,session.sessionId);
+        await tx.blockPublication(id);
+        const participant=await tx.participant(id);
+        if(participant&&!participant.left)await tx.putParticipant(id,{...participant,left:true,pending:null});
+        await tx.removeAgent(id);
+      });
       if(!requestCaptureErasure)throw fail('Session erasure is unavailable',503);
       const result=await requestCaptureErasure(principal,session);
       return {session,boardBlocked:true,...result};
@@ -59,6 +65,7 @@ export function createParticipation({scope,repository,now,requestCaptureErasure}
     if(operation==='directory')return repository.read(key,async tx=>{const {agents,total}=await directory(tx,args.after);return {workspace:principal.tenantId,agents,through:(await tx.metadata()).head,total,next:args.after+agents.length<total?args.after+agents.length:null};});
     return repository.transaction(key,async tx=>{
       const {head}=await tx.metadata();let p=await tx.participant(id);
+      if(operation!=='leave'&&operation!=='inbox')await requireBoardParticipation(tx,id);
       if(operation==='register'||operation==='bootstrap'||operation==='profile'){
         const profiles=await tx.profiles(),requestedName=operation==='bootstrap'?undefined:args.name;
         if(requestedName)clientName(requestedName);

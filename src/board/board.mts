@@ -6,7 +6,7 @@ import {createHash} from 'node:crypto';
 import {z} from 'zod';
 import {boardSearchSchema,searchParameters,searchMessages} from './search.mjs';
 import {createParticipation,type RequestCaptureErasure} from './participation.mjs';
-import {publishMessage,mentionWarning} from './publication.mjs';
+import {requireBoardParticipation,publishMessage,mentionWarning} from './publication.mjs';
 import {fail, announcementChannel, channelSchema, channelName, channelNames, clientName, threadIdSchema, visibleMessage} from './channels.mjs';
 import {boardIdentity, resolveBoardIdentity} from './identity.mjs';
 import {boardFetchSchema, preview, textPage} from './disclosure.mjs';
@@ -120,6 +120,7 @@ export function createBoard({state,now=Date.now,recentSessions,requestCaptureEra
       if(args.workspace!==undefined&&args.workspace!==principal.tenantId)throw fail('Workspace scope mismatch',403);
       return repository.transaction(key,async tx=>{
         const identity=await resolveBoardIdentity(tx,principal.userId,args.agent),time=now(),agents=await tx.agents();
+        if(!args.leave)await requireBoardParticipation(tx,identity.agent);
         for(const [id,a]of Object.entries(agents))if(a.seen<=time-ttl||(identity.registered&&id!==identity.agent&&a.name.toLowerCase()===identity.name.toLowerCase()&&id===boardIdentity(principal.userId,a.name))){await tx.removeAgent(id);delete agents[id];}
         if(args.leave)await tx.removeAgent(identity.agent);
         else {if(!agents[identity.agent]&&Object.keys(agents).length>=128)throw fail('Active agent limit reached',429);await tx.putAgent(identity.agent,{name:identity.name,topics,seen:time});}

@@ -26,10 +26,14 @@ test('incognito fences every publication path and erases only the authenticated 
   assert.equal((await f.ingest.putBatch(owner,batch())).discarded,'session_deleted');
   const post={channel:'work',id:'post',text:'private'};
   for(const send of [
+    ()=>board.participate(owner,'bootstrap',{session:currentSession.sessionId,harness:'codex'}),
+    ()=>board.agent.presence(owner,{currentSession,name:'agent-'+owner.userId}),
+    ()=>board.presence(owner,{agent:'agent-'+owner.userId}),
     ()=>board.agent.post(owner,{currentSession,posts:[post]}),
     ()=>board.post(owner,{agent:'agent-'+owner.userId,posts:[post]}),
     ()=>board.participate(owner,'publish',{session:currentSession.sessionId,...post}),
   ])await assert.rejects(send,{status:403});
+  assert.equal((await board.participate(owner,'inbox',{session:currentSession.sessionId})).left,true);
   await board.agent.post(other,{currentSession,posts:[post]});
   assert.equal((await library.delete(owner,currentSession)).deleted,true);
   assert.equal((await board.participate(owner,'incognito',{currentSession})).pending,false);

@@ -31,15 +31,18 @@ export function nativePrivacySession(harness:string,event:unknown):PrivateSessio
 export function invokesPrivacy(harness:string,event:unknown,config?:CaptureConfig){
   if(!object(event))return false;
   const scoped=(text:string)=>{
-    const qualification=/opencrawl-([a-f0-9]{12}):/.exec(text.split(/\s/).find(v=>v.includes('opencrawl-'))??'');
+    const qualification=/opencrawl-([a-f0-9]{12}):/.exec(text);
     return !qualification||Boolean(config&&createHash('sha256').update(config.api).digest('hex').slice(0,12)===qualification[1]);
   };
   if(harness==='claude-code'&&event.hook_event_name==='PreToolUse'&&event.tool_name==='Skill'&&object(event.tool_input))
     return typeof event.tool_input.skill==='string'&&selectedSkill.test(event.tool_input.skill)&&scoped(event.tool_input.skill);
   const name=harness==='antigravity'?event.hookEventName:event.hook_event_name;
   if(name!==(harness==='antigravity'?'PreInvocation':harness==='cursor'?'beforeSubmitPrompt':'UserPromptSubmit'))return false;
-  const prompt=harness==='antigravity'?(config&&checkEvent('antigravity',event,config)?.message):event.prompt;
-  return typeof prompt==='string'&&[invoke,skillLink].some(pattern=>{const match=pattern.exec(prompt.trimStart());return match!==null&&scoped(match[0]);});
+  const prompt=harness==='antigravity'?event.lastUserInput:event.prompt;
+  if(typeof prompt!=='string')return false;
+  const match=invoke.exec(prompt.trimStart())??skillLink.exec(prompt.trimStart());
+  if(!match||!scoped(match[0]))return false;
+  return harness!=='antigravity'||Boolean(config&&checkEvent('antigravity',event,config)?.message);
 }
 
 export function markPrivate(config:CaptureConfig,session:PrivateSession){
