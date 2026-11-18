@@ -26,25 +26,21 @@ npm install -g @getopencrawl/cli
 
 ## Set up on macOS
 
-Set up Claude Code, Codex, and Cursor through the CLI:
+Run `opencrawl setup`. Choose OpenCrawl Cloud or enter your self-hosted workspace
+address, then follow the browser sign-in. Use the arrow keys to move, Space to
+toggle a checkbox, and Enter to select a button.
 
-```sh
-opencrawl setup
-```
+Choose the agents whose new sessions you want to record. To skip recording,
+choose **Do not record any sessions on this machine**. Setup asks about importing
+past sessions separately. Open the selected agent when prompted to finish its
+native connection. You can use the web app while setup is in progress.
 
-The CLI signs you in, installs the plugins you choose, and asks separately which
-past sessions to import. Your agent guides hook trust, MCP sign-in and verification
-in the same conversation. History imports run in the background.
-Cursor supports its native plugin and new-session recording; its past-session
-history is not offered for import.
+Agents can run `opencrawl setup --json` to get a plan and use `opencrawl setup apply`
+with the approved choices. Run `opencrawl setup status --local --json` to see saved
+choices or `opencrawl setup resume` to continue.
 
-Use `opencrawl setup status --local --json` to read saved choices and
-`opencrawl setup resume` to continue. Setup stays available in the workspace
-sidebar and never blocks the rest of the app. Other clients and platforms follow
-in a later rollout; existing capture and search commands remain available.
-
-For your own server, add `--api https://your-opencrawl.example`.
-See [onboarding](https://github.com/getopencrawl/opencrawl-core/blob/main/docs/onboarding.md) for the complete flow.
+See the [onboarding guide](https://github.com/getopencrawl/opencrawl-core/blob/main/docs/onboarding.md)
+for native agent requirements, installation, and verification.
 
 ## Agent board
 
@@ -68,10 +64,9 @@ background daemon migration for existing enabled capture. The old collector
 continues until the supervised daemon reports readiness. If service installation
 or startup fails, capture stays on the existing collector and a later invocation
 retries. Hooks do not wait for installation or startup. Disabled capture and
-custom launchers are preserved. Fresh macOS/Linux plugin setup also waits for
-readiness before switching capture. If startup fails, hooks keep using the existing
-collector; session context directs the agent to the installed skill for board
-registration. `opencrawl setup resume` retries without changing saved choices.
+custom launchers are preserved. On eligible Macs, setup offers background capture
+as a separate choice. A selected service must report readiness to finish setup.
+`opencrawl setup resume` retries without changing saved choices.
 
 Migration preserves destinations, identity, queued batches and transcript cursors.
 The daemon watches enrolled sessions and recovers pending hook notices without
@@ -80,17 +75,3 @@ fallback capture. Hosts without a usable supervisor keep that fallback.
 `opencrawl collect status --json` reports the selected worker.
 
 [Website](https://getopencrawl.com) · [Documentation](https://github.com/getopencrawl/opencrawl-core#readme) · [Issues](https://github.com/getopencrawl/opencrawl-core/issues)
-
-### Cursor setup hooks
-
-CLI-managed Cursor setup installs deployment-specific hooks in the native user
-`hooks.json`. Its local plugin supplies MCP, skills and rules without duplicate
-executable plugin hooks. This does not require enabling Cursor's broad third-party
-imports. Setup preserves other deployments, unrelated hooks, and disabled hook
-choices. Recording still requires the saved forward-recording selection. Resume
-updates owned entries; deselection or `collect uninstall` removes only those
-entries and preserves queued data. Native startup and MCP verification remain
-separate from plugin discovery.
-
-Generated setup guides and handoffs use the installation's owned launcher, which
-binds its configuration, data and cache directories without copying credentials.

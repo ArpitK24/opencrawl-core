@@ -81,3 +81,32 @@ export async function removeCursorSetupHooks(api:string,root?:string){
  if(!existsSync(receipt))return;
  await reconcileCursorNativeHooks(root,join(root,'plugins','local','opencrawl-'+key),receipt);
 }
+
+/** The standalone Cursor archive supplies its own hooks. Retire only unchanged
+ * callbacks from the same deployment's older CLI-managed installation. */
+export async function installCursorArchive(root:string,directory:string,receipt:string,unchanged:boolean,install:()=>void){
+ if(existsSync(root)&&lstatSync(root).isSymbolicLink())throw new CliError('CURSOR_HOOK_CONFLICT','Cursor configuration must be an ordinary directory.');
+ await withFileLock(join(root,'.opencrawl-hooks.lock'),async()=>{
+  const file=join(root,'hooks.json'),before=read(file),saved=read(receipt);
+  if(before.enabled===false)throw new CliError('CURSOR_HOOK_DISABLED','Recording hooks are disabled in Cursor. The existing choice was preserved.');
+  if(before.version!==undefined&&before.version!==1)throw new CliError('CURSOR_HOOK_CONFLICT','The existing Cursor hooks use an unknown format. Their configuration was preserved.');
+  const current=hooks(before.hooks),owned=hooks(saved.hooks);
+  if(!Object.keys(saved).length){install();return;}
+  if(saved.file!==file||saved.directory!==directory)throw new CliError('CURSOR_HOOK_CONFLICT','The existing Cursor hooks belong to a different installation.');
+  const next={...current};
+  for(const [event,entries] of Object.entries(owned)){
+   const rows=current[event]??[];
+   for(const entry of entries){
+    const matching=rows.filter(row=>row.command===entry.command);
+    if(!matching.length&&unchanged)continue; // Retry after the hooks file was committed.
+    if(matching.length!==1||!isDeepStrictEqual(matching[0],entry)||entry.enabled===false)
+     throw new CliError('CURSOR_HOOK_CONFLICT','A previously installed Cursor hook was changed or disabled. Its configuration was preserved.');
+   }
+   next[event]=rows.filter(row=>!entries.some(entry=>isDeepStrictEqual(entry,row)));
+   if(!next[event].length)delete next[event];
+  }
+  install();
+  if(!isDeepStrictEqual(current,next))atomicJson(file,{...before,hooks:next});
+  if(Object.keys(owned).length)atomicJson(receipt,{file,directory,hooks:{}});
+ });
+}

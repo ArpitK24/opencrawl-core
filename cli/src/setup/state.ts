@@ -3,6 +3,8 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {atomicJson,configDir,withSessionLock} from '../session.ts';
 import {CliError} from '../oauth.ts';
+import type {CaptureMode} from './published-plugins.ts';
+import type {PluginResult} from './plugins.ts';
 import type {HistoryFile} from '../capture/backfill.ts';
 
 export type SetupScope={api:string;tenantId:string;userId:string};
@@ -11,7 +13,7 @@ export type SetupSelections={plugins:Record<string,boolean>;forward:Record<strin
 export type SetupClient={id:string;label:string;detected:boolean;plugin:boolean;forward:boolean;history:boolean;historyFiles:number;historyBytes:number};
 export type HistoryJob={id:string;clients:string[];files:HistoryFile[];state:'queued'|'running'|'complete'|'failed'|'paused';completedClients:string[];createdAt:string;updatedAt:string;progress?:{client:string;completed:number;total:number;uploaded:number};error?:string;pid?:number};
 export type SetupWorker={kind:string;status?:string;supervised:boolean;harnesses:string[];startup:boolean;command?:string[];environment?:Record<string,string>;reason?:string};
-export type SetupState={schemaVersion:1;scope:SetupScope;selections:SetupSelections;acceptedAt:string;installationId?:string;machine?:{id:string;label:string};historyJob?:HistoryJob;worker?:SetupWorker;pluginResults?:{client:string;status:string;message?:string}[];humanTasks?:SetupHumanTask[]};
+export type SetupState={schemaVersion:1;scope:SetupScope;selections:SetupSelections;captureMode?:CaptureMode;acceptedAt:string;installationId?:string;machine?:{id:string;label:string};historyJob?:HistoryJob;worker?:SetupWorker;pluginResults?:{client:string;status:string;message?:string;preparedAt?:string;captureAvailable?:boolean;daemonHandoff?:boolean;source?:PluginResult['source']}[];humanTasks?:SetupHumanTask[]};
 export const historyBenefit='Import past sessions so your agents can find previous decisions, fixes, and context.';
 export const scopeKey=(scope:SetupScope)=>createHash('sha256').update(JSON.stringify([scope.api,scope.tenantId,scope.userId])).digest('hex');
 export const setupRoot=()=>join(configDir(),'setup');
@@ -19,7 +21,7 @@ export function statePath(key:string){if(!/^[a-f0-9]{64}$/.test(key))throw new C
 export function readStateKey(key:string):SetupState|null {
   let value:SetupState;
   try{value=JSON.parse(readFileSync(statePath(key),'utf8'));}catch(e){if((e as NodeJS.ErrnoException).code==='ENOENT')return null;throw new CliError('SETUP_STATE_INVALID','Saved setup choices could not be read. Preserve this file and repair it before continuing.');}
-  if(value.schemaVersion!==1||!value.scope?.api||!value.scope.tenantId||!value.scope.userId||scopeKey(value.scope)!==key||!value.selections||!['plugins','forward','history'].every(k=>{const group=value.selections[k as keyof SetupSelections];return group&&typeof group==='object'&&!Array.isArray(group)&&Object.values(group).every(v=>typeof v==='boolean');}))throw new CliError('SETUP_STATE_INVALID','Saved setup scope or choices are invalid; no changes were made.');
+  if(value.captureMode!==undefined&&!['hook','daemon'].includes(value.captureMode)||value.schemaVersion!==1||!value.scope?.api||!value.scope.tenantId||!value.scope.userId||scopeKey(value.scope)!==key||!value.selections||!['plugins','forward','history'].every(k=>{const group=value.selections[k as keyof SetupSelections];return group&&typeof group==='object'&&!Array.isArray(group)&&Object.values(group).every(v=>typeof v==='boolean');}))throw new CliError('SETUP_STATE_INVALID','Saved setup scope or choices are invalid; no changes were made.');
   return value;
 }
 export const readSetupState=(scope:SetupScope)=>readStateKey(scopeKey(scope));
@@ -32,7 +34,7 @@ export function defaultSelections(clients:SetupClient[],previous?:SetupSelection
   const result:SetupSelections={plugins:{...previous?.plugins},forward:{...previous?.forward},history:{...previous?.history}};
   for(const client of clients)for(const group of ['plugins','forward','history'] as const){
     const supported=group==='plugins'?client.plugin:client[group];
-    if(result[group][client.id]===undefined)result[group][client.id]=supported&&(group==='history'?client.historyFiles>0:group==='forward'&&legacyForward!==undefined?legacyForward.includes(client.id):client.detected);
+    if(result[group][client.id]===undefined)result[group][client.id]=supported&&(group==='history'?false:group==='forward'&&legacyForward!==undefined?legacyForward.includes(client.id):client.detected);
   }
   return result;
 }

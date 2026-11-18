@@ -1,0 +1,47 @@
+{
+  "repository": "getopencrawl/opencrawl-plugins",
+  "ref": "68d68c4253827f6ff4992d7abdb045d317e0b9a6",
+  "schemaVersion": 1,
+  "bindingSchemaVersion": 1,
+  "packages": [
+    {
+      "harness": "claude-code",
+      "name": "opencrawl-local-claude-code",
+      "path": "local/claude-code",
+      "version": "0.1.0",
+      "capabilities": "capabilities.json",
+      "files": {
+        ".claude-plugin/plugin.json": {
+          "sha": "3c857ebaa4cca9a28734a9c6c3f661bfb28b22c3",
+          "bytes": 210
+        },
+        ".mcp.json": {
+          "sha": "1cb85dce603261dbefc8fd47f4045f2f160867c3",
+          "bytes": 19
+        },
+        "LICENSE": {
+          "sha": "5deec52e8feebddef39d57b4ee5509a561c56dbd",
+          "bytes": 1079
+        },
+        "README.md": {
+          "sha": "5b5f375ae0f022561ccf873c705dd0a09db1e9a6",
+          "bytes": 388
+        },
+        "capabilities.json": {
+          "sha": "561246b3e7e46c4e08f9838da6fee9dee5e19fe6",
+          "bytes": 256
+        },
+        "mcp.json": {
+          "sha": "1cb85dce603261dbefc8fd47f4045f2f160867c3",
+          "bytes": 19
+        },
+        "skills/opencrawl/SKILL.md": {
+          "sha": "ad08ffa250fc33332322c72b9e1297ef4dcc4a9c",
+          "bytes": 5259
+        }
+      },
+      "captureAvailable": false,
+      "daemonHandoff": false
+    }
+  ]
+}

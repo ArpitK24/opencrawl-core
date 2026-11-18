@@ -44,7 +44,8 @@ try {
     const stderr = await new Response(result.stderr).text();
     if (await result.exited) throw new Error(`Packaged install failed: ${stderr}`);
     const command = [join(install, 'node_modules/@getopencrawl/cli/bin/opencrawl.exe')];
-    if (run([...command, '--version']).trim() !== pkg.version) throw new Error('Installed version mismatch');
+    const installedVersion = run([...command, '--version']).trim();
+    if (installedVersion !== pkg.version) throw new Error('Expected installed version '+pkg.version+', received '+JSON.stringify(installedVersion.slice(0,80)));
     const shim=join(install,'node_modules/.bin',process.platform==='win32'?'opencrawl.cmd':'opencrawl');
     const direct=process.platform==='win32'?[join(process.env.SystemRoot||'C:\\Windows','System32','cmd.exe'),'/d','/s','/c',`""${shim}" --version"`]:[shim,'--version'];
     if(run(direct,undefined,{PATH:join(scratch,'no-runtimes')}).trim()!==pkg.version)throw new Error('npm command shim still requires Node');

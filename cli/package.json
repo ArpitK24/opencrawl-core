@@ -6,7 +6,12 @@
   "bugs": {
     "url": "https://github.com/getopencrawl/opencrawl-core/issues"
   },
-  "keywords": ["opencrawl", "cli", "mcp", "coding-agents"],
+  "keywords": [
+    "opencrawl",
+    "cli",
+    "mcp",
+    "coding-agents"
+  ],
   "type": "module",
   "license": "Apache-2.0",
   "bin": {
@@ -40,6 +45,14 @@
     "@modelcontextprotocol/client": "2.4.0",
     "@modelcontextprotocol/server": "2.4.0",
     "@types/bun": "1.3.14",
-    "typescript": "5.9.3"
+    "@types/react": "19.3.0",
+    "@types/yauzl": "3.4.0",
+    "ink": "8.0.0",
+    "ink-testing-library": "4.0.0",
+    "ink-text-input": "6.0.0",
+    "react": "19.3.1",
+    "react-devtools-core": "8.0.0",
+    "typescript": "5.9.3",
+    "yauzl": "3.4.0"
   }
 }
