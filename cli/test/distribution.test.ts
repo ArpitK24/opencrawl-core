@@ -4,7 +4,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createRequire} from 'node:module';
 import {createHash} from 'node:crypto';
-import {nativeChannel, nativeDownloads} from '../src/native-channel.ts';
+import {nativeChannelAt, nativeDownloads} from '../src/native-channel.ts';
 import {installNativeArchive} from '../src/update.ts';
 import {installBinary,nativeBin,nativeRoot,selectedBinary,update,cacheRoot} from '../src/distribution.ts';
 const {installNpm:install}=createRequire(import.meta.url)('../bin/opencrawl.cjs');
@@ -47,7 +47,8 @@ test('a custom command is preserved; an interrupted installation cannot become s
 test('native update selection keeps a newer installation and persists its check without npm',()=>fixture(async dir=>{
   await installBinary(executable(join(dir,'download')),'1.2.0');let installs=0;
   const checksums=Object.fromEntries(['darwin-arm64','darwin-x64','linux-arm64','linux-x64','win32-x64'].map(p=>['opencrawl-'+p+'.tgz','f'.repeat(64)]));
-  const result=await update({force:true,current:'1.0.0',fetcher:Object.assign(async(url:string|URL|Request)=>{expect(String(url)).toBe(nativeChannel);return Response.json({version:'1.1.0',revision:'a'.repeat(40),checksums});},{preconnect:()=>{}}),install:async()=>{installs++;}});
+  const now=Date.now();
+  const result=await update({force:true,current:'1.0.0',now:()=>now,fetcher:Object.assign(async(url:string|URL|Request)=>{expect(String(url)).toBe(nativeChannelAt(now));return Response.json({version:'1.1.0',revision:'a'.repeat(40),checksums});},{preconnect:()=>{}}),install:async()=>{installs++;}});
   expect(result).toEqual({updated:false,version:'1.2.0'});expect(installs).toBe(0);
   expect(JSON.parse(readFileSync(join(cacheRoot(),'update.json'),'utf8')).nextCheckAt).toBeGreaterThan(Date.now());
 }));

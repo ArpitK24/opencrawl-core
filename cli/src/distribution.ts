@@ -6,7 +6,7 @@ import {spawnSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {atomicJson,atomicFile,withFileLock} from './session.ts';
 import {CliError} from './oauth.ts';
-import {nativeChannel, parseNativeRelease, type NativeRelease} from './native-channel.ts';
+import {nativeChannelAt, parseNativeRelease, type NativeRelease} from './native-channel.ts';
 
 declare const OPENCRAWL_VERSION:string;
 export const version=typeof OPENCRAWL_VERSION==='string'?OPENCRAWL_VERSION:'0.2.0-dev';
@@ -55,7 +55,7 @@ export async function update({force=false,fetcher=fetch,install,signal,now=Date.
   const stateFile=join(cacheRoot(),'update.json'),before=selectedBinary(current).version;
   if(!force&&!updateDue(read(stateFile),now()))return {updated:false,version:before};
   const managed=read(join(nativeRoot(),'installation.json'))?.managed===true;
-  const response=await fetcher(managed ? nativeChannel : REGISTRY+'/@getopencrawl%2fcli/'+CHANNEL,{redirect:'error',signal:signal?AbortSignal.any([signal,AbortSignal.timeout(10_000)]):AbortSignal.timeout(10_000)});
+  const response=await fetcher(managed ? nativeChannelAt(now()) : REGISTRY+'/@getopencrawl%2fcli/'+CHANNEL,{redirect:'error',signal:signal?AbortSignal.any([signal,AbortSignal.timeout(10_000)]):AbortSignal.timeout(10_000)});
   if(!response.ok)throw new CliError('UPDATE_UNAVAILABLE','Could not check the OpenCrawl release channel. Retry opencrawl update.');
   const latest=await response.json();
   const native=managed ? parseNativeRelease(latest) : undefined;
