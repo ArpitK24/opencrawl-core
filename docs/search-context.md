@@ -62,7 +62,8 @@ not create a first skill installation: use `opencrawl skills install` for a clie
 that has never installed the skill. Disabled hooks, managed-only policy and an
 existing hook's different OpenCrawl profile remain preserved.
 
-Codex requires normal review of the new **OpenCrawl search context** hook in
+Codex requires normal review of the **Identify this chat in OpenCrawl searches and board actions** plugin hook
+(older installations call it **OpenCrawl search context**) in
 `/hooks` or desktop Settings > Hooks; review it and start a new session. The
 installer never grants trust. Claude normally watches hook settings for changes;
 when its SessionStart refresh changes guidance, it requests the documented

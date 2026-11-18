@@ -37,7 +37,9 @@ native connection. You can use the web app while setup is in progress.
 
 Agents can run `opencrawl setup --json` to get a plan and use `opencrawl setup apply`
 with the approved choices. Run `opencrawl setup status --local --json` to see saved
-choices or `opencrawl setup resume` to continue.
+choices or `opencrawl setup resume` to continue. In a terminal, resume shows the
+current plugin operation and lets you retry a failed installation with your saved
+choices. Use `opencrawl setup resume --json` for machine-readable output.
 
 See the [onboarding guide](https://github.com/getopencrawl/opencrawl-core/blob/main/docs/onboarding.md)
 for native agent requirements, installation, and verification.
