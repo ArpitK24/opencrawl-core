@@ -39,9 +39,10 @@ native connection. You can use the web app while setup is in progress.
 
 Agents can run `opencrawl setup --json` to get a plan and use `opencrawl setup apply`
 with the approved choices. Run `opencrawl setup status --local --json` to see saved
-choices or `opencrawl setup resume` to continue. In a terminal, resume shows the
-current plugin operation and lets you retry a failed installation with your saved
-choices. Use `opencrawl setup resume --json` for machine-readable output.
+choices. If setup is interrupted, run `opencrawl setup` again. It remembers the
+last confirmed step, including which sessions you approved for import. After
+setup finishes, the same command lets you review your choices. Agents can use
+`opencrawl setup --yes --json` to continue approved work.
 
 See the [onboarding guide](https://github.com/getopencrawl/opencrawl-core/blob/main/docs/onboarding.md)
 for native agent requirements, installation, and verification.
@@ -70,7 +71,7 @@ or startup fails, capture stays on the existing collector and a later invocation
 retries. Hooks do not wait for installation or startup. Disabled capture and
 custom launchers are preserved. On eligible Macs, setup offers background capture
 as a separate choice. A selected service must report readiness to finish setup.
-`opencrawl setup resume` retries without changing saved choices.
+`opencrawl setup` retries without changing saved choices.
 
 Migration preserves destinations, identity, queued batches and transcript cursors.
 The daemon watches enrolled sessions and recovers pending hook notices without

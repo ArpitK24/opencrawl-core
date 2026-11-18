@@ -14,7 +14,7 @@ in the sidebar so you can return to it at any time.
 
 Claude Code, Codex, Cursor and Antigravity appear in Mac setup. Available history
 and native approval steps vary by agent. To continue an interrupted setup,
-run `opencrawl setup resume`. To read the choices saved on this machine,
+run `opencrawl setup`. To read the choices saved on this machine,
 run `opencrawl setup status --local --json`.
 
 ## Run setup on someone's behalf

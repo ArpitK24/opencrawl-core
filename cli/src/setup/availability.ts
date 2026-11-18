@@ -1,7 +1,7 @@
 import {CliError} from '../oauth.ts';
 import {selectGroup,type SetupClient,type SetupSelections} from './state.ts';
 
-export const setupAvailabilityMessage='New setup is available for Claude Code, Codex, Antigravity, and Cursor on macOS. Existing installations can use setup resume, status, and collect uninstall.';
+export const setupAvailabilityMessage='New setup is available for Claude Code, Codex, Antigravity, and Cursor on macOS. Existing installations can continue setup with their saved choices.';
 export const newSetupClientAvailable=(client:string,platform:NodeJS.Platform=process.platform)=>platform==='darwin'&&['claude-code','codex','antigravity','cursor'].includes(client);
 
 /** Saved true choices may continue; discovery and an environment flag are not consent. */

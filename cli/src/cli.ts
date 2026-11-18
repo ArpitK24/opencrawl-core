@@ -313,7 +313,9 @@ export async function main(args = process.argv.slice(2)) {
       let explicitDestination=(parsed.values.api as string|undefined)??process.env.OPENCRAWL_API_URL;
       if(humanSetup){
         const {runInteractiveSetup,showDeviceCode}=await import('./setup/interactive.ts');
+        const {terminalSetupEntry}=await import('./setup/entry.ts');
         return runInteractiveSetup({
+          entry:()=>terminalSetupEntry(explicitDestination),
           action:parsed.positionals[1]==='resume'?'resume':'run',values:parsed.values,
           readDestination:()=>({api:explicitDestination??readCaptureConfig()?.api,explicit:explicitDestination}),
           withOrigin:withEnvironmentTokenOrigin,

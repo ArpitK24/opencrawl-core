@@ -78,7 +78,7 @@ test.skipIf(process.platform === 'win32')('setup shows the code before opening a
     const childEnv = {...env, PATH: directory, OPENED: opened, SSH_CONNECTION: mode === 'ssh' ? 'fixture' : '', SSH_TTY: ''};
     let output = '';
     // Fresh setup is offered on macOS. Resuming uses the same interactive sign-in on Linux.
-    const resume = process.platform !== 'darwin' || mode === 'ssh';
+    const resume = process.platform !== 'darwin';
     const args = ['setup', ...(resume ? ['resume'] : []), '--api', api, ...(mode === 'no-browser' ? ['--no-browser'] : [])];
     const child = Bun.spawn([process.execPath, resolve(import.meta.dir, '../src/cli.ts'), ...args], {
       env: childEnv,
@@ -90,11 +90,12 @@ test.skipIf(process.platform === 'win32')('setup shows the code before opening a
       expect(output).toContain(text);
     };
     try {
-      if (!resume) {
+      if (!resume && mode === 'cancel') {
         await waitFor('› [ Continue ]');
         child.terminal!.write('\r');
       }
       await waitFor('Device code: TEST-CODE');
+      if (mode !== 'cancel') expect(output).not.toContain('Welcome to OpenCrawl');
       if (local) {
         await waitFor('› [ Open browser ]');
         await Bun.sleep(80);
