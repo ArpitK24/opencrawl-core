@@ -64,9 +64,9 @@ img { max-width: 100%; }
 .oc-account-copy > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--text-sm); font-weight: 400; line-height: 1.4; }
 .oc-account-trigger > .oc-icon { color: var(--text); }
 .oc-account-details { position: fixed; inset: auto auto calc(var(--space-16) + env(safe-area-inset-bottom) + var(--space-2)) var(--space-2); margin: 0; width: calc(var(--console-sidebar-width) - var(--space-4)); max-width: calc(100vw - var(--space-4)); max-height: calc(100dvh - var(--space-16) - var(--space-8) - env(safe-area-inset-bottom)); overflow-y: auto; padding: var(--space-1); border: 1px solid var(--line-strong); border-radius: var(--radius-panel); background: var(--surface-subtle); color: var(--text); overflow-wrap: anywhere; }
-.oc-account-settings.oc-button { display: flex; width: 100%; justify-content: flex-start; padding-inline: var(--space-3); color: var(--text); }
-.oc-account-settings > span { flex: 1; text-align: left; }
-.oc-account-settings > .oc-icon { color: var(--muted); }
+.oc-account-link.oc-button { display: flex; width: 100%; justify-content: flex-start; padding-inline: var(--space-3); color: var(--text); }
+.oc-account-link > span { flex: 1; text-align: left; }
+.oc-account-link > .oc-icon { color: var(--muted); }
 .oc-account-actions { margin-top: var(--space-1); padding-top: var(--space-1); border-top: 1px solid var(--line); }
 .oc-account-actions .oc-button { width: 100%; justify-content: flex-start; padding-inline: var(--space-3); }
 .oc-account-trigger[aria-expanded="true"] > .oc-icon { transform: rotate(180deg); }
@@ -573,7 +573,7 @@ img { max-width: 100%; }
 .oc-search-context dd { margin: 0; overflow-wrap: anywhere; }
 .oc-search-excerpt { max-width: 75ch; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--text-body); line-height: var(--leading-prose); }
 .oc-search-excerpt mark { color: var(--strong); background: var(--selection); }
-.oc-external-link { display: inline-flex; align-items: center; gap: var(--space-1); font-size: var(--text-sm); }
+:where(.oc-external-link) { display: inline-flex; align-items: center; gap: var(--space-1); font-size: var(--text-sm); }
 .oc-search-source-link { display: inline-flex; align-items: center; gap: var(--space-1); min-height: var(--control-height); margin-top: var(--space-2); font-size: var(--text-sm); }
 .oc-search-results > .oc-disclosure { margin-top: var(--space-6); padding-top: var(--space-4); border-top: 1px solid var(--line); }
 @media (max-width: 800px) {

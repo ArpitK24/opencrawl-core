@@ -385,7 +385,7 @@ photo. The adjacent account name supplies its accessible identity. Image request
 omit referrers; the hosted shell permits the WorkOS image CDN without widening
 the self-hosted policy.
 One trailing chevron opens the native account popover above the row. Keep the
-popover to Settings and runtime account actions such as Sign out; do not repeat
+popover to Settings, Docs and runtime account actions such as Sign out; do not repeat
 email or role in a static summary. Keep the
 workspace name here instead of repeating it beneath Brand. Outside clicks and
 Escape close the account menu. Inside mobile navigation, the first Escape closes
@@ -552,7 +552,8 @@ or top padding. Do not stack two rules below the tabs.
 
 The docked account row opens a native popover with the existing subtle surface,
 strong hairline boundary and panel radius. One full-width Settings link pairs the
-shared gear icon with a trailing chevron; Sign out is a separate quiet action with
+shared gear icon with a trailing chevron. Docs follows it and opens the documentation
+in a new tab. Sign out is a separate quiet action with
 its shared icon. Keep identity in the docked row and omit the static email/role
 summary. Do not open an empty popover when no actions are available.
 Use the established hover and focus treatments. The account chevron turns while
