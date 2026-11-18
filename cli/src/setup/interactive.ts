@@ -54,19 +54,24 @@ async function connectNativeClient(
     if(ui.signal.aborted)return 130;
    }
   }
-  const exitCommand=codex?'/quit':'/exit';
+  const handoff=codex?{
+   description:needsLogin?'Press Enter to open the sign-in page in your browser.':'Press Enter to open Codex and check the connection.',
+   details:[...(needsLogin?['Approve access, then return to this terminal.','Codex will open and check the connection for you.','']:[]),'When Codex says it’s connected, type /quit to return to setup.'],
+   button:needsLogin?'Open browser':'Open Codex',
+  }:{
+   description:needsLogin?'Approve access in your browser. A Claude Code session will then open in this terminal.':'A Claude Code session will open in this terminal.',
+   details:['OpenCrawl will pause while Claude checks the connection.','When Claude says it’s connected, press Ctrl+C to close the session and continue setup.'],
+   button:needsLogin?'Sign in and open Claude Code':'Open Claude Code',
+  };
   const choice=await ui.action({
-   title:'Connect '+label+' to OpenCrawl',
-   description:needsLogin?'Press Enter to open the sign-in page in your browser.':'Press Enter to open '+label+' and check the connection.',
-   details:[
-    ...(needsLogin?['Approve access, then return to this terminal.',label+' will open and check the connection for you.','']:[]),
-    'When '+label+' says it’s connected, type '+exitCommand+' to return to setup.'
-   ],
-   actions:[{id:'connect',label:needsLogin?'Open browser':'Open '+label},{id:'later',label:'Finish later'}]
+   title:'Connect '+label+' to OpenCrawl',description:handoff.description,details:handoff.details,
+   actions:[{id:'connect',label:handoff.button},{id:'later',label:'Finish later'}]
   });
   if(choice!=='connect')return choice==='later'?0:2;
-  const launch=codex?launchCodexSetup:launchClaudeSetup;
-  const code=await launch(executable,{api,prompt:nativeSetupPrompt(api,client),needsLogin},execute,message=>ui.progress('Continue in '+label,message));
+  const options={api,prompt:nativeSetupPrompt(api,client),needsLogin};
+  const notify=(message:string)=>ui.progress('Continue in '+label,message);
+  const code=codex?await launchCodexSetup(executable,options,execute,notify)
+   :await launchClaudeSetup(executable,{...options,returnToSetup:true},execute,notify);
   if(ui.signal.aborted)return 130;
   if(code!==0)throw new CliError('NATIVE_SETUP_PENDING',label+' did not finish connecting. Retry to use your saved choices.',code);
  }

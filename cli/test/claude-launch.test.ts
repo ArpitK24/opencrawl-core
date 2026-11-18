@@ -12,7 +12,7 @@ test('native browser approval finishes before Claude receives the setup task',as
 });
 test('cancelled native login never launches Claude or retries approval',async()=>{
  const calls:string[][]=[];
- expect(await launchClaudeSetup('claude',{api:'http://localhost:8092',prompt:'continue',needsLogin:true},async(_,args)=>{calls.push(args);return 130;})).toBe(130);
+ expect(await launchClaudeSetup('claude',{api:'http://localhost:8092',prompt:'continue',needsLogin:true,returnToSetup:true},async(_,args)=>{calls.push(args);return 130;})).toBe(130);
  expect(calls).toHaveLength(1);
 });
 test('previously observed native setup does not demand another login',async()=>{

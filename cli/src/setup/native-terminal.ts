@@ -3,7 +3,7 @@ import {spawn} from 'node:child_process';
 /** Forward native interactive input after Ink has suspended its terminal ownership. */
 export async function nativeTerminal(command:string,args:string[]){
  if(process.platform==='win32')return new Promise<number>((resolve,reject)=>{
-  const child=spawn(command,args,{stdio:'inherit',env:process.env});child.once('error',reject);child.once('exit',code=>resolve(code??1));
+  const child=spawn(command,args,{stdio:'inherit',env:process.env});child.once('error',reject);child.once('exit',(code,signal)=>resolve(signal==='SIGINT'?130:code??1));
  });
  const child=Bun.spawn([command,...args],{env:process.env,terminal:{cols:process.stderr.columns||80,rows:process.stderr.rows||24,data(_terminal,data){process.stderr.write(data);}}});
  const raw=process.stdin.isRaw;

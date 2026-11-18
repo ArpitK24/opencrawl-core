@@ -317,9 +317,11 @@ test('multi-agent setup resumes the approved browser action and advances to the 
    screens.push(screen.title);
    expect(JSON.stringify(screen)).not.toMatch(/installationId|proofId|verify_installation/);
    if(screen.title==='Connect Claude Code to OpenCrawl'){
-    expect(screen.description).toBe('Press Enter to open the sign-in page in your browser.');
-    expect(screen.actions?.map(action=>action.label)).toEqual(['Open browser','Finish later']);
-    expect(screen.details).toContain('When Claude Code says it’s connected, type /exit to return to setup.');
+    const needsLogin=calls.length===0;
+    expect(screen.description).toContain(needsLogin?'in your browser. A Claude Code session will then open in this terminal.':'A Claude Code session will open in this terminal.');
+    expect(screen.actions?.map(action=>action.label)).toEqual([needsLogin?'Sign in and open Claude Code':'Open Claude Code','Finish later']);
+    expect(screen.details).toContain('OpenCrawl will pause while Claude checks the connection.');
+    expect(screen.details).toContain('When Claude says it’s connected, press Ctrl+C to close the session and continue setup.');
     return later?'later':'connect';
    }
    expect(screen.title).toBe('Connect Codex to OpenCrawl');
@@ -331,8 +333,10 @@ test('multi-agent setup resumes the approved browser action and advances to the 
   inspectCodex:async()=>({state:'observed',total:1,pending:0,disabled:0}),
   native:async(command,args)=>{
    calls.push([command,...args]);
-   if(args[0]!=='mcp')setClaude({installed:true,mcp:{state:'authenticated'},proof:{state:'verified'}});
-   return 0;
+   if(args[0]==='mcp')return 0;
+   expect(args[0]).toContain('Once this client is verified, end your reply with “Press Ctrl+C to close Claude Code and return to OpenCrawl setup.');
+   setClaude({installed:true,mcp:{state:'authenticated'},proof:{state:calls.length===2?'pending':'verified'}});
+   return 130;
   },
   setup:(action,origin,values,deps)=>setupCommand(action,origin,values,{...deps,installPlugins:async(_api,clients)=>{expect(clients.sort()).toEqual(['claude-code','codex']);return {results:[{client:'claude-code',status:'installed'},{client:'codex',status:'installed'}],humanTasks:[]};}}),
   pause:unexpected
@@ -345,8 +349,8 @@ test('multi-agent setup resumes the approved browser action and advances to the 
  expect(saved.selections.forward).toMatchObject({'claude-code':true,codex:true});
  later=false;ui.choose=unexpected;
  expect(await run('resume')).toBe(0);
- expect(screens).toEqual(['Connect Claude Code to OpenCrawl','Connect Claude Code to OpenCrawl','Connect Codex to OpenCrawl']);
- expect(calls).toHaveLength(2);
+ expect(screens).toEqual(['Connect Claude Code to OpenCrawl','Connect Claude Code to OpenCrawl','Connect Claude Code to OpenCrawl','Connect Codex to OpenCrawl']);
+ expect(calls).toHaveLength(3);
  expect(calls[0]).toEqual(['/native/claude','mcp','login','plugin:'+setupPluginIdentity(api).name+':opencrawl']);
  expect(calls[1][0]).toBe('/native/claude');
  expect(calls[1][1]).toContain('setup next --api '+api);
