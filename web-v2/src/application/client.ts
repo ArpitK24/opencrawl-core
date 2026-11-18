@@ -20,6 +20,8 @@ return {
   library,
   bootstrap:(signal?:AbortSignal)=>read(()=>webRpc.console.bootstrap.query(undefined,{signal}),signal),
   usage:(signal?:AbortSignal)=>read(()=>webRpc.console.usage.query(undefined,{signal}),signal),
+  usageHighlights:(signal?:AbortSignal)=>read(()=>webRpc.console.usageHighlights.query(undefined,{signal}),signal),
+  usageDetails:(signal?:AbortSignal)=>read(()=>webRpc.console.usageDetails.query(undefined,{signal}),signal),
   sources:(signal?:AbortSignal)=>read(()=>webRpc.console.sources.query(undefined,{signal}),signal),
   team:(signal?:AbortSignal)=>read(()=>webRpc.console.team.query(undefined,{signal}),signal),
   search:(query:string,signal?:AbortSignal)=>read(()=>webRpc.diagnostics.search.query({query},{signal}),signal),

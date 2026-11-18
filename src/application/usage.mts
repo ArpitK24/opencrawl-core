@@ -6,14 +6,14 @@ import type {createSessionSearch} from '../sessions/search.mjs';
 import type {createOnboardingStatus, OnboardingReceipts} from '../onboarding-status.mjs';
 import {indexedSourceInventory} from './usage-inventory.mjs';
 import type {ValueReports} from './value-report.mjs';
-import type {SessionOverlap, UsageSource} from './reports.mjs';
+import type {SessionOverlap, UsageSource, UsageHighlights, UsageDetails, UsageReport} from './reports.mjs';
 import {consoleFailure} from './console.mjs';
 import {dailyOverlap} from '../sessions/overlap.mjs';
 type Sessions = Pick<ReturnType<typeof createSessionSearch>, 'usage' | 'overlap'>;
 interface ConnectionCount {total: number; kinds: Record<string, number>}
 interface Connectors {count(principal: Principal): Promise<ConnectionCount & {providers: Record<string, ConnectionCount>; connections: Record<string, ConnectionCount>}>}
 type Usage = Awaited<ReturnType<Sessions['usage']>>;
-interface UsageOptions {principal: Principal; directory: IdentityDirectory; integrations?: Pick<Integrations, 'list'> | null; search?: Sessions | null; connectors?: Connectors | null; onboarding?: ReturnType<typeof createOnboardingStatus> | null; values?: ValueReports | null; captured?: ((principal: Principal) => Promise<{tokens: number; since: string}>) | null; tab?: string; days?: number; log?: Log}
+export interface UsageOptions {principal: Principal; directory: IdentityDirectory; integrations?: Pick<Integrations, 'list'> | null; search?: Sessions | null; connectors?: Connectors | null; onboarding?: ReturnType<typeof createOnboardingStatus> | null; values?: ValueReports | null; captured?: ((principal: Principal) => Promise<{tokens: number; since: string}>) | null; tab?: string; days?: number; log?: Log}
 interface IndexReport {sessionEvents: number | null; connectorDocuments: number | null; connectorKinds: Record<string, number>; sources: Array<{name: string; count: number}>; searchMs: number | null; probes: number[]}
 // Shared usage report: integrations, WorkOS members, and session activity.
 // Activity and setup receipts are scoped to the selected organization.
@@ -24,7 +24,10 @@ const missing = (error: unknown) => errorInfo(error).type === 'index_not_found_e
  * principal must already be verified for its tenant. Independent failed reads
  * are explicit so clients can retain only the affected measurement.
  */
-export async function usageReport({principal, directory, integrations, search, connectors, onboarding, values, captured, tab, days = 30, log = () => {}}: UsageOptions) {
+export function usageReport(options: UsageOptions & {part: 'highlights'}): Promise<UsageHighlights>;
+export function usageReport(options: UsageOptions & {part: 'details'}): Promise<UsageDetails>;
+export function usageReport(options: UsageOptions): Promise<UsageReport>;
+export async function usageReport({principal, directory, integrations, search, connectors, onboarding, values, captured, tab, days = 30, log = () => {}, part}: UsageOptions & {part?: 'highlights' | 'details'}): Promise<UsageHighlights | UsageDetails | UsageReport> {
   const team = principal.tenantId.startsWith('org_');
   const memberScope = (userId: string) => ({tenantId: principal.tenantId, userId});
   const failedSources = new Set<UsageSource>();
@@ -41,75 +44,99 @@ export async function usageReport({principal, directory, integrations, search, c
     });
   }
 
+  async function highlights() {
+    const [organization, value, capture] = await Promise.all([
+      team ? soft('organization', () => directory.organizations.getOrganization(principal.tenantId)) : null,
+      values ? soft('value', () => values.read(principal.tenantId)) : null,
+      team && captured ? soft('capture', () => captured(principal)) : null,
+    ]);
+    return {workspace: organization?.name || (team ? null : 'Personal workspace'), value,
+      capture: capture ? {tokens: capture.tokens, since: capture.since} : null};
+  }
 
-  const emptyCounts: Awaited<ReturnType<Connectors['count']>> = {total:0,kinds:{},providers:{},connections:{}};
-  // These reports are independent. Navigation waits for the slowest read, not their sum.
-  const [organization, users, cards, sessions, counted, value] = await Promise.all([
-    team ? soft('organization', () => directory.organizations.getOrganization(principal.tenantId)) : null,
-    team ? soft('members', async () => {
+  async function details() {
+    const userRead = team ? soft('members', async () => {
       const memberships = await directory.userManagement.listOrganizationMemberships({organizationId: principal.tenantId, statuses: ['active'], limit: 100});
       const rows = memberships.autoPagination ? await memberships.autoPagination() : memberships.data;
       const ids = [...new Set(rows.filter(m => m.organizationId === principal.tenantId && m.status === 'active').map(m => m.userId))];
       return Promise.all(ids.map(id => directory.userManagement.getUser(id)));
-    }) : soft('members', async () => [await directory.userManagement.getUser(principal.userId)]),
-    integrations ? soft('integrations', () => integrations.list(principal)) : null,
-    (async () => {
-      if (!search) return {agents: null, overlap: null};
-      const now = Date.now();
-      const [agents, overlap] = await Promise.all([
-        soft('sessions', () => search.usage(principal, {team: true, days, now}), empty()),
-        soft('overlap', () => search.overlap(principal, {days, now}), {timeZone: 'UTC', measuredAt: new Date(now).toISOString(), sessions: 0, daily: dailyOverlap([], days, now)} satisfies SessionOverlap),
-      ]);
-      return {agents, overlap};
-    })(),
-    connectors ? soft('connectors', () => connectors.count(principal), emptyCounts) : null,
-    values ? soft('value', () => values.read(principal.tenantId)) : null,
-  ]);
-  const {agents} = sessions;
-  const members = users || [];
-  // The adapter defines the measurement period; billing policy stays in the host.
-  const capture = team && captured ? await soft('capture', () => captured(principal)) : null;
-  const connectionCounts = counted?.connections || null;
-  const providerNames = new Map((cards || []).map(card => [card.provider, card.name]));
-  const index: IndexReport | null = search || connectors ? {
-    sessionEvents:agents?.lifetimeEvents ?? null,connectorDocuments:counted?.total ?? null,connectorKinds:counted?.kinds || {},
-    sources:Object.entries(counted?.providers || {}).map(([provider,count])=>({name:providerNames.get(provider)||provider,count:count.total})),
-    searchMs:null,probes:[],
-  } : null;
+    }) : soft('members', async () => [await directory.userManagement.getUser(principal.userId)]);
+    const setupRead = userRead.then(users => {
+      const members = users ?? [];
+      return Promise.all(members.map(async user => {
+        if (!onboarding) return {};
+        const receipt: Partial<OnboardingReceipts> | null = await soft('onboarding', () => onboarding.read(memberScope(user.id)).catch(error => {
+          if (errorInfo(error).status === 404) return {};
+          throw error;
+        }), {});
+        const {cli = null, mcp = null, session = null} = receipt || {};
+        return {cli, mcp, session, client: mcp?.client || null, ...(receipt?.shared ? {shared: receipt.shared} : {})};
+      }));
+    });
+    const emptyCounts: Awaited<ReturnType<Connectors['count']>> = {total:0,kinds:{},providers:{},connections:{}};
+    const [users, setup, cards, sessions, counted] = await Promise.all([
+      userRead, setupRead,
+      integrations ? soft('integrations', () => integrations.list(principal)) : null,
+      (async () => {
+        if (!search) return {agents: null, overlap: null};
+        const now = Date.now();
+        const [agents, overlap] = await Promise.all([
+          soft('sessions', () => search.usage(principal, {team: true, days, now}), empty()),
+          soft('overlap', () => search.overlap(principal, {days, now}), {timeZone: 'UTC', measuredAt: new Date(now).toISOString(), sessions: 0, daily: dailyOverlap([], days, now)} satisfies SessionOverlap),
+        ]);
+        return {agents, overlap};
+      })(),
+      connectors ? soft('connectors', () => connectors.count(principal), emptyCounts) : null,
+    ]);
+    const {agents} = sessions;
+    const members = users ?? [];
+    const connectionCounts = counted?.connections || null;
+    const providerNames = new Map((cards || []).map(card => [card.provider, card.name]));
+    const index: IndexReport | null = search || connectors ? {
+      sessionEvents:agents?.lifetimeEvents ?? null,connectorDocuments:counted?.total ?? null,connectorKinds:counted?.kinds || {},
+      sources:Object.entries(counted?.providers || {}).map(([provider,count])=>({name:providerNames.get(provider)||provider,count:count.total})),
+      searchMs:null,probes:[],
+    } : null;
 
-  const sources = (cards || []).filter(c => c.integrationId).map(c => ({
-    name: c.name, icon: `/assets/integrations/${c.provider}.svg`, account: c.account, state: c.state, records: c.synced ?? null,
-    units: c.units, rows: c.rows, lastSyncedAt: c.lastSyncedAt || null, connectedAt: c.connectedAt || null,
-    connectedBy: (owner => owner ? displayName(owner) : c.connectedBy)(members.find(u => u.id === c.connectedById)),
-    connectedById: c.connectedById,
-    ...indexedSourceInventory(connectionCounts?.[c.integrationId!]),
-  }));
+    const sources = (cards || []).filter(c => c.integrationId).map(c => ({
+      name: c.name, icon: `/assets/integrations/${c.provider}.svg`, account: c.account, state: c.state, records: c.synced ?? null,
+      units: c.units, rows: c.rows, lastSyncedAt: c.lastSyncedAt || null, connectedAt: c.connectedAt || null,
+      connectedBy: (owner => owner ? displayName(owner) : c.connectedBy)(members.find(u => u.id === c.connectedById)),
+      connectedById: c.connectedById,
+      ...indexedSourceInventory(connectionCounts?.[c.integrationId!]),
+    }));
 
-  const setup = await Promise.all(members.map(async user => {
-    if (!onboarding) return {};
-    const receipt: Partial<OnboardingReceipts> | null = await soft('onboarding', () => onboarding.read(memberScope(user.id)).catch(error => {
-      if (errorInfo(error).status === 404) return {};
-      throw error;
-    }), {});
-    const {cli = null, mcp = null, session = null} = receipt || {};
-    return {cli, mcp, session, client: mcp?.client || null, ...(receipt?.shared ? {shared: receipt.shared} : {})};
-  }));
+    const activity = new Map((agents?.people || []).map(p => [p.userId, p]));
+    return {
+      ingestion: cards ? {sources, index} : null, ...sessions,
+      members: members.map((user, i) => {
+        const a: Partial<Usage['people'][number]> = activity.get(user.id) || {};
+        return {name: displayName(user, null), email: user.email, you: user.id === principal.userId,
+          sources: sources.filter(s => s.connectedById === user.id).length,
+          sessions: a.sessions || 0, subagentSessions: a.subagentSessions || 0, messages: a.messages || 0, toolCalls: a.toolCalls || 0, weekEvents: a.weekEvents || 0, lastAt: a.lastAt || null, setup: setup[i]};
+      }),
+    };
+  }
 
-  const activity = new Map((agents?.people || []).map(p => [p.userId, p]));
-  const report = {
-    tab, team, days, generatedAt: new Date().toISOString(), failedSources: [...failedSources].sort(), integrationsUrl: '/integrations',
-    workspace: organization?.name || (team ? null : 'Personal workspace'),
-    ingestion: cards ? {sources, index} : null, ...sessions, value, capture: capture ? {tokens:capture.tokens,since:capture.since} : null,
-    members: members.map((user, i) => {
-      const a: Partial<Usage['people'][number]> = activity.get(user.id) || {};
-      return {name: displayName(user, null), email: user.email, you: user.id === principal.userId,
-        sources: sources.filter(s => s.connectedById === user.id).length,
-        sessions: a.sessions || 0, subagentSessions: a.subagentSessions || 0, messages: a.messages || 0, toolCalls: a.toolCalls || 0, weekEvents: a.weekEvents || 0, lastAt: a.lastAt || null, setup: setup[i]};
-    }),
-  };
-  return report;
+  // Capture measurement time and failed sources after the requested reads settle.
+  const metadata = () => ({tab, team, days, generatedAt: new Date().toISOString(), failedSources: [...failedSources].sort(), integrationsUrl: '/integrations'});
+  if (part === 'highlights') return {...await highlights(), ...metadata()};
+  if (part === 'details') return {...await details(), ...metadata()};
+  const [summary, activity] = await Promise.all([highlights(), details()]);
+  return {...summary, ...activity, ...metadata()};
 }
 
 function displayName(user: HostedUser, fallback: string | null = user.email) {
   return [user.firstName, user.lastName].filter(Boolean).join(' ').trim() || fallback;
+}
+
+/** Bind both console read paths to the same trusted deployment adapters. */
+export function usageServices(options: (principal: Principal) => UsageOptions) {
+  return {
+    usage: (principal: Principal) => usageReport(options(principal)),
+    usageParts: {
+      highlights: (principal: Principal) => usageReport({...options(principal), part: 'highlights'}),
+      details: (principal: Principal) => usageReport({...options(principal), part: 'details'}),
+    },
+  };
 }

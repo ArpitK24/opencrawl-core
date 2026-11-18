@@ -3,14 +3,16 @@ import type {MetricItem} from '../design/components.js';
 import {ActivityChart, BarList, Button, DailyLineChart, EmptyState, LoadingState, MetricGrid, Notice, Page, Section, IntegrationCard, Table} from '../design/components.js';
 import {Link} from '../router.js';
 import {CopyPromptButton} from '../onboarding/copy.tsx';
-import type {ConsoleDataAdapter, UsageReport, ValueReport} from './types.js';
+import type {ConsoleDataAdapter, UsageReport, UsageHighlights, UsageDetails, ValueReport} from './types.js';
 import {ago, compact, count, harnessName, memberName, originName, plural, sortedMembers, sourceStatus, speciesLabel, topMember} from './usage-model.ts';
 import type {UsageMember, UsageSource} from './usage-model.ts';
 import type {UsageSection} from '../../../src/application/reports.mjs';
 import {reconcileUsage, usageSectionFailed} from './usage-recovery.ts';
 
+const refreshPolicy = {autoRefreshMilliseconds: 60_000, staleMilliseconds: 60_000, reconcile: reconcileUsage};
+
 export function useUsage(adapter: ConsoleDataAdapter) {
-  const resource = useConsoleResource<UsageReport>(consoleResourceKey(adapter, 'usage'), signal => adapter.usage(signal), {autoRefreshMilliseconds: 60_000, staleMilliseconds: 60_000, reconcile: reconcileUsage});
+  const resource = useConsoleResource<UsageReport>(consoleResourceKey(adapter, 'usage'), signal => adapter.usage(signal), refreshPolicy);
   return {...resource, refresh: resource.reload};
 }
 
@@ -57,7 +59,7 @@ function DataSourcesReport({report, now, retry}: {report: UsageReport; now: numb
   );
 }
 
-function AgentReport({report, now, retry}: {report: UsageReport; now: number; retry?: () => void}) {
+function AgentReport({report, now, retry, pendingDetails = false}: {report: UsageReport; now: number; retry?: () => void; pendingDetails?: boolean}) {
   const data = report.agents;
   const people = data?.people?.length;
   const daily = data?.daily || [];
@@ -78,7 +80,7 @@ function AgentReport({report, now, retry}: {report: UsageReport; now: number; re
     {label: 'Messages', value: compact(data.messages), note: 'prompts and replies captured', title: count(data.messages)},
     captured ?? {label: 'Tool calls', value: compact(data.toolCalls), note: 'tools used across captured sessions', title: count(data.toolCalls)},
     {label: 'OpenCrawl calls', value: compact(data.opencrawlCalls), note: `searches and board reads${people != null ? ` by ${plural(people, 'person', 'people')}` : ''}`, title: count(data.opencrawlCalls)},
-  ] : [];
+  ] : pendingDetails && captured ? [captured] : [];
   const description = value ? `How OpenCrawl kept your agents on track since ${value.window.from}, across ${plural(value.work.sessions, 'session')} and ${plural(value.work.tasks, 'task')}.`
     : report.days ? `Captured activity over the last ${report.days} days.` : 'Captured agent activity.';
 
@@ -88,7 +90,7 @@ function AgentReport({report, now, retry}: {report: UsageReport; now: number; re
       <MeasurementStatus report={report} section="value" label="Agent alignment" now={now} retry={retry}/>
       <MeasurementStatus report={report} section="capture" label="Captured tokens" now={now} retry={retry}/>
       {cards.length > 0 && <MetricGrid items={cards}/>}
-      {!data ? (value || usageSectionFailed(report, 'agents') ? null : <EmptyState title="Agent reporting isn’t available on this deployment."/>) : <>
+      {!data ? (pendingDetails || value || usageSectionFailed(report, 'agents') ? null : <EmptyState title="Agent reporting isn’t available on this deployment."/>) : <>
         <p className="report-note">
           Machines capturing: <strong>{count(data.machines)}</strong>. Last capture: <strong>{data.lastAt ? ago(data.lastAt, now) : 'Not yet'}</strong>
           {data.firstAt && <>. Capturing since {data.firstAt.slice(0, 10)}</>}
@@ -187,10 +189,57 @@ export function UsageReportView({data, now = Date.now(), retry}: {data: UsageRep
   </>;
 }
 
-export function UsagePage({adapter, setupPrompt}: {adapter: ConsoleDataAdapter; setupPrompt?: string}) {
+type PageProps = {adapter: ConsoleDataAdapter; setupPrompt?: string; reportScope?: string};
+
+export function UsagePage({adapter, setupPrompt, reportScope}: PageProps) {
+  if (reportScope && adapter.usageHighlights && adapter.usageDetails) {
+    return <ProgressiveUsage reportScope={reportScope} adapter={adapter} highlights={adapter.usageHighlights} details={adapter.usageDetails} setupPrompt={setupPrompt}/>;
+  }
+  return <CompleteUsage adapter={adapter} setupPrompt={setupPrompt}/>;
+}
+
+function ProgressiveUsage({adapter, setupPrompt, highlights, details, reportScope}: PageProps & {
+  reportScope: string;
+  highlights: (signal: AbortSignal) => Promise<UsageHighlights & {cacheScope: string}>;
+  details: (signal: AbortSignal) => Promise<UsageDetails & {cacheScope: string}>;
+}) {
+  async function scoped<T extends {cacheScope: string}>(read: (signal: AbortSignal) => Promise<T>, signal: AbortSignal) {
+    const result = await read(signal);
+    if (result.cacheScope !== reportScope) throw Object.assign(new Error('Your workspace changed. Reload this page.'), {status: 403});
+    return result;
+  }
+  const summary = useConsoleResource(consoleResourceKey(adapter, 'usage-highlights'), signal => scoped(highlights, signal), refreshPolicy);
+  const activity = useConsoleResource(consoleResourceKey(adapter, 'usage-details'), signal => scoped(details, signal), refreshPolicy);
+  const timestamp = activity.data ?? summary.data;
+  const report: UsageReport | null = timestamp && {
+    workspace: null, members: [], agents: null, overlap: null, ingestion: null,
+    ...summary.data, ...activity.data, days: timestamp.days, generatedAt: timestamp.generatedAt,
+    failedSources: [...summary.data?.failedSources ?? [], ...activity.data?.failedSources ?? []],
+    staleSections: {...summary.data?.staleSections, ...activity.data?.staleSections},
+  };
+  const now = Date.now();
+  const retry = () => {void summary.reload(); void activity.reload();};
+  return <Page title="Usage" description={usageDescription(report, now)} bodyClassName="usage-report" actions={setupPrompt ? <CopyPromptButton text={setupPrompt}/> : undefined}>
+    {summary.error && <Notice tone="warning">Usage highlights couldn’t update. <Button onClick={summary.reload}>Try again</Button></Notice>}
+    {activity.error && <Notice tone="warning">Usage details couldn’t update. <Button onClick={activity.reload}>Try again</Button></Notice>}
+    {report && (activity.data || summary.data?.value || summary.data?.capture || summary.data?.failedSources?.length) ?
+      <AgentReport report={report} now={now} retry={retry} pendingDetails={!activity.data}/> : null}
+    {(activity.loading || summary.loading && !activity.data) && <LoadingState label={report ? 'Loading usage details' : 'Loading usage'}/>}
+    {activity.data && report && <>
+      <DataSourcesReport report={report} now={now} retry={activity.reload}/>
+      <TeamReport report={report} now={now} retry={activity.reload}/>
+    </>}
+  </Page>;
+}
+
+function usageDescription(data: UsageReport | null, now: number) {
+  return data ? [data.workspace, data.days ? `last ${data.days} days` : '', `updated ${ago(data.generatedAt, now)}`].filter(Boolean).join(', ') : 'Workspace usage';
+}
+
+function CompleteUsage({adapter, setupPrompt}: PageProps) {
   const {data, error, loading, refresh} = useUsage(adapter);
   const now = Date.now();
-  const scope = data ? [data.workspace, data.days ? `last ${data.days} days` : '', `updated ${ago(data.generatedAt, now)}`].filter(Boolean).join(', ') : 'Workspace usage';
+  const scope = usageDescription(data, now);
   return (
     <Page title="Usage" description={scope} bodyClassName="usage-report" actions={setupPrompt ? <CopyPromptButton text={setupPrompt}/> : undefined}>
       {error && <Notice tone={data ? 'warning' : 'danger'}>{data ? 'Usage couldn’t update. We’ll try again automatically while you’re viewing this page.' : error}{!data && <Button onClick={refresh} disabled={loading}>Try again</Button>}</Notice>}

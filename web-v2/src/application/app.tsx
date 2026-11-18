@@ -38,7 +38,7 @@ class ErrorBoundary extends Component<{children: ReactNode}, {failed: boolean}> 
   render() {return this.state.failed ? <FocusedFrame footer={<SignOut/>}><Notice tone="danger" title="This page couldn’t load">Reload your workspace to try again.</Notice><LinkButton to="/" reloadDocument>Reload workspace</LinkButton></FocusedFrame> : this.props.children;}
 }
 function ConsoleApp<B extends Bootstrap>({api, extensions}: {api: ProductApi<B>; extensions?: ConsoleExtensions<B>}) {
-  const dataAdapter = useMemo<ConsoleDataAdapter>(() => ({usage: api.usage, search: api.search, board: api.board}), [api]);
+  const dataAdapter = useMemo<ConsoleDataAdapter>(() => ({usage: api.usage, usageHighlights: api.usageHighlights, usageDetails: api.usageDetails, search: api.search, board: api.board}), [api]);
   const libraryAdapter = api.library;
   const onboardingAdapter = useMemo<OnboardingAdapter>(() => ({
     replicasSetup: api.replicasSetup,
@@ -80,7 +80,7 @@ function ConsoleApp<B extends Bootstrap>({api, extensions}: {api: ProductApi<B>;
   const boardTopic = boardQuery.get('view') === 'stream' ? '' : (boardQuery.get('channel')??boardQuery.get('topic'))?.trim() || '';
   const routes: ConsoleRoute[] = [
     ...(data?.setup ? [{path:'/setup',label:'Setup',icon:'terminal' as const,element:<SetupPage api={api} initial={data}/>,pending:(feedback?:ReactNode)=><PendingPage title="Setup">{feedback}</PendingPage>}] : []),
-    {path:'/',label:'Usage',icon:'usage',element:<UsagePage adapter={dataAdapter} setupPrompt={data?.setup ? undefined : data?.setupPrompt}/>,pending:feedback => <PendingPage bodyClassName="usage-report" title="Usage" description="Workspace usage">{feedback}</PendingPage>},
+    {path:'/',label:'Usage',icon:'usage',element:<UsagePage adapter={dataAdapter} reportScope={data?.splitUsage ? data.cacheScope : undefined} setupPrompt={data?.setup ? undefined : data?.setupPrompt}/>,pending:feedback => <PendingPage bodyClassName="usage-report" title="Usage" description="Workspace usage">{feedback}</PendingPage>},
     {path:'/sessions',label:'Sessions',icon:'sessions',element:<SessionsPage adapter={libraryAdapter}/>,pending:feedback => <PendingPage bodyClassName="oc-library" title="Sessions" description="Agent sessions captured across your workspace. Private sessions are visible only to the person who captured them.">{feedback}</PendingPage>},
     {path:'/memories',label:'Memories',icon:'memories',element:<MemoriesPage adapter={libraryAdapter}/>,pending:feedback => <PendingPage bodyClassName="oc-library" title="Memories" description="Memory files your agents keep, captured so teammates’ agents can use them.">{feedback}</PendingPage>},
     {path:'/sources',label:'Integrations',icon:'sources',navigation:data?.workspace.role === 'admin',element:<SourcesPage adapter={api} canConfigure={data?.workspace.role === 'admin'}/>,pending:feedback => <PendingPage bodyClassName="oc-connections" title="Integrations" description="Connect your tools and OpenCrawl keeps their content in sync for your agents.">{feedback}</PendingPage>},

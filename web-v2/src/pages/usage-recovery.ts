@@ -7,20 +7,22 @@ const dependencies: Record<UsageSection, readonly UsageSource[]> = {
   value: ['value'], capture: ['capture'],
 };
 
-export function usageSectionFailed(report: UsageReport, section: UsageSection) {
+export function usageSectionFailed(report: Pick<UsageReport, 'failedSources'>, section: UsageSection) {
   return dependencies[section].some(source => report.failedSources?.includes(source));
 }
 
 /** Called only within the current authenticated query cache; never crosses scopes. */
-export function reconcileUsage(previous: UsageReport | undefined, next: UsageReport): UsageReport {
+type UsageMeasurements = Partial<UsageReport> & Pick<UsageReport, 'days' | 'generatedAt'>;
+export function reconcileUsage<T extends UsageMeasurements>(previous: T | undefined, next: T): T {
   const staleSections: Partial<Record<UsageSection, string>> = {};
-  const result: UsageReport = {...next, staleSections};
+  const result = {...next, staleSections};
   if (!previous || previous.days !== next.days) return result;
   const cached = previous;
   function retain<K extends UsageSection>(section: K) {
     if (!usageSectionFailed(next, section) || cached[section] == null) return;
     if (usageSectionFailed(cached, section) && !cached.staleSections?.[section]) return;
-    result[section] = cached[section];
+    const measurements: UsageMeasurements = result;
+    measurements[section] = cached[section];
     staleSections[section] = cached.staleSections?.[section] ?? cached.generatedAt;
   }
   for (const section of Object.keys(dependencies) as UsageSection[]) retain(section);

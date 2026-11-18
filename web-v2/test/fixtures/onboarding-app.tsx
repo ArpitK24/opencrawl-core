@@ -39,6 +39,10 @@ const adapter: OnboardingAdapter = {
 };
 const never = new AbortController().signal;
 const usageAdapter: ConsoleDataAdapter = {usage: signal => request('/api/console/usage', signal), search: async () => ({}), board: async () => ({messages: [], topicSummaries: [], next: null})};
+const progressiveUsageAdapter: ConsoleDataAdapter = {...usageAdapter,
+  usageHighlights: signal => request('/api/console/usage/highlights', signal),
+  usageDetails: signal => request('/api/console/usage/details', signal),
+};
 const diagnosticsAdapter: ConsoleDataAdapter = {...usageAdapter, search:(query,signal)=>request('/api/debug/search',signal,{query}), board: (input, signal) => request('/api/console/board?' + new URLSearchParams(Object.entries(input).map(([key, value]) => [key, String(value)])), signal)};
 const selfhostSetup = new URLSearchParams(window.location.search).has('selfhost');
 const libraryAdapter: LibraryAdapter = (operation, input, signal) => request('/api/library/' + operation, signal, input);
@@ -64,7 +68,7 @@ function Fixture() {
   const navigate = useNavigate();
   const location = useLocation();
   useEffect(() => {window.__onboardingTestNavigate = path => {void navigate(path);}; return () => {delete window.__onboardingTestNavigate;};}, [navigate]);
-  if (location.pathname === '/usage') return <ConsoleDataProvider scopeKey="usage-fixture" onAccessFailure={() => {}}><AppShell workspace={{name: 'Example workspace', userName: 'Alex', role: 'Admin'}} routes={[{path: '/usage', label: 'Usage', icon: 'usage', element: <UsagePage adapter={usageAdapter}/>}]}/></ConsoleDataProvider>;
+  if (location.pathname === '/usage') return <ConsoleDataProvider scopeKey="usage-fixture" onAccessFailure={() => {}}><AppShell workspace={{name: 'Example workspace', userName: 'Alex', role: 'Admin'}} routes={[{path: '/usage', label: 'Usage', icon: 'usage', element: <UsagePage adapter={progressiveUsageAdapter} reportScope={new URLSearchParams(location.search).has('split') ? 'usage-fixture' : undefined}/>}]}/></ConsoleDataProvider>;
   if (location.pathname === '/diagnostics' || location.pathname === '/search') {
     const query = new URLSearchParams(location.search), board = location.pathname === '/diagnostics' && query.get('nav') !== 'workspace' && query.get('view') !== 'search';
     const topic = query.get('view') === 'stream' ? '' : query.get('channel') || query.get('topic') || '';

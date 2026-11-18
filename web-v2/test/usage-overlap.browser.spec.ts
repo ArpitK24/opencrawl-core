@@ -93,3 +93,34 @@ test('partial refresh updates healthy metrics, retains the failed chart with its
   await page.clock.runFor(60_001);
   await expect(chart).toHaveCount(0);
 });
+
+test('captured tokens render while charts are pending, and a changed workspace clears both', async ({page}) => {
+  const data = report();
+  const {workspace, value, capture, ...details} = data;
+  let release = () => {};
+  const held = new Promise<void>(resolve => {release = resolve;});
+  let scope = 'usage-fixture', highlightReads = 0, detailReads = 0;
+  await page.clock.install();
+  await page.route('**/api/console/usage/highlights', route => {
+    highlightReads++;
+    return route.fulfill({json: {workspace, value, capture: {tokens: 42, since: '2026-11-01'}, days: data.days, generatedAt: data.generatedAt, cacheScope: 'usage-fixture'}});
+  });
+  await page.route('**/api/console/usage/details', async route => {
+    detailReads++;
+    await held;
+    await route.fulfill({json: {...details, cacheScope: scope}});
+  });
+  try {
+    await page.goto('/usage?split');
+    await expect(page.getByText('42', {exact: true})).toBeVisible();
+    await expect(page.getByText('Loading usage details')).toBeVisible();
+    await expect(page.getByRole('heading', {name: 'Data sources'})).toHaveCount(0);
+    expect([highlightReads, detailReads]).toEqual([1, 1]);
+  } finally {release();}
+  await expect(page.getByRole('heading', {name: 'Daily agent sessions'})).toBeVisible();
+  scope = 'different-workspace';
+  await page.clock.runFor(60_001);
+  await expect(page.getByText('Your workspace changed. Reload this page.')).toBeVisible();
+  await expect(page.getByText('42', {exact: true})).toHaveCount(0);
+  await expect(page.getByRole('heading', {name: 'Daily agent sessions'})).toHaveCount(0);
+});

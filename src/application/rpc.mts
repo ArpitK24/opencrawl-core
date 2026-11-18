@@ -25,6 +25,8 @@ export function productRoutes<B extends Bootstrap = Bootstrap, T extends TeamRep
       if (!ctx.usageSections && report.agents && !report.overlap) throw rpcError(503, 'Usage couldn’t update. Reload this page to retry.');
       return report;
     }),
+    usageHighlights: p.input(empty).query(({ctx}) => ctx.invoke<import('./reports.mjs').UsageHighlights & {cacheScope: string}>('/api/console/usage/highlights')),
+    usageDetails: p.input(empty).query(({ctx}) => ctx.invoke<import('./reports.mjs').UsageDetails & {cacheScope: string}>('/api/console/usage/details')),
     sources: p.input(empty).query(({ctx}) => ctx.invoke<{items: SourceCard[]}>('/api/console/sources')),
     team: p.input(empty).query(({ctx}) => ctx.invoke<T>('/api/console/team')),
     invite: p.input(email).mutation(({ctx,input}) => ctx.invoke<{ok: true; inviteUrl?: string}>('/api/console/team/invite','POST',input)),
