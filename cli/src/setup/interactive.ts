@@ -6,6 +6,7 @@ import {launchClaudeSetup} from './claude-launch.ts';
 import {launchCodexSetup} from './codex-launch.ts';
 import {launchAntigravitySetup} from './antigravity-launch.ts';
 import type {SetupUi} from './tui.tsx';
+import {labels,type PluginClient} from './plugins.ts';
 import {nativeLogin} from './native-login.ts';
 import {nativeTerminal} from './native-terminal.ts';
 import {inspectCodexHooks,type CodexHookReview} from '../capture/codex-hooks.ts';
@@ -37,7 +38,7 @@ export async function showDeviceCode(ui:Pick<SetupUi,'action'|'progress'>,url:st
 /** Human setup and resume share a terminal. Machine commands keep their contracts. */
 export async function runInteractiveSetup(options:Options,{createUi,setup=setupCommand,which=Bun.which,native=nativeCommand,inspectCodex=currentCodexReview,pause=async signal=>{await delay(3000,undefined,{signal});}}:Dependencies={}){
  const ui=createUi?createUi():(await import('./tui.tsx')).createSetupUi();
- let action=options.action??'run';
+ const action=options.action??'run';
  let destination:ReturnType<Options['readDestination']>|undefined;
  try{
   const entry=options.entry?.();
@@ -73,7 +74,6 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
       await entry?.finish();
       await ui.action({title:'Setup saved',description:'No sessions will be recorded on this machine. No history import was started.',actions:[{id:'done',label:'Done'}]});return 0;
      }
-     if('nextAction' in result&&result.nextAction?.kind==='plugin_unavailable'){await ui.action({title:'Capture is not available yet',description:'This plugin version cannot record sessions yet. Your choices are saved.',actions:[{id:'close',label:'Close'}]});return 2;}
      const handoff='client' in result&&['claude-code','codex','antigravity'].includes(result.client)&&'agentPrompt' in result&&typeof result.agentPrompt==='string'?{client:result.client,prompt:result.agentPrompt,needsLogin:'nativeMcpLoginRequired' in result&&result.nativeMcpLoginRequired===true}:undefined;
      const history='history' in result?result.history:undefined;
      if('selections' in result&&result.selections&&!Object.values(result.selections.plugins).some(Boolean)){
@@ -88,7 +88,7 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
      ui.progress('Checking setup','Waiting for native connection and session verification.');
      for(;;){
       const kind='nextAction' in result?result.nextAction?.kind:undefined;
-      if(!launched&&handoff&&kind!=='complete'&&kind!=='repair_worker'&&kind!=='repair_plugin'&&(handoff.client!=='antigravity'||kind==='native_tool')){
+      if(!launched&&handoff&&kind!=='complete'&&kind!=='repair_worker'&&kind!=='repair_plugin'&&kind!=='plugin_unavailable'&&(handoff.client!=='antigravity'||kind==='native_tool')){
        launched=true;
        displayedInstruction=undefined;
        if(handoff.client==='antigravity'){
@@ -117,20 +117,8 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
         }
        }
       }
-      let next=await setup('wait',api,{json:true},{interactive:false});
+      let next=await setup('wait',api,{json:true},{interactive:false,finishOnboarding:true});
       if(ui.signal.aborted)return 130;
-      if(next&&'nextAction' in next&&next.nextAction?.kind==='repair_plugin'){
-       const repair=next.nextAction;
-       const choice=await ui.action({title:repair.title??('Repair '+repair.client+' plugin installation'),description:repair.reason??repair.instruction,details:repair.reason&&repair.instruction!==repair.reason?[repair.instruction]:undefined,actions:[{id:'retry',label:'Retry installation'},{id:'close',label:'Close'}]});
-       if(choice!=='retry')return 2;
-       action='resume';
-       displayedInstruction=undefined;
-       ui.progress('Retrying plugin installation','Checking the selected plugins with your saved choices.');
-       const resumed=await setup('resume',api,{json:true},{interactive:false,onProgress});
-       if(!resumed)return 2;
-       result=resumed;
-       continue;
-      }
       if(next&&'nextAction' in next&&next.nextAction?.kind==='repair_worker'){
        displayedInstruction=undefined;
        const status=await setup('status',api,{json:true},{interactive:false});
@@ -138,7 +126,7 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
        const action=await ui.action({title:'Background capture needs attention',description:worker?.reason??next.nextAction.instruction,error:true,actions:[{id:'direct',label:'Record without a background service'},{id:'retry',label:'Retry service'},{id:'close',label:'Close'}]});
        if(action!=='retry'&&action!=='direct')return 2;
        ui.progress(action==='direct'?'Keeping session recording':'Starting background capture',action==='direct'?'Removing the background service. Your recording choices and queued uploads are kept.':'Retrying the service with your saved choices.',undefined,true);
-       const resumed=await setup('resume',api,{json:true,...(action==='direct'?{'capture-mode':'hook'}:{})},{interactive:false,onProgress,...(action==='direct'?{confirmedCaptureMode:'hook' as const}:{})});
+       const resumed=await setup('resume',api,{json:true,...(action==='direct'?{'capture-mode':'hook'}:{})},{interactive:true,onProgress,...(action==='direct'?{confirmedCaptureMode:'hook' as const}:{})});
        if(!resumed)return 2;
        result=resumed;
        continue;
@@ -147,15 +135,21 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
        reconciled=true;
        displayedInstruction=undefined;
        ui.progress('Finishing setup','Saving the verified native installation.');
-       await setup('resume',api,{json:true},{interactive:false});
-       next=await setup('wait',api,{json:true},{interactive:false});
+       await setup('resume',api,{json:true},{interactive:true});
+       next=await setup('wait',api,{json:true},{interactive:false,finishOnboarding:true});
       }
       if(ui.signal.aborted)return 130;
+      if(next&&'nextAction' in next&&(next.nextAction?.kind==='repair_plugin'||next.nextAction?.kind==='plugin_unavailable')){
+       const names=next.nextAction.deferredClients.map(id=>labels[id as PluginClient]??id);
+       const importing=history&&typeof history==='object'&&'state' in history&&['queued','running'].includes(history.state);
+       await entry?.finish();
+       await ui.action({title:'Setup saved',description:'Recording setup is pending for '+names.join(', ')+'.',details:[...(importing?['Past sessions are importing in the background.']:[]),'Run opencrawl setup to retry later.'],actions:[{id:'done',label:'Done'}]});
+       return 0;
+      }
       if(next&&'nextAction' in next&&next.nextAction?.kind==='complete'){
        await entry?.finish();
        await ui.action({title:'Setup complete',description:'Your selected agents are connected and verified.',details:['New-session recording is ready.',...(history&&typeof history==='object'&&'state' in history&&['queued','running'].includes(history.state)?['Past sessions are importing in the background.']:[])],actions:[{id:'done',label:'Done'}]});return 0;
       }
-      if(next&&'nextAction' in next&&next.nextAction?.kind==='plugin_unavailable'){await ui.action({title:'Capture is not available yet',description:'This plugin version cannot record sessions yet. Your choices are saved.',actions:[{id:'close',label:'Close'}]});return 2;}
       if(handoff?.client==='antigravity'&&next&&'nextAction' in next&&next.nextAction?.kind==='native_tool'){
        const choice=await ui.action({title:'Antigravity verification is pending',description:'Return to Antigravity to finish the saved task, or review its workspace connection.',actions:[{id:'verify',label:'Resume task'},{id:'connect',label:'Review connection'},{id:'close',label:'Close'}]});
        if(choice!=='verify'&&choice!=='connect')return 2;
@@ -166,7 +160,9 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
       }
       const status=await setup('status',api,{json:true},{interactive:false});
       const tasks=status&&'humanTasks' in status?status.humanTasks:[];
-      const task=tasks?.[0];
+      const step=next&&'nextAction' in next?next.nextAction:undefined;
+      const client=step?.kind==='native_tool'?step.arguments.client:step&&'client' in step?step.client:undefined;
+      const task=tasks?.find(task=>!('client' in task)||!task.client||task.client===client);
       const details=task?[task.title,task.instruction]:['Open your selected agents to load OpenCrawl and finish their native connection.'];
       const instruction=JSON.stringify(details);
       if(instruction!==displayedInstruction){
