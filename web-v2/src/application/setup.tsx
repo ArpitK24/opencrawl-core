@@ -1,5 +1,6 @@
-import {useEffect, useState, type ReactNode} from 'react';
-import {CopyField, EmptyState, Notice, Page, Section, StatusBadge, Table} from '../design/components.tsx';
+import {useEffect, useState} from 'react';
+import {Button, CopyField, Dialog, Icon, Notice, Page, Section, StatusBadge} from '../design/components.tsx';
+import {nativeInstallCommand} from '../../../src/sessions/cli-installation.mjs';
 import type {Bootstrap, ProductApi} from './api.ts';
 
 const clientNames = {'claude-code':'Claude Code', codex:'Codex', cursor:'Cursor', antigravity:'Antigravity', 'grok-bot':'Grok Bot', devin:'Devin', 'claude-desktop':'Claude Desktop', chatgpt:'ChatGPT'};
@@ -8,48 +9,76 @@ type Installation = NonNullable<Bootstrap['setup']>['installations'][number];
 type Client = Installation['clients'][number];
 
 const historyLabels = {
-  not_started: 'Waiting',
-  running: 'Importing in the background',
-  complete: 'Imported',
-  failed: 'Import needs attention in the CLI',
+  not_started: 'Waiting to import past sessions',
+  running: 'Importing past sessions in the background',
+  complete: 'Past sessions imported',
+  failed: 'Past session import needs attention in the CLI',
 };
+const installCommand = nativeInstallCommand() + ' -s -- --setup';
 
-function ProgressCell({label, children}: {label: string; children: ReactNode}) {
-  return <td><span className="oc-progress-label" aria-hidden="true">{label}</span><span>{children}</span></td>;
+function MachineInstructions() {
+  return <div className="oc-form-measure stack-sm">
+    <CopyField label="Run in Terminal on the Mac you want to connect" value={installCommand} multiline/>
+    <p className="muted">Already installed? Run <code>opencrawl setup</code> on that machine to resume setup or review your choices.</p>
+  </div>;
 }
 
-function ClientProgress({client, showHistory}: {client: Client; showHistory: boolean}) {
+function connectionSelected(client: Client) {
+  return client.forward || client.installed || Boolean(client.pluginState && client.pluginState !== 'not_selected');
+}
+
+function connectionProgress(client: Client) {
   const connected = client.mcp.state === 'authenticated' || (!client.forward && client.mcp.state === 'observed');
   const searchable = client.proof.state === 'verified';
-  const ready = client.installed && connected && (!client.forward || searchable);
-
-  return <tr>
-    <th scope="row">{clientNames[client.client]}</th>
-    <td><StatusBadge variant="pill" tone={ready ? 'success' : 'neutral'}>{ready ? 'Ready' : 'In progress'}</StatusBadge></td>
-    <ProgressCell label="Plugin">{client.installed ? 'Installed' : 'Waiting'}</ProgressCell>
-    <ProgressCell label="Workspace connection">{connected ? 'Verified' : 'Waiting'}</ProgressCell>
-    <ProgressCell label="New session">{!client.forward ? 'Recording off' : searchable ? 'Captured and searchable' : 'Waiting'}</ProgressCell>
-    {showHistory && <ProgressCell label="Past sessions">{client.history === 'import' ? historyLabels[client.historyProgress.state] : 'Skipped'}</ProgressCell>}
-  </tr>;
+  return {connected, searchable, ready: client.installed && connected && (!client.forward || searchable)};
 }
 
-function InstallationProgress({installation}: {installation: Installation}) {
-  const showHistory = installation.clients.some(client => client.history === 'import');
-  return <Section title={installation.machine.label} className="oc-management-panel oc-progress-panel">
-    <Table label={`Setup progress on ${installation.machine.label}`} className="oc-progress-table">
-      <thead><tr>
-        <th scope="col">Client</th><th scope="col">Status</th><th scope="col">Plugin</th>
-        <th scope="col">Workspace connection</th><th scope="col">New session</th>
-        {showHistory && <th scope="col">Past sessions</th>}
-      </tr></thead>
-      <tbody>{installation.clients.map(client => <ClientProgress key={client.client} client={client} showHistory={showHistory}/>)}</tbody>
-    </Table>
-  </Section>;
+function clientSummary(client: Client) {
+  const checks = [];
+  if (connectionSelected(client)) {
+    const {connected, searchable} = connectionProgress(client);
+    if (client.pluginState === 'error') checks.push('Plugin needs attention in the CLI');
+    else if (!client.installed) checks.push('Waiting for plugin installation');
+    if (connected) checks.push('Workspace connection verified');
+    else if (client.installed) checks.push('Waiting for workspace connection');
+    if (!client.forward) checks.push('Recording off');
+    else if (searchable) checks.push('Captured and searchable');
+    else if (connected && client.installed) checks.push('Waiting for a searchable session');
+  }
+  if (client.history === 'import') checks.push(historyLabels[client.historyProgress.state]);
+  return checks.join('. ') + '.';
+}
+
+function MachineRow({installation}: {installation: Installation}) {
+  const clients = installation.clients.filter(client => connectionSelected(client) || client.history === 'import');
+  const connections = clients.filter(connectionSelected);
+  const ready = connections.filter(client => connectionProgress(client).ready).length;
+  const failed = clients.some(client => client.pluginState === 'error' || (client.history === 'import' && client.historyProgress.state === 'failed'));
+  const summary = failed ? 'Needs attention' : connections.length ? `${ready} of ${connections.length} ready` : clients.length ? 'History only' : 'No agents selected';
+  const tone = failed ? 'warning' : ready > 0 && ready === connections.length ? 'success' : 'neutral';
+
+  return <details className="oc-machine-row">
+    <summary>
+      <Icon name="monitor" size={20}/>
+      <span className="oc-machine-identity"><strong>{installation.machine.label}</strong>
+        {clients.length > 0 && <small>{clients.map(client => clientNames[client.client]).join(', ')}</small>}
+      </span>
+      <StatusBadge tone={tone}>{summary}</StatusBadge>
+      <Icon name="chevron-right" size={16}/>
+    </summary>
+    <div className="oc-machine-details">
+      {clients.length > 0 && <ul aria-label={`Agent setup on ${installation.machine.label}`}>
+        {clients.map(client => <li key={client.client}><strong>{clientNames[client.client]}</strong><span>{clientSummary(client)}</span></li>)}
+      </ul>}
+      <p className="muted">Run <code>opencrawl setup</code> on this machine to review its settings or continue setup.</p>
+    </div>
+  </details>;
 }
 
 /** Setup is a progress page. Choices and continuation live in the CLI. */
 export function SetupPage({api, initial}: {api: Pick<ProductApi, 'bootstrap'>; initial: Bootstrap}) {
   const [status, setStatus] = useState(initial.setup);
+  const [adding, setAdding] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => {
     const controller = new AbortController();
@@ -69,21 +98,17 @@ export function SetupPage({api, initial}: {api: Pick<ProductApi, 'bootstrap'>; i
     const timer = window.setInterval(() => {void refresh();}, 3000);
     return () => {controller.abort(); clearInterval(timer);};
   }, [api, initial.cacheScope]);
-  const installations = (status?.installations ?? []).map(installation => ({
-    ...installation,
-    clients: installation.clients.filter(client => client.forward || client.installed || Boolean(client.pluginState && client.pluginState !== 'not_selected')),
-  })).filter(installation => installation.clients.length > 0);
-
-  return <Page title="Setup" description="You can use the workspace while setup runs.">
+  const installations = status?.installations ?? [];
+  return <Page title="Setup" description="Connect a new machine or check setup on an existing one."
+    actions={installations.length > 0 && <Button variant="primary" onClick={() => setAdding(true)}><Icon name="plus" size={16}/>Add machine</Button>}>
     <div className="stack">
       {error && <Notice tone="danger">{error} Your saved choices are unchanged.</Notice>}
-      <div className="oc-form-measure stack-sm">
-        <CopyField label="Run in your terminal" value="opencrawl setup"/>
-        <p className="muted">The CLI saves your choices and tells you when a sign-in or approval is needed.</p>
-      </div>
-      {installations.length ? <div>
-        {installations.map(installation => <InstallationProgress key={installation.installationId} installation={installation}/>)}
-      </div> : <EmptyState title="Waiting for setup" description="Run the command to get started."/>}
+      {installations.length > 0
+        ? <Section className="oc-source-section" title="Your machines">
+            <div className="oc-machine-list">{installations.map(installation => <MachineRow key={installation.installationId} installation={installation}/>)}</div>
+          </Section>
+        : <Section className="oc-source-section" title="Add your first machine" description="Install OpenCrawl and choose which agents to connect. Your machine will appear here as setup runs."><MachineInstructions/></Section>}
     </div>
+    {(installations.length > 0 || adding) && <Dialog open={adding} onClose={() => setAdding(false)} title="Add a machine" description="Install OpenCrawl and choose which agents to connect."><MachineInstructions/></Dialog>}
   </Page>;
 }

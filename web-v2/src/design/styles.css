@@ -275,41 +275,34 @@ img { max-width: 100%; }
 
 .oc-table-container td:last-child { white-space: nowrap; }
 
-/* Per-machine progress uses the management surface and one row per client. */
-.oc-progress-panel { container-type: inline-size; }
-.oc-progress-panel .oc-section-heading h2 { overflow-wrap: anywhere; }
-.oc-progress-table table { table-layout: fixed; }
-.oc-progress-table :is(th, td) { vertical-align: middle; }
-.oc-progress-table tbody th { font-size: var(--text-ui); color: var(--text); }
-.oc-progress-table tr:last-child th[scope="row"] { border-bottom: 0; }
-.oc-progress-table td { color: var(--muted); }
-.oc-progress-table td:last-child { white-space: normal; }
-.oc-progress-label { display: none; }
-
-@container (max-width: 48rem) {
-  .oc-progress-table table { table-layout: auto; }
-  .oc-progress-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-  .oc-progress-table tbody tr {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: var(--space-1) var(--space-3);
-    padding-block: var(--space-4);
-    border-top: 1px solid var(--line);
-  }
-  .oc-progress-table tbody tr:last-child { padding-bottom: 0; }
-  .oc-progress-table tbody :is(th, td) { padding: 0; border: 0; }
-  .oc-progress-table tbody td:nth-child(2) { justify-self: end; }
-  .oc-progress-table tbody td:nth-child(n+3) {
-    grid-column: 1 / -1;
-    display: flex;
-    justify-content: space-between;
-    gap: var(--space-4);
-    font-size: var(--text-sm);
-    text-align: right;
-  }
-  .oc-progress-table tbody td:nth-child(3) { margin-top: var(--space-2); }
-  .oc-progress-label { display: inline; text-align: left; }
+/* Machine summaries open in place to keep setup status scannable. */
+.oc-machine-list { border-block: 1px solid var(--line); }
+.oc-machine-row + .oc-machine-row { border-top: 1px solid var(--line); }
+.oc-machine-row > summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-2);
+  cursor: pointer;
+  list-style: none;
+}
+.oc-machine-row > summary::-webkit-details-marker { display: none; }
+.oc-machine-row > summary:hover { background: var(--surface-subtle); }
+.oc-machine-row > summary:focus-visible { outline-offset: calc(-1 * var(--console-focus-offset)); }
+.oc-machine-row > summary > .oc-icon { color: var(--muted); }
+.oc-machine-row[open] > summary > .oc-icon:last-child { transform: rotate(90deg); }
+.oc-machine-identity { display: grid; gap: var(--space-1); overflow-wrap: anywhere; }
+.oc-machine-identity strong, .oc-machine-details strong { font-weight: 500; }
+.oc-machine-identity small, .oc-machine-details { color: var(--muted); font-size: var(--text-sm); }
+.oc-machine-details { padding: 0 var(--space-2) var(--space-4) var(--space-10); }
+.oc-machine-details ul { list-style: none; margin: 0 0 var(--space-3); padding: 0; }
+.oc-machine-details li { display: grid; grid-template-columns: minmax(6rem, auto) 1fr; gap: var(--space-3); padding-block: var(--space-2); border-top: 1px solid var(--line); }
+.oc-machine-details li strong { color: var(--text); }
+@media (max-width: 600px) {
+  .oc-machine-row > summary { gap: var(--space-2); padding-inline: 0; }
+  .oc-machine-details { padding-inline: 0; }
+  .oc-machine-details li { grid-template-columns: 1fr; gap: var(--space-1); }
 }
 
 /* Preserved report composition. These shared patterns retain the approved Usage design. */
