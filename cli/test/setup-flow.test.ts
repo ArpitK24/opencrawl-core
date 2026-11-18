@@ -97,7 +97,7 @@ test('a saved self-hosted address survives interrupted sign-in without authorizi
  const different=terminalSetupEntry('https://another.example');expect(different.continuing).toBe(false);
  const unexpected=async():Promise<never>=>{throw Error('Repeated navigation');};
  let connected=false;
- const ui:SetupUi={signal:new AbortController().signal,welcome:unexpected,hosting:unexpected,workspace:unexpected,choose:unexpected,native:unexpected,
+ const ui:SetupUi={signal:new AbortController().signal,welcome:unexpected,hosting:unexpected,workspace:unexpected,invite:unexpected,choose:unexpected,native:unexpected,
   close:()=>{},progress:()=>{},action:async()=>'done'};
  await runInteractiveSetup({values:{},entry:()=>resumed,readDestination:()=>({}),withOrigin:(origin,run)=>{
   expect(origin).toBeUndefined();return run();
@@ -213,7 +213,7 @@ test('an interactive resume with only a failed plugin finishes without a repair 
  await setupCommand('apply',api,{yes:true,plugins:'cursor',forward:'cursor',history:'none'},{installPlugins:async()=>failure});
  const unexpected=async():Promise<never>=>{throw Error('Unexpected setup question');};
  const actions:string[]=[];
- const ui:SetupUi={invite:async()=>{throw Error("Unexpected invite prompt");},signal:new AbortController().signal,welcome:unexpected,hosting:unexpected,workspace:unexpected,choose:unexpected,native:unexpected,close:()=>{},progress:()=>{},
+ const ui:SetupUi={signal:new AbortController().signal,welcome:unexpected,hosting:unexpected,workspace:unexpected,invite:unexpected,choose:unexpected,native:unexpected,close:()=>{},progress:()=>{},
   action:async screen=>{actions.push(screen.title);expect(screen.actions?.map(action=>action.label)).toEqual(['Done']);return 'done';}
  };
  const code=await runInteractiveSetup({entry:()=>terminalSetupEntry(api),values:{},readDestination:()=>({api}),withOrigin:(_origin,run)=>run(),login:unexpected},{

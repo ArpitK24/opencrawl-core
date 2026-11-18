@@ -68,10 +68,16 @@ export async function runInteractiveSetup(options:Options,{createUi,setup=setupC
     else ui.progress('Connecting to your workspace','Checking your sign-in and available agents.',[api]);
     return await options.withOrigin(explicit,async()=>{
      const onProgress=(title:string,description:string,phase?:'installing')=>ui.progress(title,description,undefined,phase==='installing');
-     let result=await setup(action,api,options.values,{interactive:true,choose:ui.choose,onProgress,login:()=>options.login(api,ui)});
+     let finishedHistoryChoice=false;
+     const choose:SetupUi['choose']=async screen=>{
+      const selection=await ui.choose(screen);
+      if(screen.phase===2&&selection!==null)finishedHistoryChoice=true;
+      return selection;
+     };
+     let result=await setup(action,api,options.values,{interactive:true,choose,onProgress,login:()=>options.login(api,ui)});
      if(ui.signal.aborted)return 130;
      if(!result||'status' in result&&result.status==='cancelled')return 0;
-     if(action==='run' && 'scope' in result && result.scope && !('historyDecision' in result)){
+     if(action==='run' && finishedHistoryChoice && 'scope' in result && result.scope){
       await offerInvitations(result.scope,ui);
       if(ui.signal.aborted)return 130;
      }
