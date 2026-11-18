@@ -7,6 +7,7 @@ import {join,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import {configuration,plan,airbyteValues,prepareAirbyteChart,applicationName} from './install.mts';
+import {connectProbePostgres} from './runtime/postgres-connect.mts';
 const root=dirname(fileURLToPath(import.meta.url));
 const input={context:'test',url:'https://opencrawl.example.com',image:{tag:'sha-test'}};
 test('release packaging versions both archives without changing source or building images',()=>{
@@ -29,6 +30,22 @@ test('release packaging versions both archives without changing source or buildi
 });
 test('all shipped agent tools parse without installing dependencies',()=>{
   for(const file of ['install.mts','verify.mts','release-kit.mts','runtime/probe.mts']){const r=spawnSync(process.execPath,['--check',join(root,file)],{encoding:'utf8'});assert.equal(r.status,0,r.stderr);}
+});
+test('conformance retries only refused PostgreSQL connections and closes each failed client',async()=>{
+  async function exercise(errors:string[]) {
+    let created=0, closed=0;
+    const db=await connectProbePostgres(()=>{
+      created++;
+      return {
+        async connect(){const code=errors.shift();if(code)throw Object.assign(new Error(code),{code});},
+        async end(){closed++;},
+      };
+    }).catch((error:NodeJS.ErrnoException)=>error.code);
+    return {created,closed,outcome:typeof db==='string'?db:'connected'};
+  }
+  assert.deepEqual(await exercise(['ECONNREFUSED']),{created:2,closed:1,outcome:'connected'});
+  assert.deepEqual(await exercise(['28P01']),{created:1,closed:1,outcome:'28P01'});
+  assert.deepEqual(await exercise(Array(7).fill('ECONNREFUSED')),{created:6,closed:6,outcome:'ECONNREFUSED'});
 });
 test('installation plan bundles all resources and preserves independent external choices',()=>{
   const all=configuration(input);assert.equal(plan(all).steps.length,3);
