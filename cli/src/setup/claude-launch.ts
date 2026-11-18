@@ -7,13 +7,20 @@ const run:Run=(command,args)=>new Promise((resolve,reject)=>{
  child.once('error',reject);child.once('exit',code=>resolve(code??1));
 });
 
+type ClaudeSetupOptions={api:string;prompt:string;needsLogin:boolean;returnToSetup?:boolean};
+
 /** Native Claude owns its OAuth tokens. The CLI waits for its browser callback. */
-export async function launchClaudeSetup(claude:string,{api,prompt,needsLogin}:{api:string;prompt:string;needsLogin:boolean},execute:Run=run,notify:(message:string)=>void=message=>console.error(message)){
+export async function launchClaudeSetup(claude:string,{api,prompt,needsLogin,returnToSetup}:ClaudeSetupOptions,execute:Run=run,notify:(message:string)=>void=message=>console.error(message)){
  if(needsLogin){
   notify('Connect Claude Code: approve access in the browser. Setup continues automatically.');
   const code=await execute(claude,['mcp','login',`plugin:${setupPluginIdentity(api).name}:opencrawl`]);
   if(code!==0)return code;
  }
- notify('Opening Claude Code to verify setup. Your choices are saved.');
- return execute(claude,[prompt]);
+ notify('Opening a Claude Code session in this terminal to check the connection.');
+ const task=returnToSetup
+  ? prompt+' Once this client is verified, end your reply with “Press Ctrl+C to close Claude Code and return to OpenCrawl setup. If Claude asks you to confirm, press Ctrl+C again.”'
+  : prompt;
+ const code=await execute(claude,[task]);
+ // The TUI rechecks verification after the session closes, including an early Ctrl+C.
+ return returnToSetup&&code===130?0:code;
 }
