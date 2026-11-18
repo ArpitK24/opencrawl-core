@@ -124,7 +124,7 @@ test('online transitions deliver status once per online peer and resolve the fir
  }}}).agent;
  const dormant={...alice,userId:'dormant'},late={...alice,userId:'late'};
  const join=(principal,options={})=>api.presence(principal,{currentSession:{harness:'codex',sessionId:principal.userId},name:'codex:'+principal.userId,task:'A task',...options});
- await join(dormant);clock+=16*60_000;await join(bob);await join(other);
+ await join(dormant,{channels:['presence']});clock+=16*60_000;await join(bob);await join(other);
  await join(alice,{installationId:'machine',announce:true});await join(alice,{announce:true});
  await join(late);assert.deepEqual((await api.inbox(bob,{...user(bob),noticeOnly:true})).ids,[1]);assert.deepEqual(calls,[]);
  const first=await api.inbox(bob,user(bob));assert.equal(first.messages.length,1);assert.equal(first.messages[0].firstUserPrompt,'🪐'.repeat(1000));
