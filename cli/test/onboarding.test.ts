@@ -75,7 +75,7 @@ test.skipIf(process.platform === 'win32')('setup shows the code before opening a
     const before = state.polls;
     const approval = Promise.withResolvers<void>();
     state.holdApproval = approval.promise;
-    const childEnv = {...env, PATH: directory + ':' + env.PATH, OPENED: opened, SSH_CONNECTION: mode === 'ssh' ? 'fixture' : '', SSH_TTY: ''};
+    const childEnv = {...env, PATH: directory, OPENED: opened, SSH_CONNECTION: mode === 'ssh' ? 'fixture' : '', SSH_TTY: ''};
     let output = '';
     const args = ['setup', '--api', api, ...(mode === 'no-browser' ? ['--no-browser'] : [])];
     const child = Bun.spawn([process.execPath, resolve(import.meta.dir, '../src/cli.ts'), ...args], {
@@ -100,6 +100,11 @@ test.skipIf(process.platform === 'win32')('setup shows the code before opening a
       }
       if (mode !== 'cancel') {
         await waitFor(local ? 'Confirm the code in your browser.' : 'Open this link in your browser and confirm the code.');
+        if (mode === 'open') {
+          const deadline = Date.now() + 3000;
+          while (!existsSync(opened) && Date.now() < deadline) await Bun.sleep(10);
+          expect(readFileSync(opened, 'utf8')).toBe(api + '/approve\n');
+        }
         approval.resolve();
         await waitFor('› [ Retry ]');
         expect(state.polls).toBe(before + 1);
