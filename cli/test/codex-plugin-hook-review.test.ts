@@ -27,26 +27,25 @@ function fixture(){
 }
 const query=(hooks:unknown[])=>async()=>({data:[{errors:[],hooks}]});
 
-test('published context suggestions participate in native trust review',async()=>{
+test('review follows the installed bundle across display-label changes',async()=>{
  const f=fixture();try{
-  const value=JSON.parse(f.files['hooks/hooks.json']);
-  value.hooks.UserPromptSubmit??=[];
-  const group=value.hooks.UserPromptSubmit.length;
-  value.hooks.UserPromptSubmit.push({hooks:[{type:'command',command:'fixture-context',statusMessage:'OpenCrawl context suggestions'}]});
-  f.files['hooks/hooks.json']=json(value);f.seal();
-  const existing=f.hooks[0]!;
-  const context={...existing,key:`${existing.pluginId}:hooks/hooks.json:user_prompt_submit:${group}:0`,statusMessage:'OpenCrawl context suggestions',trustStatus:'untrusted'};
-  expect(await inspectCodexHooks(f.root,query([...f.hooks,context]))).toEqual({state:'observed',total:10,pending:1,disabled:0});
-  expect(await inspectCodexHooks(f.root,query([...f.hooks,{...context,trustStatus:'trusted'}]))).toEqual({state:'observed',total:10,pending:0,disabled:0});
+  const oldLabel='OpenCrawl prompt context',currentLabel='Find OpenCrawl sources relevant to your prompt';
+  const manifest=JSON.parse(f.files['hooks/hooks.json']);
+  const suggest=manifest.hooks.UserPromptSubmit.flatMap((group:{hooks:{statusMessage:string}[]})=>group.hooks).find((hook:{statusMessage:string})=>hook.statusMessage===currentLabel);
+  suggest.statusMessage=oldLabel;
+  f.files['hooks/hooks.json']=json(manifest);f.seal();
+  const previous=f.hooks.map(hook=>hook.statusMessage===currentLabel?{...hook,statusMessage:oldLabel,trustStatus:'untrusted'}:hook);
+  expect(await inspectCodexHooks(f.root,query(previous))).toEqual({state:'observed',total:10,pending:1,disabled:0});
+  expect(await inspectCodexHooks(f.root,query(f.hooks))).toMatchObject({state:'unknown',pending:null});
  }finally{f.close();}
 });
 
 test('plugin-only enrollment reports native startup, capture and search-context trust without global hooks',async()=>{
  const f=fixture();try{
-  const before=f.unchanged();expect(localCodexHookReview(f.root)).toEqual({state:'unknown',total:9,pending:null,disabled:null});
-  expect(await inspectCodexHooks(f.root,query(f.hooks))).toEqual({state:'observed',total:9,pending:0,disabled:0});
+  const before=f.unchanged();expect(localCodexHookReview(f.root)).toEqual({state:'unknown',total:10,pending:null,disabled:null});
+  expect(await inspectCodexHooks(f.root,query(f.hooks))).toEqual({state:'observed',total:10,pending:0,disabled:0});
   const changed=f.hooks.map((hook,i)=>({...hook,trustStatus:i<2?'modified':hook.trustStatus,enabled:i!==2}));
-  expect(await inspectCodexHooks(f.root,query(changed))).toEqual({state:'observed',total:9,pending:2,disabled:1});expect(f.unchanged()).toEqual(before);
+  expect(await inspectCodexHooks(f.root,query(changed))).toEqual({state:'observed',total:10,pending:2,disabled:1});expect(f.unchanged()).toEqual(before);
  }finally{f.close();}
 });
 
@@ -55,7 +54,7 @@ test('foreign source, deployment ID, missing receipt and bundle tampering cannot
   const foreign=f.hooks.map(hook=>({...hook,source:'user',pluginId:'opencrawl@production',sourcePath:join(f.root,'hooks.json')}));
   f.write(join(f.root,'hooks.json'),{hooks:{}});
   expect(await inspectCodexHooks(f.root,query(foreign))).toMatchObject({state:'unknown',pending:null});
-  expect(await inspectCodexHooks(f.root,query([...foreign,...f.hooks]))).toMatchObject({state:'observed',pending:0,total:9});
+  expect(await inspectCodexHooks(f.root,query([...foreign,...f.hooks]))).toMatchObject({state:'observed',pending:0,total:10});
   expect(await inspectCodexHooks(f.root,query(f.hooks.map(hook=>({...hook,pluginId:'opencrawl@another'}))))).toMatchObject({state:'unknown',pending:null});
   rmSync(f.receipt);expect(await inspectCodexHooks(f.root,query(foreign))).toMatchObject({state:'unknown',pending:null});
   f.seal();f.write(join(f.nativeRoot,Object.keys(f.files).find(name=>name.startsWith('scripts/'))!),'tampered runner');
@@ -66,7 +65,7 @@ test('foreign source, deployment ID, missing receipt and bundle tampering cannot
 test('a changed installed bundle needs current native review and concurrent changes remain unknown',async()=>{
  const f=fixture();try{
   const runner=Object.keys(f.files).find(name=>name.startsWith('scripts/'))!;f.files[runner]+='\n';f.seal();
-  expect(await inspectCodexHooks(f.root,query(f.hooks.map(hook=>({...hook,trustStatus:'modified'}))))).toEqual({state:'observed',total:9,pending:9,disabled:0});
+  expect(await inspectCodexHooks(f.root,query(f.hooks.map(hook=>({...hook,trustStatus:'modified'}))))).toEqual({state:'observed',total:10,pending:10,disabled:0});
   expect(await inspectCodexHooks(f.root,async()=>{f.files[runner]+='\n';f.seal();return {data:[{errors:[],hooks:f.hooks}]};})).toMatchObject({state:'unknown',pending:null});
   expect(await inspectCodexHooks(f.root,async()=>{throw new Error('native unavailable');})).toMatchObject({state:'unknown',pending:null});
  }finally{f.close();}
@@ -82,12 +81,12 @@ test('explicit forward opt-out does not turn startup trust into a recording requ
 
 test('plugin review includes pending and disabled search context alongside capture hooks',async()=>{
  const f=fixture();try{
-  const before=f.unchanged(),search=f.hooks.find(hook=>hook.statusMessage==='OpenCrawl search context');
+  const before=f.unchanged(),search=f.hooks.find(hook=>hook.statusMessage==='Identify this chat in OpenCrawl searches and board actions');
   expect(search).toBeDefined();
   const pending=f.hooks.map(hook=>hook===search?{...hook,trustStatus:'untrusted'}:hook);
-  expect(await inspectCodexHooks(f.root,query(pending))).toEqual({state:'observed',total:9,pending:1,disabled:0});
+  expect(await inspectCodexHooks(f.root,query(pending))).toEqual({state:'observed',total:10,pending:1,disabled:0});
   const disabled=pending.map(hook=>hook.key===search!.key?{...hook,enabled:false}:hook);
-  expect(await inspectCodexHooks(f.root,query(disabled))).toEqual({state:'observed',total:9,pending:0,disabled:1});
+  expect(await inspectCodexHooks(f.root,query(disabled))).toEqual({state:'observed',total:10,pending:0,disabled:1});
   expect(f.unchanged()).toEqual(before);
  }finally{f.close();}
 });
