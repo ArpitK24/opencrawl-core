@@ -11,12 +11,14 @@ const session = text(200);
 const name = z.string().trim().min(3).max(80).regex(/^[a-zA-Z0-9][a-zA-Z0-9:_.-]*$/);
 const topic = text(80);
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+import {announceOnline,onlineWindow} from './inbox.mjs';
+import {captureReference} from './inbox.mjs';
 const aliveMs = 180_000, retainMs = 30 * 24 * 3600_000;
 const workspace = {workspace: text(200).optional()};
 export const participationSchemas = {
   bootstrap: z.strictObject({session, harness: text(40)}).extend(workspace),
-  profile: z.strictObject({session, name, task: text(240)}).extend(workspace),
-  register: z.strictObject({session, name, task: text(240), harness: text(40).default('other')}).extend(workspace),
+  profile: z.strictObject({session, name, task: text(240), announce:z.boolean().optional(), installationId:text(200).optional()}).extend(workspace),
+  register: z.strictObject({session, name, task: text(240), harness: text(40).default('other'),announce:z.boolean().optional(),installationId:text(200).optional()}).extend(workspace),
   directory: z.strictObject({after: z.number().int().nonnegative().default(0)}).extend(workspace),
   // Older CLIs still send homepage; it is accepted and ignored. Deliveries are
   // system announcements, mentions and subscribed channels. Replies never broadcast.
@@ -58,13 +60,18 @@ export function createParticipation({scope,repository,now}:{scope(principal:Prin
         if(operation!=='bootstrap'&&p?.name&&p.name!==args.name)throw fail('Keep the registered name when resuming this session',409);
         if(!p&&Object.keys(profiles).length>=2048)throw fail('Session registry is full',429);
         const resumed=Boolean(p);
-        p||={name:'',task:'',harness:operation==='profile'?'other':args.harness,registeredAt:time,seen:time,topics:[],ackCursor:head,lastPoll:null,lastAckAt:null,nextHomeAt:time+60000,pending:null,batches:0,acknowledgedBatches:0};
+        p||={name:'',task:'',harness:operation==='profile'?'other':args.harness,registeredAt:time,seen:time,topics:[],inboxAfter:head,ackCursor:head,lastPoll:null,lastAckAt:null,nextHomeAt:time+60000,pending:null,batches:0,acknowledgedBatches:0};
+        if(p.left||p.seen<=time-onlineWindow)p.announced=false;
         Object.assign(p,{userId:principal.userId,seen:time,left:false});
         if(operation!=='bootstrap')Object.assign(p,{name:args.name,task:args.task});
         if(operation!=='profile')p.harness=args.harness;
+        if(operation!=='bootstrap' && args.announce){
+          if(args.installationId)p.captureRef=captureReference(principal,p.harness,args.installationId,args.session);
+          await announceOnline(tx,id,p,profiles,time);
+        }
         await tx.putParticipant(id,p);
         const presence=(await tx.agents())[id];if(presence)await tx.putAgent(id,{...presence,name:p.name,seen:time});
-        return {workspace:principal.tenantId,agent:id,session:args.session,name:p.name||null,task:p.task||null,harness:p.harness,resumed,boardProtocol:2,
+        return {workspace:principal.tenantId,agent:id,session:args.session,name:p.name||null,task:p.task||null,harness:p.harness,resumed,boardProtocol:2,boardInbox:true,
           subscriptions:{mentions:Boolean(p.name),topics:p.topics,channels:p.topics,announcements:true},pollAfterMs:10000,...(operation==='register'?{home:resumed?[]:(await tx.messages({limit:5,descending:true})).reverse().map(visibleMessage),agents:(await directory(tx,0,8)).agents}:{})};
       }
       if(!p)throw fail('Register this session before using the board',404);
@@ -93,7 +100,7 @@ export function createParticipation({scope,repository,now}:{scope(principal:Prin
           // One lookahead row preserves the legacy through/more receipt boundary.
           const unseen=await tx.unread({after:p.ackCursor,through:head,topics:p.topics,mention:id,userId:principal.userId,agent:id,name:p.name,limit:9});
           if(unseen.length||time>=p.nextHomeAt){const messages=[];let through=head,bytes=0;
-            for(const m of unseen){const reasons=[...(m.mentions?.includes(id)?['mention']:[]),...(p.topics.includes(m.topic)?['channel']:[]),...(m.threadId&&p.followedThreads?.includes(m.threadId)&&!p.mutedThreads?.includes(m.threadId)?['thread']:[]),...(m.system&&m.threadId===undefined?['announcement']:[])];const {requestId,publication,...v}=m,message={...v,reasons},size=Buffer.byteLength(JSON.stringify(message));
+            for(const m of unseen){const reasons=[...(m.onlineAudience?.includes(id)?['presence']:[]),...(m.mentions?.includes(id)?['mention']:[]),...(p.topics.includes(m.topic)?['channel']:[]),...(m.threadId&&p.followedThreads?.includes(m.threadId)&&!p.mutedThreads?.includes(m.threadId)?['thread']:[]),...(m.system&&m.threadId===undefined?['announcement']:[])];const {requestId,publication,onlineAudience,captureRef,...v}=m,message={...v,reasons},size=Buffer.byteLength(JSON.stringify(message));
               if(messages.length>=8||messages.length>0&&bytes+size>8192){through=m.id-1;break;}messages.push(message);bytes+=size;
             }
             if(messages.length){const receipt=hash(JSON.stringify([id,p.ackCursor,through,messages.map(m=>m.id)]));p.pending={receipt,createdAt:time,through,more:through<head,messages};p.batches++;p.lastDeliveryAt=time;p.nextHomeAt=time+60000;dirty=true;}

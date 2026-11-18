@@ -10,11 +10,12 @@ import {boardIdentity} from '../board/identity.mjs';
 
 const fail=(message:string,status=503)=>Object.assign(new Error(message),{status});
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
-const visible=({requestId,publication,...message}:BoardMessage)=>message;
+const visible=({requestId,publication,captureRef,onlineAudience,...message}:BoardMessage)=>message;
 export interface BoardMetadata {head:number;usage:BoardState['usage'];participantsPresent:boolean}
 export type BoardProfile=Omit<Participant,'pending'>&{pending:(Omit<Delivery,'messages'>&{count:number})|null};
 export interface BoardReader {
   metadata():Promise<BoardMetadata>;
+  headBefore(time:number):Promise<number>;
   message(id:number):Promise<BoardMessage|null>;
   messagesByIds(ids:number[]):Promise<BoardMessage[]>;
   agentNames(ids:string[]):Promise<Record<string,string>>;
@@ -113,6 +114,7 @@ export function createPostgresBoardState(database:ApplicationDatabase) {
     }
     return {metadata,
       async message(id){return (await query('SELECT record FROM opencrawl_board_messages WHERE namespace=$1 AND tenant_hash=$2 AND id=$3',[id])).rows[0]?.record??null;},
+      async headBefore(time){const row=(await query('SELECT id FROM opencrawl_board_messages WHERE namespace=$1 AND tenant_hash=$2 AND stamp<$3 ORDER BY id DESC LIMIT 1',[time])).rows[0];return Number(row?.id??0);},
       async messagesByIds(ids){return (await query('SELECT record FROM opencrawl_board_messages WHERE namespace=$1 AND tenant_hash=$2 AND id=ANY($3::bigint[])',[ids])).rows.map(row=>row.record);},
       async agentNames(ids){
         if(!ids.length)return {};
@@ -147,7 +149,7 @@ export function createPostgresBoardState(database:ApplicationDatabase) {
       async directory({after,limit,cutoff}){const total=Number((await query('SELECT count(*) count FROM opencrawl_board_participants WHERE namespace=$1 AND tenant_hash=$2 AND seen>$3',[cutoff])).rows[0].count);const rows=(await query(`SELECT p.agent,p.record,d.record delivery,(SELECT count(*) FROM opencrawl_board_delivery_messages dm WHERE dm.namespace=p.namespace AND dm.tenant_hash=p.tenant_hash AND dm.agent=p.agent) delivery_count FROM opencrawl_board_participants p LEFT JOIN opencrawl_board_deliveries d USING(namespace,tenant_hash,agent) WHERE p.namespace=$1 AND p.tenant_hash=$2 AND p.seen>$3 ORDER BY p.seen DESC,p.agent LIMIT $4 OFFSET $5`,[cutoff,limit,after])).rows;return {total,agents:rows.map(row=>({id:row.agent,participant:{...row.record,pending:row.delivery?{...row.delivery,count:Number(row.delivery_count)}:null}}))};},
       async agents(){return Object.fromEntries((await query('SELECT agent,record FROM opencrawl_board_agents WHERE namespace=$1 AND tenant_hash=$2 ORDER BY position,agent')).rows.map(row=>[row.agent,row.record]));},
       async topics(){return (await query('SELECT topic,first_id,posts,latest FROM opencrawl_board_topics WHERE namespace=$1 AND tenant_hash=$2 ORDER BY first_id')).rows.map(row=>({topic:row.topic,first:Number(row.first_id),posts:Number(row.posts),latest:row.latest}));},
-      async unread({after,through,topics,mention,userId,agent,name,limit}){return (await query(`SELECT m.record FROM opencrawl_board_messages m WHERE m.namespace=$1 AND m.tenant_hash=$2 AND m.id>$3 AND m.id<=$4 AND (m.topic=ANY($5::text[]) OR m.record->'mentions' ? $6 OR EXISTS(SELECT 1 FROM opencrawl_board_participants f WHERE f.namespace=m.namespace AND f.tenant_hash=m.tenant_hash AND f.agent=$8 AND NOT coalesce(f.record->'mutedThreads','[]'::jsonb) @> jsonb_build_array((m.record->>'threadId')::bigint) AND coalesce(f.record->'followedThreads','[]'::jsonb) @> jsonb_build_array((m.record->>'threadId')::bigint)) OR (m.topic='opencrawl' AND m.record->>'system'='true' AND NOT m.record ? 'threadId')) AND NOT(m.author=$7 AND(m.agent=$8 OR(lower(m.name)=lower($9) AND(m.legacy_agent OR EXISTS(SELECT 1 FROM opencrawl_board_participants p WHERE p.namespace=m.namespace AND p.tenant_hash=m.tenant_hash AND p.agent=m.agent AND lower(p.name)=lower($9)))))) ORDER BY m.id LIMIT $10`,[after,through,topics,mention??'',userId,agent,name,limit])).rows.map(row=>row.record);},
+      async unread({after,through,topics,mention,userId,agent,name,limit}){return (await query(`SELECT m.record FROM opencrawl_board_messages m WHERE m.namespace=$1 AND m.tenant_hash=$2 AND m.id>$3 AND m.id<=$4 AND (m.record->'onlineAudience' ? $8 OR m.topic=ANY($5::text[]) OR m.record->'mentions' ? $6 OR EXISTS(SELECT 1 FROM opencrawl_board_participants f WHERE f.namespace=m.namespace AND f.tenant_hash=m.tenant_hash AND f.agent=$8 AND NOT coalesce(f.record->'mutedThreads','[]'::jsonb) @> jsonb_build_array((m.record->>'threadId')::bigint) AND coalesce(f.record->'followedThreads','[]'::jsonb) @> jsonb_build_array((m.record->>'threadId')::bigint)) OR (m.topic='opencrawl' AND m.record->>'system'='true' AND NOT m.record ? 'threadId')) AND NOT(m.author=$7 AND(m.agent=$8 OR(lower(m.name)=lower($9) AND(m.legacy_agent OR EXISTS(SELECT 1 FROM opencrawl_board_participants p WHERE p.namespace=m.namespace AND p.tenant_hash=m.tenant_hash AND p.agent=m.agent AND lower(p.name)=lower($9)))))) ORDER BY m.id LIMIT $10`,[after,through,topics,mention??'',userId,agent,name,limit])).rows.map(row=>row.record);},
       async publication({userId,agent,name,requestId,registered}){return (await query(`SELECT record FROM opencrawl_board_messages WHERE namespace=$1 AND tenant_hash=$2 AND author=$3 AND request_id=$4 AND(agent=$5 OR($6 AND lower(name)=lower($7) AND legacy_agent)) ORDER BY (agent=$5) DESC,id LIMIT 1`,[userId,requestId,agent,registered,name])).rows[0]?.record??null;},
       putParticipant,
       async removeParticipant(id){await query('DELETE FROM opencrawl_board_participants WHERE namespace=$1 AND tenant_hash=$2 AND agent=$3',[id]);},
@@ -258,9 +260,9 @@ export function createPostgresBoardState(database:ApplicationDatabase) {
 const integer=z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const messageFields={id:integer.min(1),timestamp:integer,agent:z.string(),author:z.string(),name:z.string(),topic:z.string(),text:z.string(),threadId:integer.min(1).optional(),replyTo:integer.min(1).optional(),mentionNames:z.array(z.string()).optional(),system:z.literal(true).optional()};
 const publication=z.strictObject({explicitMentions:z.array(z.string()),unresolvedMentions:z.array(z.string())});
-const messageSchema=z.strictObject({...messageFields,requestId:z.string(),mentions:z.array(z.string()).optional(),publication:publication.optional()});
+const messageSchema=z.strictObject({...messageFields,onlineAudience:z.array(z.string()).max(2048).optional(),captureRef:z.string().optional(),requestId:z.string(),mentions:z.array(z.string()).optional(),publication:publication.optional()});
 const deliverySchema=z.strictObject({receipt:z.string().regex(/^[a-f0-9]{64}$/),createdAt:integer,through:integer,more:z.boolean(),messages:z.array(z.strictObject({...messageFields,mentions:z.array(z.string()).optional(),reasons:z.array(z.string())}))});
-const participantSchema=z.strictObject({userId:z.string().optional(),name:z.string(),task:z.string(),harness:z.string(),registeredAt:integer,seen:integer,left:z.boolean().optional(),topics:z.array(z.string()),followedThreads:z.array(integer.min(1)).optional(),mutedThreads:z.array(integer.min(1)).optional(),homepage:z.boolean().optional(),ackCursor:integer,lastPoll:integer.nullable(),lastAckAt:integer.nullable(),nextHomeAt:integer,pending:deliverySchema.nullable(),batches:integer,acknowledgedBatches:integer,lastDeliveryAt:integer.optional(),acknowledgedMessages:integer.optional(),lastReceipt:z.string().optional()});
+const participantSchema=z.strictObject({userId:z.string().optional(),name:z.string(),task:z.string(),harness:z.string(),registeredAt:integer,seen:integer,left:z.boolean().optional(),topics:z.array(z.string()),followedThreads:z.array(integer.min(1)).optional(),mutedThreads:z.array(integer.min(1)).optional(),announced:z.boolean().optional(),captureRef:z.string().optional(),inboxAfter:integer.optional(),inboxLastReceipt:z.string().optional(),inboxPending:z.strictObject({ids:z.array(integer.min(1)).min(1).max(5),through:integer,cursor:z.string().regex(/^[a-f0-9]{64}$/)}).optional(),homepage:z.boolean().optional(),ackCursor:integer,lastPoll:integer.nullable(),lastAckAt:integer.nullable(),nextHomeAt:integer,pending:deliverySchema.nullable(),batches:integer,acknowledgedBatches:integer,lastDeliveryAt:integer.optional(),acknowledgedMessages:integer.optional(),lastReceipt:z.string().optional()});
 const boardSchema=z.strictObject({schema:z.literal(1),messages:z.array(messageSchema),agents:z.record(z.string(),z.strictObject({name:z.string(),topics:z.array(z.string()),seen:integer})),usage:z.strictObject({calls:integer,inputBytes:integer,outputBytes:integer}),participants:z.record(z.string(),participantSchema).optional()});
 export function validateLegacyBoard(value:unknown):asserts value is BoardState{
   const parsed=boardSchema.safeParse(value);if(!parsed.success)throw fail('Invalid or unsupported legacy board fields');
@@ -276,6 +278,11 @@ export function validateLegacyBoard(value:unknown):asserts value is BoardState{
   for(const p of Object.values(state.participants??{})){
     for(const id of [...p.followedThreads??[],...p.mutedThreads??[]])if(!state.messages[id-1]||state.messages[id-1].threadId!==undefined)throw fail('Invalid followed board thread');
     if((p.followedThreads??[]).some(id=>p.mutedThreads?.includes(id)))throw fail('Conflicting board thread subscriptions');
+    if(p.inboxAfter!==undefined&&p.inboxAfter>state.messages.length)throw fail('Invalid inbox cursor');
+    if(p.inboxPending){let previous=p.inboxAfter??0;
+      if(p.inboxPending.through>state.messages.length)throw fail('Invalid inbox pending boundary');
+      for(const id of p.inboxPending.ids){if(id<=previous||id>p.inboxPending.through)throw fail('Invalid pending inbox IDs');previous=id;}
+    }
     if(p.ackCursor>state.messages.length||p.acknowledgedBatches>p.batches)throw fail('Invalid legacy board participant cursor');
     if(p.pending){if(p.pending.through<p.ackCursor||p.pending.through>state.messages.length)throw fail('Invalid legacy board delivery cursor');let previous=p.ackCursor;
       for(const delivered of p.pending.messages){const {reasons,...body}=delivered,message=state.messages[body.id-1];if(!message||body.id<=previous||body.id>p.pending.through||!isDeepStrictEqual(body,visible(message)))throw fail('Legacy board delivery differs from its immutable publication');previous=body.id;}

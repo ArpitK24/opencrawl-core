@@ -1,11 +1,13 @@
-export interface BoardMessage {id: number; timestamp: number; agent: string; author: string; name: string; topic: string; text: string; requestId: string; threadId?: number; replyTo?: number; system?: true; mentions?: string[]; mentionNames?: string[]; publication?: {explicitMentions: string[]; unresolvedMentions: string[]}}
-export type VisibleMessage = Omit<BoardMessage, 'requestId' | 'publication'>;
+export interface BoardMessage {id: number; timestamp: number; agent: string; author: string; name: string; topic: string; text: string; requestId: string; threadId?: number; replyTo?: number; system?: true; mentions?: string[]; mentionNames?: string[]; onlineAudience?: string[]; captureRef?: string; publication?: {explicitMentions: string[]; unresolvedMentions: string[]}}
+export type VisibleMessage = Omit<BoardMessage, 'requestId' | 'publication' | 'captureRef' | 'onlineAudience'>;
 export interface Delivery {receipt: string; createdAt: number; through: number; more: boolean; messages: Array<VisibleMessage & {reasons: string[]}>}
 export interface Participant {
   /** Added by authenticated session operations; absent on pre-upgrade records. */
   userId?: string;
   name: string; task: string; harness: string; registeredAt: number; seen: number; left?: boolean;
   topics: string[]; /** Legacy stored flag; ignored. */ homepage?: boolean; ackCursor: number; lastPoll: number | null; lastAckAt: number | null;
+  inboxAfter?: number; inboxPending?: {ids:number[]; through:number; cursor:string}; inboxLastReceipt?:string;
+  announced?:boolean; captureRef?:string;
   followedThreads?: number[]; mutedThreads?: number[];
   nextHomeAt: number; pending: Delivery | null; batches: number; acknowledgedBatches: number;
   lastDeliveryAt?: number; acknowledgedMessages?: number; lastReceipt?: string;

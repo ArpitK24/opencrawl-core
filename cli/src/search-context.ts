@@ -5,7 +5,7 @@ import {claudeMcpTool} from './claude-mcp-context.ts';
 export const searchContextMarker = 'OpenCrawl search context';
 // Advertised aliases prove the server accepts currentSession. Older servers
 // expose only search and may reject new arguments in their schema.
-const boardContextTools=['board_post','board_sync','board_presence','board_follow'];
+const boardContextTools=['board_post','board_sync','board_presence','board_follow','board_inbox'];
 const searchTools = [
   ...boardContextTools.flatMap(tool=>[`mcp__opencrawl__${tool}`,`mcp__plugin_opencrawl_opencrawl__${tool}`,`mcp__codex_apps__opencrawl_${tool}`]),
   'mcp__opencrawl__opencrawl_search',

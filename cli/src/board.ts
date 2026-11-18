@@ -192,12 +192,14 @@ function listenerLifetime(output:Writable=process.stdout) {
 
 export const boardStateFile = (api: string, session: string) => join(configDir(), 'board', createHash('sha256').update(JSON.stringify([api, session])).digest('hex') + '.json');
 export const boardProtocolFile = (api:string) => join(configDir(),'board',createHash('sha256').update(api).digest('hex')+'.capabilities.json');
+function supportsInbox(api:string){try{return JSON.parse(readFileSync(boardProtocolFile(api),'utf8')).inbox===true;}catch{return false;}}
+
 export function supportsAgentBoard(api:string){try{return JSON.parse(readFileSync(boardProtocolFile(api),'utf8')).board===2;}catch{return false;}}
 
-export function saveBoardRegistration(api: string, session: string, result: {workspace: string; agent: string; name: string | null; boardProtocol?:number}) {
+export function saveBoardRegistration(api: string, session: string, result: {workspace: string; agent: string; name: string | null; boardProtocol?:number;boardInbox?:boolean}) {
   if (typeof result.workspace !== 'string' || !result.workspace || !/^[a-f0-9]{64}$/.test(result.agent)) throw new CliError('BOARD_PROTOCOL_ERROR', 'Invalid board registration.', 2);
   // Separate from the listener checkpoint: capability refresh must never race it.
-  atomicJson(boardProtocolFile(api),{board:result.boardProtocol===2?2:1});
+  atomicJson(boardProtocolFile(api),{board:result.boardProtocol===2?2:1,...result.boardInbox===true?{inbox:true}:{}});
   const file = boardStateFile(api, session);
   let saved: {workspace?: string; agent?: string; lastEmitted?: string} = {};
   try {saved = JSON.parse(readFileSync(file, 'utf8'));} catch (error: any) {if (error.code !== 'ENOENT') throw filesystemError(error, 'read local board registration');}
@@ -241,7 +243,26 @@ export async function boardCommand(operation: string, api: string, values: Optio
         throw new CliError('BOARD_STARTUP_PENDING','Background registration is still pending. Continue your task; retry this profile command at a later work boundary without registering again.');
       if(file)try{reload();}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
     }
-    const result = await boardRequest(api, operation==='reply'?'publish':operation, scoped(boardInput(operation, values)));
+    if(operation==='inbox' && (supportsInbox(api)||values.cursor!==undefined)){
+      const page=await boardRequest(api,'v2/inbox',scoped({session:sessionId(values),...(values.cursor!==undefined?{acknowledge:values.cursor}:{})}));
+      await emit(page);
+      return;
+    }
+    const input=boardInput(operation,values);
+    // Older deployments use strict schemas. Registration returns the capability
+    // before any new field is used. A first-time fallback register can announce
+    // with the same profile immediately after its successful registration.
+    const advertise = async () => {
+      const {readCaptureConfig}=await import('./capture/runtime.ts');
+      const config=readCaptureConfig();
+      return {announce:true,...config?.api===api&&!config.disabled&&config.installationId!=='pending'?{installationId:config.installationId}:{}};
+    };
+    const extension=operation==='profile'&&supportsInbox(api)?await advertise():{};
+    const result = await boardRequest(api, operation==='reply'?'publish':operation, scoped({...input,...extension}));
+    if(operation==='register' && result.boardInbox===true){
+      const profile={session:sessionId(values),name:values.name,task:values.task,...await advertise()};
+      await boardRequest(api,'profile',{...profile,workspace:result.workspace});
+    }
     if (['register', 'bootstrap', 'profile'].includes(operation) && file) saveBoardRegistration(api, sessionId(values), result);
     await emit(operation==='inbox'?{messages:compactDelivery(result.batch?.messages??[]),next:result.batch?.through??null,more:result.batch?.more??false}:result);
     if (operation === 'inbox' && result.batch) {checkpoint(result.batch.receipt); await acknowledge(result.batch.receipt);}
@@ -259,8 +280,16 @@ export async function boardCommand(operation: string, api: string, values: Optio
       lifetime.check();lifetime.signal.throwIfAborted();
       if(file)try{reload();}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
       const remaining=timeoutMs?timeoutMs-(Date.now()-started):0;if(timeoutMs&&remaining<=0)return;
+      const durable=values['notify-only']===true && supportsInbox(api);
+      const poll=async()=>{
+        const options={signal:lifetime.signal};
+        if(!durable)return boardRequest(api,'inbox',scoped({session}),fetch,options);
+        const page=await boardRequest(api,'v2/inbox',scoped({session,noticeOnly:true}),fetch,options);
+        if(!Array.isArray(page.ids)||page.ids.some((id:unknown)=>!Number.isSafeInteger(id)))throw new CliError('BOARD_PROTOCOL_ERROR','Invalid inbox notification.');
+        return {left:page.left,batch:page.cursor?{receipt:page.cursor,messages:page.ids.map((id:number)=>({id}))}:null};
+      };
       return watchBoard({session, timeoutMs:remaining, once: operation === 'wait', notifyOnly: values['notify-only'] === true, compact: values.compact === true,
-      request: () => boardRequest(api, 'inbox', scoped({session}),fetch,{signal:lifetime.signal}),
+      request:poll,
       acknowledge: receipt=>boardRequest(api,'ack',scoped({session,receipt}),fetch,{signal:lifetime.signal}), checkpoint,
       lastEmitted:!values['notify-only'] && typeof workspace === 'string' && workspace === saved.workspace ? saved.lastEmitted : null, emit,
       warn: message => process.stderr.write(`opencrawl: ${message}\n`),signal:lifetime.signal,check:lifetime.check,
