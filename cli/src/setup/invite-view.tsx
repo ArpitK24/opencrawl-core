@@ -41,8 +41,8 @@ export function InviteScreen({workspace,delivery,send,onContinue,onCancel}:Invit
     <Box flexDirection="column" marginTop={1}>
       <Text bold={isFocused}>Teammate’s email</Text>
       <Box borderStyle="round" borderColor={isFocused?color.accent:color.quiet} paddingX={1}>
-        <TextInput value={value} placeholder="name@company.com" focus={isFocused&&!busy}
-          onChange={next=>{setValue(next.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g,' ').slice(0,512));setError('');}}
+        <TextInput value={value} placeholder="name@company.com" focus={isFocused} showCursor={!busy}
+          onChange={next=>{if(pending.current)return;setValue(next.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g,' ').slice(0,512));setError('');}}
           onSubmit={()=>void submit()}/>
       </Box>
       {sent&&<Text color={color.accent}>{emailDelivery?`Invitation sent to ${sent}.`:`Link created for ${sent}. Find it in Team settings.`}</Text>}
