@@ -10,7 +10,7 @@ import {powershellQuote} from '../hook-runner.ts';
 const owned=new Set(['OpenCrawl session capture','OpenCrawl session startup']);
 // Review every bundled permission together; search context must not become a
 // second surprise after the capture hooks have already been approved.
-const pluginOwned=new Set([...owned,searchContextMarker]);
+const pluginOwned=new Set([...owned,searchContextMarker,'OpenCrawl context suggestions']);
 export type CodexHookReview={state:'not_applicable'|'unknown'|'observed';total:number;pending:number|null;disabled:number|null};
 type Snapshot={review:CodexHookReview;file:string;bytes:string;config:string;keys:Set<string>;binding?:string;pluginId?:string};
 function globalSnapshot(root:string):Snapshot {
@@ -116,7 +116,7 @@ export async function inspectCodexHooks(root:string,query=nativeCodexHooks):Prom
  } catch {return before.review;}
 }
 export function codexHookReviewMessage(review:CodexHookReview):string|null{
- if(review.state==='unknown')return 'Codex hook trust could not be verified. Open /hooks (or desktop Settings > Hooks) to review the listed OpenCrawl session capture, session startup and search context hooks; trust any new or changed definitions you approve, then start a new session.';
- if(review.pending)return `Codex will not run ${review.pending} OpenCrawl hook${review.pending===1?'':'s'} until you review and trust their current definitions: open /hooks (or desktop Settings > Hooks), review the listed OpenCrawl session capture, session startup and search context hooks, then start a new session.${review.disabled?` Another ${review.disabled} OpenCrawl hook${review.disabled===1?' is':'s are'} disabled; keep intentional opt-outs.`:''}`;
+ if(review.state==='unknown')return 'Codex hook trust could not be verified. Open /hooks (or desktop Settings > Hooks) to review the listed OpenCrawl session capture, session startup, search context and context suggestions hooks; trust any new or changed definitions you approve, then start a new session.';
+ if(review.pending)return `Codex will not run ${review.pending} OpenCrawl hook${review.pending===1?'':'s'} until you review and trust their current definitions: open /hooks (or desktop Settings > Hooks), review the listed OpenCrawl session capture, session startup, search context and context suggestions hooks, then start a new session.${review.disabled?` Another ${review.disabled} OpenCrawl hook${review.disabled===1?' is':'s are'} disabled; keep intentional opt-outs.`:''}`;
  return review.disabled?`${review.disabled} OpenCrawl hook${review.disabled===1?' is':'s are'} disabled in Codex. Review /hooks (or desktop Settings > Hooks); keep intentional opt-outs, or enable the hooks you want to use.`:null;
 }

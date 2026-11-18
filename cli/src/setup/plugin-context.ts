@@ -4,6 +4,7 @@ import {isAbsolute, join, relative, resolve, sep} from 'node:path';
 import {apiOrigin, CliError} from '../oauth.ts';
 import {atomicJson, configDir} from '../session.ts';
 import {readCaptureConfig, type CaptureConfig} from '../capture/runtime.ts';
+import {binaryPath,binaryBundleDigest,MAX_PLUGIN_BINARY,MAX_PLUGIN_TEXT} from './plugin-bundle.ts';
 
 export type PluginHookClient = 'claude-code'|'codex'|'cursor'|'antigravity'|'devin';
 export type PluginBinding = {api:string;client:PluginHookClient;pluginName:string;configHome:string;nativeRoot:string};
@@ -23,14 +24,14 @@ export function hasPluginContext(env:NodeJS.ProcessEnv=process.env):boolean {
   return keys.some(key=>env[key]!==undefined);
 }
 
-function bundleFile(root:string,name:string):string {
+function bundleFile(root:string,name:string,limit=MAX_PLUGIN_TEXT):string {
   if(!name||name.includes('\\')||isAbsolute(name)||name.split('/').some(part=>!part||part==='.'||part==='..'))throw invalid();
   const file=resolve(root,name),inside=relative(root,file);
   if(!inside||inside.startsWith('..'+sep)||isAbsolute(inside))throw invalid();
   let current=root;
   for(const part of name.split('/')){current=join(current,part);if(lstatSync(current).isSymbolicLink())throw invalid();}
   const stat=lstatSync(file);
-  if(!stat.isFile()||stat.size>2_000_000)throw invalid();
+  if(!stat.isFile()||stat.size>limit)throw invalid();
   return file;
 }
 
@@ -41,17 +42,19 @@ export function verifyPluginBundle(binding:PluginBinding):VerifiedPluginBundle {
     const api=apiOrigin(binding.api),root=realpathSync(binding.nativeRoot);
     if(binding.pluginName!=='opencrawl-'+originKey(api)||!lstatSync(root).isDirectory())throw invalid();
     const marker=readJson(bundleFile(root,'.opencrawl-setup-plugin.json'));
-    if(!object(marker)||marker.schemaVersion!==2||marker.api!==api||marker.client!==binding.client||marker.pluginName!==binding.pluginName||marker.configHome!==resolve(binding.configHome)||typeof marker.digest!=='string'||!object(marker.files))throw invalid();
+    if(!object(marker)||(marker.schemaVersion!==2&&marker.schemaVersion!==3)||marker.api!==api||marker.client!==binding.client||marker.pluginName!==binding.pluginName||marker.configHome!==resolve(binding.configHome)||typeof marker.digest!=='string'||!object(marker.files))throw invalid();
+    const executable=marker.schemaVersion===3?marker.executable:undefined;
+    if(marker.schemaVersion===3&&(!binaryPath(executable)||!(executable in marker.files)))throw invalid();
     const entries=Object.entries(marker.files);
     if(!entries.length||entries.length>128)throw invalid();
     const files:Record<string,string>={},contents:Record<string,string>={};let bytes=0;
     for(const [name,digest] of entries){
       if(name==='.opencrawl-setup-plugin.json'||typeof digest!=='string'||!/^[a-f0-9]{64}$/.test(digest))throw invalid();
-      const data=readFileSync(bundleFile(root,name));bytes+=data.length;
-      if(bytes>2_000_000||hash(data)!==digest)throw invalid();
-      files[name]=digest;contents[name]=data.toString('utf8');
+      const binary=name===executable,file=bundleFile(root,name,binary?MAX_PLUGIN_BINARY:MAX_PLUGIN_TEXT),data=readFileSync(file);if(!binary)bytes+=data.length;
+      if(bytes>MAX_PLUGIN_TEXT||hash(data)!==digest||binary&&process.platform!=='win32'&&(lstatSync(file).mode&0o777)!==0o755)throw invalid();
+      files[name]=digest;if(!executable)contents[name]=data.toString('utf8');
     }
-    if(hash(JSON.stringify(contents,null,2)+'\n')!==marker.digest)throw invalid();
+    if((typeof executable==='string'?binaryBundleDigest(files,executable):hash(JSON.stringify(contents,null,2)+'\n'))!==marker.digest)throw invalid();
     return {root,digest:marker.digest,files};
   } catch {throw invalid();}
 }

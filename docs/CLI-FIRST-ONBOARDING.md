@@ -1,0 +1,65 @@
+# CLI-first onboarding
+
+Interactive setup on macOS connects a workspace and installs recording for the selected agents.
+
+## Human path
+
+1. Run `opencrawl setup` in a terminal. The entire interactive setup uses one
+   Ink TUI: workspace input, browser approval guidance, installation, history,
+   verification, errors and completion share its frame and keyboard controls.
+   Choose Cloud or Self-hosted when no destination is saved or explicitly
+   supplied. Cloud uses `https://app.getopencrawl.com`; only Self-hosted asks
+   for a workspace address. Back returns to the hosting choice. Saved addresses
+   and `--api` skip both questions. Complete browser sign-in if needed;
+   the TUI continues when approval arrives.
+   Footer hints follow the focused control: arrows navigate choices or buttons,
+   Left/Right edits the address, Space toggles checkboxes, and Enter activates
+   the current action. Busy screens show Escape to cancel; completion shows
+   only Enter to finish. Installation uses a moving violet trail while work
+   runs, without claiming a measured percentage.
+2. **Record new sessions.** Setup shows Claude Code, Codex, Antigravity (agy),
+   and Cursor, with unavailable agents dimmed. Move with the arrow keys and toggle checkboxes with Space. Move to the
+   bottom buttons and press Enter to activate one. Selecting an agent installs its integration and enables capture.
+   Detected agents start selected; saved off choices remain off. The final option
+   is **Do not record any sessions on this machine**. That option skips
+   installation and history import.
+3. **Import past sessions.** After capture is configured, a separate screen
+   offers available histories for the selected agents. History starts off for a
+   new installation. Choose histories to import or **Skip history import**.
+   If no eligible history exists, setup continues without another question.
+   Cursor history import is not currently supported.
+4. Complete any required native agent sign-in/trust clicks. Claude-only setup
+   can open Claude Code and continue verification automatically. Other selected
+   agents receive their native setup handoff. `setup next --json` checks every
+   selected agent; one verified agent cannot make the whole installation complete.
+
+Cancelling the first phase saves nothing. Cancelling the history phase retains
+capture choices already confirmed and starts no new import. Existing legacy
+recording opt-outs remain unchanged on `setup resume`; they are not new install
+options. The workspace stays available while setup runs.
+
+## Agent path
+
+Agents with approved inputs can apply them in one invocation:
+
+```sh
+opencrawl setup apply --api https://your-workspace.example --plugins claude-code,codex --forward claude-code,codex --history none --yes --json
+```
+
+Use the same harness IDs for `--plugins` and `--forward`. Installation implies
+capture. `--history` is an independently approved subset of those agents; `none`
+skips import. A new installation cannot be search-only or history-only. Use
+`none` for all three flags to decline recording. Credentials missing from an
+agent invocation produce a JSON action rather than an interactive questionnaire.
+
+`setup --json` returns a plan and exact `applyCommand` without changing clients.
+`setup next --json` returns the next remaining action. `setup wait --json` waits
+for capture/indexing without another human reply and returns pending after a
+bounded number of checks. It cannot create a missing native MCP receipt. JSON
+mode never opens an agent. `setup resume --json` preserves accepted choices and
+reconciles activation. Plans bind to the authenticated workspace/person and the
+history snapshot.
+
+## Verification
+
+A ready installation has native plugin activation and authenticated MCP evidence. When recording is enabled, the receiver must also find a new searchable native session with matching installation evidence. The setup page shows progress while the rest of the workspace stays accessible.

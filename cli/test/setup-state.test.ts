@@ -4,8 +4,8 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {defaultSelections,selectGroup,chosen,scopeKey,updateSetupState,readSetupState,statePath,type SetupClient} from '../src/setup/state.ts';
 const clients:SetupClient[]=[{id:'codex',label:'Codex',detected:true,plugin:true,forward:true,history:true,historyFiles:2,historyBytes:100},{id:'cursor',label:'Cursor',detected:true,plugin:true,forward:true,history:false,historyFiles:0,historyBytes:0}];
-test('new setup defaults detected plugins and future capture on, and only available histories on',()=>{
- const choices=defaultSelections(clients);expect(chosen(choices,'plugins')).toEqual(['codex','cursor']);expect(chosen(choices,'forward')).toEqual(['codex','cursor']);expect(chosen(choices,'history')).toEqual(['codex']);
+test('new setup defaults detected plugins and future capture on, and keeps history off until its own confirmation',()=>{
+ const choices=defaultSelections(clients);expect(chosen(choices,'plugins')).toEqual(['codex','cursor']);expect(chosen(choices,'forward')).toEqual(['codex','cursor']);expect(chosen(choices,'history')).toEqual([]);
 });
 test('independent off choices survive reruns and legacy forward enrollment is preserved',()=>{
  const previous={plugins:{codex:true,cursor:false},forward:{codex:false,cursor:true},history:{codex:false}};

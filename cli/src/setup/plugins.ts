@@ -1,5 +1,5 @@
 import {manifests,extraAssets} from '../../../plugins/opencrawl-sessions/assets.ts';
-import {existsSync, lstatSync, readFileSync, mkdirSync, unlinkSync} from 'node:fs';
+import {existsSync, lstatSync, readFileSync, mkdirSync, unlinkSync, chmodSync} from 'node:fs';
 import {join, dirname, resolve, isAbsolute, posix} from 'node:path';
 import {homedir} from 'node:os';
 import {createHash} from 'node:crypto';
@@ -8,20 +8,22 @@ import {atomicFile, atomicJson, withSessionLock} from '../session.ts';
 import {apiOrigin, CliError} from '../oauth.ts';
 import {version} from '../distribution.ts';
 import {setupCommandForSelf,profileSetupCommand} from './invocation.ts';
-import {retireCursorSetupHooks} from './cursor-native-hooks.ts';
+import {installCursorArchive,retireCursorSetupHooks} from './cursor-native-hooks.ts';
 import {pluginHookFiles} from './plugin-hooks.ts';
 import {powershellQuote} from '../hook-runner.ts';
 import {pluginActivationMatches,verifyPluginBundle} from './plugin-context.ts';
+import type {PublishedPackage,CaptureMode,LocalPluginClient} from './published-plugins.ts';
+import {bundleManifest,MAX_PLUGIN_BINARY,MAX_PLUGIN_TEXT,type BundleFiles} from './plugin-bundle.ts';
 
 export type PluginClient = 'claude-code' | 'codex' | 'cursor' | 'antigravity' | 'devin';
 export type PluginHumanTask = {id:string;kind:'mcp_auth'|'restart'|'plugin_install';client:PluginClient;title:string;instruction:string;url?:string};
-export type PluginResult = {client:PluginClient;status:'installed'|'unchanged'|'prepared'|'pending'|'error';message?:string;pluginId?:string;directory?:string};
+export type PluginResult = {client:PluginClient;status:'installed'|'unchanged'|'prepared'|'pending'|'error';message?:string;pluginId?:string;directory?:string;preparedAt?:string;captureAvailable?:boolean;daemonHandoff?:boolean;source?:PublishedPackage['source']};
 type CommandResult = {code:number;stdout?:string};
-export type PluginOptions = {command?:string[];home?:string;env?:NodeJS.ProcessEnv;which?:(name:string)=>string|null;runner?:(command:string,args:string[],env:NodeJS.ProcessEnv)=>Promise<CommandResult>};
+export type PluginOptions = {validateBinding?:()=>void;cursorCapture?:{installationId:string;observedAt:string};captureMode?:CaptureMode;bundles?:Partial<Record<LocalPluginClient,PublishedPackage>>;command?:string[];home?:string;env?:NodeJS.ProcessEnv;which?:(name:string)=>string|null;runner?:(command:string,args:string[],env:NodeJS.ProcessEnv)=>Promise<CommandResult>};
 const clients:PluginClient[] = ['claude-code','codex','cursor','antigravity','devin'];
 const labels:Record<PluginClient,string> = {'claude-code':'Claude Code',codex:'Codex',cursor:'Cursor',antigravity:'Antigravity',devin:'Devin Cloud'};
 const marker = '.opencrawl-setup-plugin.json';
-const hash = (text:string) => createHash('sha256').update(text).digest('hex');
+const hash = (text:string|Buffer) => createHash('sha256').update(text).digest('hex');
 const json = (value:unknown) => JSON.stringify(value,null,2)+'\n';
 function context(options:PluginOptions) { return {home:options.home??homedir(),env:options.env??process.env,which:options.which??Bun.which}; }
 export function pluginInventory(options:PluginOptions={}) {
@@ -78,7 +80,7 @@ function safeDirectory(path:string,base:string) {
   if(existing){if(!existing.isDirectory()||existing.isSymbolicLink())throw new CliError('PLUGIN_PATH_CONFLICT','The plugin path is not an ordinary directory. Preserve it and choose another installation path.');return;}
   mkdirSync(path,{mode:0o700,...(path===base?{recursive:true}:{})});
 }
-function obsoleteBundleFiles(directory:string,owned:ReturnType<typeof read>,files:Record<string,string>):string[] {
+function obsoleteBundleFiles(directory:string,owned:ReturnType<typeof read>,files:BundleFiles):string[] {
   if(!owned)return [];
   if(!owned.files||typeof owned.files!=='object'||Array.isArray(owned.files)||Object.keys(owned.files).length>128)throw new CliError('PLUGIN_PATH_CONFLICT','The previous plugin file inventory is invalid; preserve it and repair the installation before retrying.');
   const obsolete:string[]=[];
@@ -88,26 +90,28 @@ function obsoleteBundleFiles(directory:string,owned:ReturnType<typeof read>,file
     let file=directory,missing=false;const parts=name.split('/');
     for(const [index,part] of parts.entries()){
       file=join(file,part);const value=stat(file);if(!value){missing=true;break;}
-      if(value.isSymbolicLink()||(index<parts.length-1?!value.isDirectory():!value.isFile()||value.size>2_000_000))throw new CliError('PLUGIN_PATH_CONFLICT','An obsolete plugin path is not an ordinary managed file; preserve it before retrying.');
+      if(value.isSymbolicLink()||(index<parts.length-1?!value.isDirectory():!value.isFile()||value.size>(owned.schemaVersion===3&&name===owned.executable?MAX_PLUGIN_BINARY:MAX_PLUGIN_TEXT)))throw new CliError('PLUGIN_PATH_CONFLICT','An obsolete plugin path is not an ordinary managed file; preserve it before retrying.');
     }
     if(missing)continue;
-    if(hash(readFileSync(file,'utf8'))!==digest)throw new CliError('PLUGIN_PATH_CONFLICT','An obsolete plugin file was modified; preserve it and resolve the conflict before retrying.');
+    if(hash(readFileSync(file))!==digest)throw new CliError('PLUGIN_PATH_CONFLICT','An obsolete plugin file was modified; preserve it and resolve the conflict before retrying.');
     obsolete.push(file);
   }
   return obsolete;
 }
-function writeBundle(directory:string,files:Record<string,string>,client:PluginClient,api:string,pluginName:string,configHome:string,pathRoot:string) {
+function writeBundle(directory:string,files:BundleFiles,client:PluginClient,api:string,pluginName:string,configHome:string,pathRoot:string,executable?:string) {
   const existing=stat(directory),owned=read(join(directory,marker));
-  if(existing&&(!owned||owned.schemaVersion!==2||owned.api!==api||owned.client!==client||owned.pluginName!==pluginName||owned.configHome!==configHome))throw new CliError('PLUGIN_PATH_CONFLICT','Another plugin occupies the setup path. Preserve it and resolve the conflict before retrying.');
+  if(existing&&(!owned||![2,3].includes(owned.schemaVersion)||owned.api!==api||owned.client!==client||owned.pluginName!==pluginName||owned.configHome!==configHome))throw new CliError('PLUGIN_PATH_CONFLICT','Another plugin occupies the setup path. Preserve it and resolve the conflict before retrying.');
+  const inventory=bundleManifest(files,executable);
   const obsolete=obsoleteBundleFiles(directory,owned,files);
   safeDirectory(directory,pathRoot);
   for(const [name,content] of Object.entries(files)) {
     const file=join(directory,name);safeDirectory(dirname(file),pathRoot);
     if(stat(file)?.isSymbolicLink())throw new CliError('PLUGIN_PATH_CONFLICT','A managed plugin file is a symbolic link; no target was modified.');
     atomicFile(file,content);
+    if(name===executable)chmodSync(file,0o755);
   }
   for(const file of obsolete)unlinkSync(file);
-  atomicJson(join(directory,marker),{schemaVersion:2,api,client,pluginName,configHome,version,digest:hash(json(files)),files:Object.fromEntries(Object.entries(files).map(([name,content])=>[name,hash(content)]))});
+  atomicJson(join(directory,marker),{...inventory,api,client,pluginName,configHome,version});
 }
 export function pluginCommand(command:string,args:string[],env:NodeJS.ProcessEnv,platform=process.platform):[string,string[]] {
   if(platform!=='win32'||!/[.](cmd|bat)$/i.test(command))return [command,args];
@@ -154,12 +158,36 @@ function nativeBindingMatches(row:Record<string,unknown>,client:PluginClient,dir
   const servers=read(join(root,file))?.mcpServers,server=servers?.[client==='codex'?name:'opencrawl'];
   return server?.url===api+'/mcp'&&(client!=='codex'||Object.keys(servers).length===1&&server.type==='http');
 }
-function bundleMatches(directory:string,bundle:Record<string,string>,digest:string,client:PluginClient,api:string,pluginName:string,configHome:string) {
+function bundleMatches(directory:string,bundle:BundleFiles,digest:string,client:PluginClient,api:string,pluginName:string,configHome:string) {
   try {
     const existing=stat(directory);
     if(!existing?.isDirectory()||existing.isSymbolicLink())return false;
-    return verifyPluginBundle({api,client,pluginName,configHome,nativeRoot:directory}).digest===digest&&Object.entries(bundle).every(([name,text])=>readFileSync(join(directory,name),'utf8')===text);
+    return verifyPluginBundle({api,client,pluginName,configHome,nativeRoot:directory}).digest===digest&&Object.entries(bundle).every(([name,bytes])=>readFileSync(join(directory,name)).equals(Buffer.from(bytes)));
   }catch{return false;}
+}
+
+function supportsMinimumVersion(client:PluginClient,version:string,minimum:string):boolean {
+  if(client==='cursor'){
+    // Builds on the same day have unordered Git revisions.
+    const dated=/^(\d{4}\.\d{2}\.\d{2})-([a-f0-9]{7,40})$/;
+    const actual=dated.exec(version),required=dated.exec(minimum);
+    if(!actual||!required)return false;
+    const day=actual[1]!.replaceAll('.','-'),date=new Date(day+'T00:00:00Z');
+    if(!Number.isFinite(date.valueOf())||!date.toISOString().startsWith(day+'T'))return false;
+    return version===minimum||actual[1]!>required[1]!;
+  }
+  const pattern=client==='codex'?/^codex-cli (\d+)\.(\d+)\.(\d+)(?:\s|$)/:/^(\d+)\.(\d+)\.(\d+)(?:\s|$)/;
+  const actual=version.match(pattern),required=minimum.match(/^(\d+)\.(\d+)\.(\d+)$/);
+  return Boolean(actual&&required&&actual.slice(1).map(Number).reduce((difference,value,index)=>difference||value-Number(required[index+1]),0)>=0);
+}
+
+function cursorPreparation(prior:{digest?:string;configHome?:string;preparedAt?:string;captureConfirmed?:boolean}|null,
+  unchanged:boolean,digest:string,configHome:string,installationId:string,observation:PluginOptions['cursorCapture']){
+  if(!unchanged||prior?.digest!==digest||prior.configHome!==configHome||!prior.preparedAt||!Number.isFinite(Date.parse(prior.preparedAt))){
+    return {preparedAt:new Date().toISOString(),captureConfirmed:false};
+  }
+  const fresh=observation?.installationId===installationId&&Date.parse(observation.observedAt)>=Date.parse(prior.preparedAt);
+  return {preparedAt:prior.preparedAt,captureConfirmed:prior.captureConfirmed===true||fresh};
 }
 export async function installSetupPlugins(api:string,selected:string[],options:PluginOptions={}) {
   if(selected.some(client=>!clients.includes(client as PluginClient)))throw new CliError('INVALID_USAGE','Choose a supported client from setup inventory.',64);
@@ -167,28 +195,39 @@ export async function installSetupPlugins(api:string,selected:string[],options:P
   const configHome=resolve(env.OPENCRAWL_CONFIG_HOME||env.XDG_CONFIG_HOME||join(home,'.config')),root=join(configHome,'opencrawl','setup-plugins');
   const command=options.command??setupCommandForSelf(),results:PluginResult[]=[],humanTasks:PluginHumanTask[]=[];
   const perform=async()=>{
+    options.validateBinding?.();
     profileSetupCommand(command,configHome,env,true);
     for(const client of [...new Set(selected)] as PluginClient[]) {
       if(client==='devin'){
         const result=await (await import('./devin-plugin.ts')).adoptDevinPlugin(origin,{configHome,env});
         results.push(result);continue;
       }
-      const bundle=setupPluginFiles(client,origin,{command,configHome,env});
-      const marketRoot=join(root,client,identity.key),pathRoot=client==='cursor'?resolve(env.CURSOR_CONFIG_DIR||join(home,'.cursor')):configHome;
+      const published=options.bundles?.[client],bundle:BundleFiles=published?{...published.files,...published.binaries}:setupPluginFiles(client,origin,{command,configHome,env});
+      const cursorArchive=client==='cursor'&&Boolean(published?.source.archive);
+      const cursorProfile=resolve(env.CURSOR_CONFIG_DIR||join(home,'.cursor'));
+      const marketRoot=join(root,client,identity.key),pathRoot=client==='cursor'?(cursorArchive?resolve(home,'.cursor'):cursorProfile):configHome;
       const directory=client==='cursor'?join(pathRoot,'plugins','local',identity.name):join(marketRoot,identity.name);
-      const receipt=join(marketRoot,'installed.json'),digest=hash(json(bundle)),saved=read(receipt);
+      const receipt=join(marketRoot,'installed.json'),digest=bundleManifest(bundle,published?.executable).digest,saved=read(receipt);
       const prior=saved?.schemaVersion===2&&saved.api===origin&&saved.client===client&&saved.pluginName===identity.name&&saved.directory===directory?saved:null;
       const pluginId=client==='codex'||client==='claude-code'?identity.name+'@'+identity.marketplace:identity.name;
       try {
-        const binary=client==='cursor'?null:which(client==='claude-code'?'claude':client==='antigravity'?'agy':client);
+        const binary=which(client==='cursor'?'cursor-agent':client==='claude-code'?'claude':client==='antigravity'?'agy':client);
+        if(published?.minimumHarnessVersion){
+          const result=binary?await runner(binary,['--version'],{...env,HOME:home,USERPROFILE:home}):null;
+          if(result?.code!==0||!supportsMinimumVersion(client,result.stdout?.trim()??'',published.minimumHarnessVersion)){
+            const message=labels[client]+' '+published.minimumHarnessVersion+' or later is required. Update the client, then resume setup.';
+            results.push({client,status:'pending',message});
+            humanTasks.push({id:client+':plugin_install',kind:'plugin_install',client,title:'Update '+labels[client],instruction:message});continue;
+          }
+        }
         let native:Record<string,unknown>|undefined,loadedRoot:string|undefined,cachePath=typeof prior?.cachePath==='string'?prior.cachePath:undefined;
-        if(binary){
+        if(binary&&client!=='cursor'){
           const listing=await runner(binary,['plugin','list','--json'],{...env,HOME:home,USERPROFILE:home});
           const rows=listing.code===0?pluginRows(listing.stdout??''):null;
           if(!rows){results.push({client,status:'pending',message:'The client could not report its plugin state. Resolve its sign-in, version or policy before retrying.'});humanTasks.push({id:client+':plugin_install',kind:'plugin_install',client,title:'Check '+labels[client]+' plugin access',instruction:'Inspect the native client plugin inventory and its reported policy or sign-in issue. Resume setup after it can report its installed plugins.'});continue;}
           const matches=rows.filter(row=>matchesName(row,identity.name));native=matches.find(row=>isManaged(row,client,identity));
           const ownedSource=read(join(directory,marker));
-          const managedSource=ownedSource?.schemaVersion===2&&ownedSource.api===origin&&ownedSource.client===client&&ownedSource.pluginName===identity.name&&ownedSource.configHome===configHome;
+          const managedSource=[2,3].includes(ownedSource?.schemaVersion)&&ownedSource.api===origin&&ownedSource.client===client&&ownedSource.pluginName===identity.name&&ownedSource.configHome===configHome;
           if(matches.some(row=>!isManaged(row,client,identity))||native&&!prior&&!managedSource){
             results.push({client,status:'pending',message:'Another installation owns this deployment-specific plugin. It was preserved.'});
             humanTasks.push({id:client+':plugin_install',kind:'plugin_install',client,title:'Review this deployment plugin',instruction:'Inspect the existing deployment-specific plugin and source in native controls. Preserve it until the user chooses to repair or replace that installation; unrelated OpenCrawl plugins can remain enabled.'});continue;
@@ -200,14 +239,24 @@ export async function installSetupPlugins(api:string,selected:string[],options:P
           }
           if(native)loadedRoot=nativeRoot(native,client,cachePath);
         }
-        if(client==='cursor')await retireCursorSetupHooks(origin,pathRoot,true);
+        const existingCapabilities=published&&!published.captureAvailable?read(join(directory,'capabilities.json')):null;
+        if(published&&!published.captureAvailable&&stat(directory)&&(!read(join(directory,'.opencrawl-source.json'))||existingCapabilities?.capture?.minimum===true&&!['stub','development'].includes(existingCapabilities?.status))){
+          results.push({client,status:'pending',message:'The published package cannot capture yet. The existing working plugin was preserved.',directory});continue;
+        }
         const unchanged=bundleMatches(directory,bundle,digest,client,origin,identity.name,configHome);
-        if(!unchanged)writeBundle(directory,bundle,client,origin,identity.name,configHome,pathRoot);
+        const cursorHooksReceipt=join(marketRoot,'native-hooks.json');
+        if(cursorArchive&&pathRoot!==cursorProfile&&stat(join(cursorProfile,'plugins','local',identity.name)))
+          throw new CliError('CURSOR_PLUGIN_LOCATION','A deployment plugin already exists under the custom Cursor configuration path. Resolve its location before installing in the Cursor CLI local plugins folder.');
+        if(client==='cursor'&&!published)await retireCursorSetupHooks(origin,pathRoot,true);
+        options.validateBinding?.();
+        const install=()=>{if(!unchanged)writeBundle(directory,bundle,client,origin,identity.name,configHome,pathRoot,published?.executable);};
+        if(cursorArchive)await installCursorArchive(pathRoot,directory,cursorHooksReceipt,unchanged,install);
+        else install();
         if(client==='cursor') {
           // Supported persistent local discovery; policy can still prevent loading.
           // Activation is observed from this deployment's trusted plugin hook, not inferred
           // from files or an unrelated marketplace plugin with another name.
-          await retireCursorSetupHooks(origin,pathRoot);
+          if(!published)await retireCursorSetupHooks(origin,pathRoot);
           loadedRoot=directory;
         } else {
           if(!binary){results.push({client,status:'pending',message:labels[client]+"'s native plugin installer is unavailable.",directory});humanTasks.push({id:client+':plugin_install',kind:'plugin_install',client,title:'Install '+labels[client]+' plugin support',instruction:'Install or update the native client CLI, then resume setup. Preserve existing plugins and authentication.'});continue;}
@@ -220,7 +269,7 @@ export async function installSetupPlugins(api:string,selected:string[],options:P
               commands=client==='codex'?[['plugin','marketplace','add',marketRoot,'--json'],['plugin','add',pluginId,'--json']]:[['plugin','marketplace','add',marketRoot,'--json'],['plugin','install',pluginId,'--scope','user','--json']];
             } else commands=[['plugin','install',directory]];
             let success=true;
-            for(const args of commands){const result=await runner(binary,args,{...env,HOME:home,USERPROFILE:home});if(result.code!==0){success=false;break;}if(client==='codex'&&args[1]==='add')try{const installed=JSON.parse(result.stdout??'');if(typeof installed.installedPath==='string')cachePath=installed.installedPath;}catch{}}
+            for(const args of commands){options.validateBinding?.();const result=await runner(binary,args,{...env,HOME:home,USERPROFILE:home});if(result.code!==0){success=false;break;}if(client==='codex'&&args[1]==='add')try{const installed=JSON.parse(result.stdout??'');if(typeof installed.installedPath==='string')cachePath=installed.installedPath;}catch{}}
             if(!success){results.push({client,status:'error',message:labels[client]+' did not confirm plugin installation.',directory});humanTasks.push({id:client+':plugin_install',kind:'plugin_install',client,title:'Finish '+labels[client]+' plugin installation',instruction:'Review the native installation error and resolve its policy, access or sign-in requirement before resuming.'});continue;}
             const confirmed=await runner(binary,['plugin','list','--json'],{...env,HOME:home,USERPROFILE:home});
             native=confirmed.code===0?pluginRows(confirmed.stdout??'')?.find(row=>isManaged(row,client,identity)):undefined;
@@ -228,14 +277,18 @@ export async function installSetupPlugins(api:string,selected:string[],options:P
             if(!native||native.enabled===false||native.installed===false||!nativeBindingMatches(native,client,directory,origin,identity.name,digest,configHome,loadedRoot)) {results.push({client,status:'pending',message:'The client has not confirmed this enabled plugin at the selected source and endpoint.',directory});humanTasks.push({id:client+':plugin_install',kind:'plugin_install',client,title:'Confirm '+labels[client]+' plugin source',instruction:'Inspect the native plugin source and endpoint. Preserve unrelated plugins and finish the reported policy or installation step before resuming.'});continue;}
           }
         }
-        safeDirectory(dirname(receipt),configHome);atomicJson(receipt,{schemaVersion:2,api:origin,client,pluginName:identity.name,configHome,digest,pluginId,directory,nativeRoot:loadedRoot,...(client==='codex'&&loadedRoot?{cachePath:loadedRoot}:{})});
-        const active=Boolean(loadedRoot&&pluginActivationMatches({api:origin,client,pluginName:identity.name,digest,nativeRoot:loadedRoot,configHome}));
-        results.push({client,status:active?(unchanged?'unchanged':'installed'):'prepared',pluginId,directory,...(!active?{message:'Plugin prepared; waiting for its native startup hook to confirm activation.'}:{})});
-        if(!active)humanTasks.push({id:client+':restart',kind:'restart',client,title:'Load OpenCrawl in '+labels[client],instruction:`Open or reload ${labels[client]} and select the ${identity.name} plugin for ${origin}. Review any native plugin-hook trust request. ${client==='cursor'?'In Customize or /plugin list, confirm this deployment-specific local plugin loads; if local imports are blocked, ask the administrator to allow it. ':''}Resume setup after its native startup hook runs. Do not use a session-only --plugin-dir override as installation proof.`});
+        options.validateBinding?.();
+        const cursor=cursorArchive?cursorPreparation(prior,unchanged,digest,configHome,JSON.parse(published!.files['.opencrawl-binding.json']!).installationId,options.cursorCapture):undefined;
+        safeDirectory(dirname(receipt),configHome);atomicJson(receipt,{schemaVersion:2,api:origin,client,pluginName:identity.name,configHome,digest,pluginId,directory,nativeRoot:loadedRoot,...(client==='codex'&&loadedRoot?{cachePath:loadedRoot}:{}),...cursor});
+        const active=cursor?.captureConfirmed??published?.captureAvailable??Boolean(loadedRoot&&pluginActivationMatches({api:origin,client,pluginName:identity.name,digest,nativeRoot:loadedRoot,configHome}));
+        const waiting=cursor?'Plugin files installed. Waiting for this workspace to observe capture from Cursor.':published?'Package installed; capture is unavailable in this pinned version.':'Plugin prepared; waiting for its native startup hook to confirm activation.';
+        results.push({client,status:active?(unchanged?'unchanged':'installed'):'prepared',pluginId,directory,...(cursor?{preparedAt:cursor.preparedAt}:{}),...(!active?{message:waiting}:{})});
+        if(cursor&&!active)humanTasks.push({id:'cursor:restart',kind:'restart',client,title:'Open Cursor',instruction:`Start a new Cursor session and select ${identity.name} for ${origin}. Use its OpenCrawl setup skill to finish verification.`});
+        if(!active&&!published)humanTasks.push({id:client+':restart',kind:'restart',client,title:'Load OpenCrawl in '+labels[client],instruction:`Open or reload ${labels[client]} and select the ${identity.name} plugin for ${origin}. Review any native plugin-hook trust request. ${client==='cursor'?'In Customize or /plugin list, confirm this deployment-specific local plugin loads; if local imports are blocked, ask the administrator to allow it. ':''}Resume setup after its native startup hook runs. Do not use a session-only --plugin-dir override as installation proof.`});
         humanTasks.push({id:client+':mcp_auth',kind:'mcp_auth',client,title:'Connect OpenCrawl in '+labels[client],instruction:`Use the ${identity.name} plugin's native connection flow for ${origin}. Complete requested MCP authentication in this client and run its native verification. Preserve other deployments and never copy CLI credentials.`,url:origin+'/mcp'});
       }catch(error){results.push({client,status:'error',message:error instanceof CliError?error.message:'Could not install the plugin. Check native access and retry.'});humanTasks.push({id:client+':plugin_install',kind:'plugin_install',client,title:'Resolve '+labels[client]+' plugin installation',instruction:'Read the reported installation error, preserve existing configuration, and resolve only the required access or conflict before retrying.'});}
     }
-    return {results,humanTasks};
+    return {results:results.map(row=>{const source=row.client==='devin'?undefined:options.bundles?.[row.client];return source?{...row,captureAvailable:source.captureAvailable,daemonHandoff:source.daemonHandoff,source:source.source}:row;}),humanTasks};
   };
   return withSessionLock('setup:plugins',perform);
 }

@@ -27,6 +27,20 @@ function fixture(){
 }
 const query=(hooks:unknown[])=>async()=>({data:[{errors:[],hooks}]});
 
+test('published context suggestions participate in native trust review',async()=>{
+ const f=fixture();try{
+  const value=JSON.parse(f.files['hooks/hooks.json']);
+  value.hooks.UserPromptSubmit??=[];
+  const group=value.hooks.UserPromptSubmit.length;
+  value.hooks.UserPromptSubmit.push({hooks:[{type:'command',command:'fixture-context',statusMessage:'OpenCrawl context suggestions'}]});
+  f.files['hooks/hooks.json']=json(value);f.seal();
+  const existing=f.hooks[0]!;
+  const context={...existing,key:`${existing.pluginId}:hooks/hooks.json:user_prompt_submit:${group}:0`,statusMessage:'OpenCrawl context suggestions',trustStatus:'untrusted'};
+  expect(await inspectCodexHooks(f.root,query([...f.hooks,context]))).toEqual({state:'observed',total:10,pending:1,disabled:0});
+  expect(await inspectCodexHooks(f.root,query([...f.hooks,{...context,trustStatus:'trusted'}]))).toEqual({state:'observed',total:10,pending:0,disabled:0});
+ }finally{f.close();}
+});
+
 test('plugin-only enrollment reports native startup, capture and search-context trust without global hooks',async()=>{
  const f=fixture();try{
   const before=f.unchanged();expect(localCodexHookReview(f.root)).toEqual({state:'unknown',total:9,pending:null,disabled:null});

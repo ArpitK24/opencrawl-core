@@ -4,6 +4,14 @@ const auth = {clientId: 'public-client', deviceAuthorizationEndpoint: 'https://a
 const device = {device_code: 'secret-device-code', user_code: 'ABCD-EFGH', verification_uri: 'https://auth.example/device', expires_in: 60, interval: 1};
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), {status});
 
+test('cancelled onboarding sign-in cannot consume or save a later device approval',async()=>{
+ const controller=new AbortController();let requests=0;
+ const pending=pollDevice(auth,device,{signal:controller.signal,fetcher:(async()=>{requests++;return response({});}) as unknown as typeof fetch});
+ controller.abort();await expect(pending).rejects.toThrow();expect(requests).toBe(0);
+ const later=new AbortController();
+ await expect(pollDevice(auth,device,{signal:later.signal,sleep:async()=>{},fetcher:(async()=>{later.abort();return response({access_token:'fixture-access',refresh_token:'fixture-refresh',expires_in:60});}) as unknown as typeof fetch})).rejects.toThrow();
+});
+
 test('non-JSON HTTP errors preserve status without exposing response bodies',async()=>{
   for(const status of [400,401,408,425,429,500,502,503,504]){
     const result=await jsonRequest('https://example.com',{},(async()=>new Response('private proxy response',{status})) as unknown as typeof fetch);
