@@ -80,3 +80,57 @@ test('older open RPC clients retain their safe cache behavior while new clients 
   await assert.rejects(productRouter.createCaller({invoke}).console.usage(),/Reload this page/);
   assert.deepEqual(await productRouter.createCaller({invoke,usageSections:true}).console.usage(),report);
 });
+
+test('Usage highlights and details partition the reads for a full report', async () => {
+  const calls = [];
+  const read = (name, value) => async () => {calls.push(name); return value;};
+  const user = {id: principal.userId, email: 'person@example.test'};
+  const options = {principal, directory: {
+    organizations: {getOrganization: read('organization', {name: 'Example'})},
+    userManagement: {listOrganizationMemberships: read('members', {data: [{userId: user.id, organizationId: principal.tenantId, status: 'active'}]}), getUser: read('user', user)},
+  }, captured: read('capture', {tokens: 42, since: '2026-01-01'}), values: {read: read('value', null)},
+    integrations: {list: read('integrations', [])}, connectors: {count: read('connectors', {total: 0, kinds: {}, providers: {}, connections: {}})},
+    onboarding: {read: read('onboarding', {})}, search: {usage: read('activity', activity), overlap: read('overlap', {sessions: 1, daily: []})}};
+  const highlights = await usageReport({...options, part: 'highlights'});
+  assert.deepEqual(calls.sort(), ['capture', 'organization', 'value']);
+  assert.equal(highlights.capture.tokens, 42);
+  calls.length = 0;
+  const details = await usageReport({...options, part: 'details'});
+  assert.deepEqual(calls.sort(), ['activity', 'connectors', 'integrations', 'members', 'onboarding', 'overlap', 'user']);
+  assert.equal(details.members.length, 1);
+  assert.equal(details.agents.sessions, 1);
+});
+
+test('the full report starts capture and member setup while independent search is outstanding', async () => {
+  const {promise, resolve} = Promise.withResolvers();
+  const reads = [];
+  const user = {id: principal.userId, email: 'person@example.test'};
+  const pending = usageReport({principal, directory: {...directory, userManagement: {
+    listOrganizationMemberships: async () => ({data: [{userId: user.id, organizationId: principal.tenantId, status: 'active'}]}),
+    getUser: async () => user,
+  }}, search: {usage: () => promise, overlap: async () => null},
+    captured: async () => {reads.push('capture'); return {tokens: 0, since: '2026-01-01'};},
+    onboarding: {read: async () => {reads.push('setup'); return {};}}});
+  try {
+    await new Promise(next => setImmediate(next));
+    assert.deepEqual(reads.sort(), ['capture', 'setup']);
+  } finally {resolve(activity); await pending;}
+});
+
+test('both Usage reads require fresh final access and accept only trusted scope', async () => {
+  for (const part of ['highlights', 'details']) {
+    const route = '/api/console/usage/' + part, calls = [];
+    const api = createConsoleApi({url:'https://example.test', usageParts: {
+      [part]: async scope => {calls.push(scope); return {privateMeasurement: 42};},
+    }});
+    const context = {principal, user:{id:principal.userId}, member:{}, cacheScope:'session-a', admitted:true};
+    const denied = await api({url: route}, route, {...context, revalidate: async () => false});
+    assert.equal(denied.status, 403);
+    assert.doesNotMatch(JSON.stringify(denied.body), /privateMeasurement/);
+    const allowed = await api({url: route}, route, {...context, revalidate: async () => true});
+    assert.deepEqual(allowed.body, {privateMeasurement:42, cacheScope:'session-a'});
+    const forged = await api({url: route+'?tenantId=another'}, route, {...context, revalidate: async () => true});
+    assert.equal(forged.status, 400);
+    assert.deepEqual(calls, [principal, principal]);
+  }
+});

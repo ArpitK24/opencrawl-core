@@ -12,6 +12,10 @@ export type Organization = {id: string; name: string; metadata?: Record<string, 
 type Progress = {completed?: {observedAt?: string} | null; shared?: {observedAt?: string} | null};
 export interface ConsoleContext {principal: Principal; user: User; member: Membership; revalidate: () => Promise<boolean>; admitted?: boolean; cacheScope?: string}
 export interface ConsoleServices {
+  usageParts?: {
+    highlights(principal: Principal): Promise<import('./reports.mjs').UsageHighlights>;
+    details(principal: Principal): Promise<import('./reports.mjs').UsageDetails>;
+  };
   log?: Log;
   url: string;
   setupPrompt: string;
@@ -36,7 +40,7 @@ export interface ConsoleServices {
 const LIBRARY = /^\/api\/console\/library\/((?:sessions|memories)\/(?:list|read|visibility|delete))$/;
 export const consolePages = new Set(['/', '/setup', '/usage', '/sessions', '/memories', '/sources', '/integrations', '/data', '/diagnostics', '/settings', '/settings/team', '/agent-setup', '/team', '/search', '/_/debug', '/_/debug/', '/onboarding', '/onboarding/sources', '/onboarding/invite']);
 export function consoleRoute(method: string, path: string) {
-  if (['/api/console/bootstrap','/api/console/sources','/api/console/usage','/api/console/team'].includes(path)) return {name:path, ...(method === 'GET' ? {} : {status:405})};
+  if (['/api/console/bootstrap','/api/console/sources','/api/console/usage','/api/console/usage/highlights','/api/console/usage/details','/api/console/team'].includes(path)) return {name:path, ...(method === 'GET' ? {} : {status:405})};
   if (['/api/console/replicas/setup','/api/console/team/invite','/api/console/team/role','/api/console/team/remove','/api/console/team/organization'].includes(path)) return {name:path, ...(method === 'POST' ? {} : {status:405})};
   if (['/setup','/sources','/data','/diagnostics','/settings', '/settings/team', '/agent-setup','/sessions','/memories'].includes(path)) return {name:path, ...(method === 'GET' ? {} : {status:405})};
   if (LIBRARY.test(path)) return {name:path, ...(method === 'POST' ? {} : {status:405})};
@@ -81,6 +85,7 @@ export function createConsoleApi(services: ConsoleServices, extensions: ConsoleE
       const url = new URL(req.url || path, services.url);
       if (url.search) throw consoleFailure(400,'This endpoint does not accept scope or query parameters.');
       if (!context.admitted && !await revalidate()) throw consoleFailure(403,'Workspace access changed. Sign in again.');
+      const cacheScope = context.cacheScope || [principal.tenantId,principal.userId,admin(member)?'admin':'member'].join(':');
       let body: unknown;
       if (path === '/api/console/replicas/setup') {
         if (!admin(member) || member.status !== 'active' || member.userId !== principal.userId || member.organizationId !== principal.tenantId) throw consoleFailure(403,'Only a current workspace admin can connect Replicas.');
@@ -91,9 +96,12 @@ export function createConsoleApi(services: ConsoleServices, extensions: ConsoleE
       } else if (path === '/api/console/bootstrap') {
         const [organization, progress, extension] = await Promise.all([services.organization(principal.tenantId), services.progress(principal), extensions.bootstrap?.(context)]);
         const completed = hasCompletedOnboarding(progress);
-        body = {...extension,...(services.invitationPolicy?{invitationPolicy:services.invitationPolicy}:{}),cacheScope:context.cacheScope || [principal.tenantId,principal.userId,admin(member)?'admin':'member'].join(':'),workspace:{name:organization.name,userName:name(user),email:user.email,...(user.avatarUrl?{avatarUrl:user.avatarUrl}:{}),role:admin(member) ? 'admin' : 'member'}, mcpUrl:services.url + '/mcp',setupPrompt:services.setupPrompt,...(admin(member)?{replicasSetupPrompt:replicasSetupPrompt(services.url),canInstallReplicas:Boolean(services.replicas)}:{}),canInvite:admin(member),onboarding:{completed,next:completed ? '/' : await services.next(principal)}};
+        body = {...extension,...(services.usageParts ? {splitUsage: true} : {}),...(services.invitationPolicy?{invitationPolicy:services.invitationPolicy}:{}),cacheScope,workspace:{name:organization.name,userName:name(user),email:user.email,...(user.avatarUrl?{avatarUrl:user.avatarUrl}:{}),role:admin(member) ? 'admin' : 'member'}, mcpUrl:services.url + '/mcp',setupPrompt:services.setupPrompt,...(admin(member)?{replicasSetupPrompt:replicasSetupPrompt(services.url),canInstallReplicas:Boolean(services.replicas)}:{}),canInvite:admin(member),onboarding:{completed,next:completed ? '/' : await services.next(principal)}};
       } else if (path === '/api/console/usage') {
         body = await services.usage(principal);
+      } else if (path === '/api/console/usage/highlights' || path === '/api/console/usage/details') {
+        if (!services.usageParts) throw consoleFailure(404, 'Usage section unavailable.');
+        body = {...await services.usageParts[path.endsWith('/highlights') ? 'highlights' : 'details'](principal), cacheScope};
       } else if (path === '/api/console/sources') {
         body = {items:await services.sources(principal)};
       } else if (path === '/api/console/team') {

@@ -37,7 +37,7 @@ interface UsageReportBase {
   /** Client-retained measurements keep their original freshness timestamp. */
   staleSections?: Partial<Record<UsageSection, string>>;
   ingestion: null | {
-    sources: Array<{name: string; icon: string; account?: string; state: string; records: number | null; indexed: number | null; indexedSpecies?: NamedCount[]; lastSyncedAt: string | null; connectedBy?: string; units?: [string, string]; rows?: Array<{label: string; count: number}>}>;
+    sources: Array<{name: string; icon: string; account?: string | null; state: string; records: number | null; indexed: number | null; indexedSpecies?: NamedCount[]; lastSyncedAt: string | null; connectedBy?: string | null; units?: [string, string]; rows?: Array<{label: string; count: number}>}>;
     index: null | {sessionEvents: number | null; connectorDocuments: number | null; sources: NamedCount[]; searchMs: number | null; probes?: number[]};
   };
   /** Measured value; absent until the workspace has been measured. */
@@ -55,6 +55,9 @@ interface AgentUsage {
 }
 /** Independent measurements can fail without discarding the rest of the report. */
 export type UsageReport = UsageReportBase & {agents: AgentUsage | null; overlap: SessionOverlap | null};
+type UsageMetadata = Pick<UsageReport, 'days' | 'generatedAt' | 'failedSources' | 'staleSections'>;
+export type UsageHighlights = UsageMetadata & Pick<UsageReport, 'workspace' | 'capture' | 'value'>;
+export type UsageDetails = Omit<UsageReport, 'workspace' | 'capture' | 'value'>;
 export interface DiagnosticHit {_id?: string; _score?: number; _source?: Record<string, unknown>}
 export interface SearchResponse {
   state?: string; truncated?: boolean; timed_out?: boolean; _shards?: {failed?: number};
@@ -76,6 +79,8 @@ export interface BoardReport {
   next: number | null;
 }
 export interface ConsoleDataAdapter {
+  usageHighlights?(signal: AbortSignal): Promise<UsageHighlights & {cacheScope: string}>;
+  usageDetails?(signal: AbortSignal): Promise<UsageDetails & {cacheScope: string}>;
   usage(signal: AbortSignal): Promise<UsageReport>;
   search(query: string, signal: AbortSignal): Promise<DiagnosticSearch>;
   board(input: {channel?:string; topic?: string; threadId?:number; rootsOnly?:boolean; before?: number}, signal: AbortSignal): Promise<BoardReport>;
