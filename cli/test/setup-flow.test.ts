@@ -16,12 +16,12 @@ import {atomicJson,withSessionLock} from '../src/session.ts';
 import {hash} from '../src/capture/parse.ts';
 import {validTranscriptIdentity} from '../src/capture/transcript-checkpoint.ts';
 import {installCapture} from '../src/capture/install.ts';
-import {installSetupPlugins,setupPluginIdentity} from '../src/setup/plugins.ts';
+import {canInstallRecordingPlugin,installSetupPlugins,setupPluginIdentity} from '../src/setup/plugins.ts';
 import type {SelectionScreen} from '../src/setup/select.ts';
 import {needsFirstRunSetup} from '../src/setup/first-run.ts';
 import {runInteractiveSetup} from '../src/setup/interactive.ts';
 import type {SetupUi} from '../src/setup/tui.tsx';
-const setupCommand=(action:string,api:string,values:Parameters<typeof realSetupCommand>[2],dependencies:NonNullable<Parameters<typeof realSetupCommand>[3]>={})=>realSetupCommand(action,api,values,{platform:'darwin',modeEligibility:()=>({eligible:values['capture-mode']==='daemon'||Boolean(readCaptureConfig()?.captureWorker||readCaptureConfig()?.daemonRequested),reason:'Fixture supervisor'}),daemonReady:async()=>true,installDaemon:async()=>({kind:'launchd',status:'installed',supervised:true,label:'fixture',path:'fixture'}),...dependencies});
+const setupCommand=(action:string,api:string,values:Parameters<typeof realSetupCommand>[2],dependencies:NonNullable<Parameters<typeof realSetupCommand>[3]>={})=>realSetupCommand(action,api,values,{platform:'darwin',canInstall:async()=>true,modeEligibility:()=>({eligible:values['capture-mode']==='daemon'||Boolean(readCaptureConfig()?.captureWorker||readCaptureConfig()?.daemonRequested),reason:'Fixture supervisor'}),daemonReady:async()=>true,installDaemon:async()=>({kind:'launchd',status:'installed',supervised:true,label:'fixture',path:'fixture'}),...dependencies});
 
 test('first run stays open after interruption and remembers an explicit opt-out without capture',()=>fixture(async api=>{
  expect(await needsFirstRunSetup()).toBe(true);
@@ -68,40 +68,87 @@ test('cancelling workspace entry never runs auth or setup and the TUI always clo
  expect(closed).toBe(true);
 });
 
-test('terminal resume shows the saved plugin failure ahead of hook review and retries without asking for choices',()=>fixture(async(api,_dir,_observations,setCodex)=>{
- const reason='Codex took more than 45 seconds to list plugins.';
- const config={yes:true,plugins:'codex',forward:'codex',history:'none'};
- const failure={results:[{client:'codex' as const,status:'error' as const,message:reason}],humanTasks:[{id:'repair',client:'codex' as const,kind:'plugin_install' as const,title:'Repair Codex installation',instruction:'Check plugin inventory, then retry.'}]};
- await setupCommand('apply',api,config,{installPlugins:async()=>failure});
- const scope={api,tenantId:'tenant',userId:'user'},before=readSetupState(scope)!;
- let attempts=0;
- const screens:string[]=[],actions:string[]=[];
- const unexpected=async():Promise<never>=>{throw Error('Unexpected setup question');};
- const ui:SetupUi={signal:new AbortController().signal,welcome:unexpected,hosting:unexpected,workspace:unexpected,choose:unexpected,native:unexpected,close:()=>{},
-  progress:(title,description)=>{screens.push(title,description);},
-  action:async screen=>{
-   actions.push(screen.title);
-   if(screen.title==='Setup complete')return 'done';
-   expect(screen.description).toBe(reason);
-   expect(screen.actions?.map(action=>action.label)).toEqual(['Retry installation','Close']);
-   return 'retry';
+test('the recording picker omits a detected Cursor editor without its installer and continues to history',()=>fixture(async(api,dir)=>{
+ mkdirSync(join(dir,'cursor'),{recursive:true});
+ const screens:SelectionScreen[]=[];
+ const result=await setupCommand('run',api,{},{
+  interactive:true,canInstall:id=>canInstallRecordingPlugin(id,{which:name=>name==='cursor'?join(dir,'cursor-editor'):null},'darwin'),
+  choose:async screen=>{screens.push(screen);return screen.items.map(row=>({...row,selected:false}));},
+  installPlugins:async()=>{throw Error('Unexpected plugin installation');}
+ });
+ expect(screens.map(screen=>screen.phase)).toEqual([1,2]);
+ expect(screens[0]!.items).toEqual([]);
+ expect(screens[1]!.items.map(row=>row.id)).toContain('codex');
+ expect(result).toMatchObject({status:'recording_off'});
+}));
+
+test('an unavailable saved agent can be kept without reinstalling or losing its recording choice',()=>fixture(async api=>{
+ const selected={yes:true,plugins:'cursor',forward:'cursor',history:'none'};
+ await setupCommand('apply',api,selected,{installPlugins:async()=>({results:[{client:'cursor',status:'installed'}],humanTasks:[]})});
+ const result=await setupCommand('run',api,{},{
+  interactive:true,canInstall:async()=>false,
+  choose:async screen=>{
+   if(screen.phase===1)expect(screen.items).toEqual([{id:'cursor',label:'Keep Cursor selected for later',selected:true}]);
+   return screen.items;
   },
+  installPlugins:async(_api,clients)=>{expect(clients).toEqual([]);return {results:[],humanTasks:[]};}
+ });
+ expect(result).toMatchObject({selections:{forward:{cursor:true}},nextAction:{kind:'repair_plugin',client:'cursor'}});
+}));
+
+test('a plugin download failure still reaches history confirmation and saves retry details',()=>fixture(async api=>{
+ const load=spyOn(publishedPlugins,'loadPublishedPackage').mockRejectedValue(Error('Offline'));
+ const phases:number[]=[];
+ try{
+  const result=await setupCommand('run',api,{},{
+   interactive:true,canInstall:async id=>id==='cursor',
+   choose:async screen=>{phases.push(screen.phase);return screen.items.map(row=>({...row,selected:row.id==='cursor'}));}
+  });
+  expect(load).toHaveBeenCalledTimes(1);expect(phases).toEqual([1,2]);
+  expect(result).toMatchObject({plugins:[{client:'cursor',status:'error'}],nextAction:{kind:'repair_plugin',client:'cursor'}});
+ }finally{load.mockRestore();}
+}));
+
+test('a failed plugin leaves history and healthy agents usable and can be retried after onboarding',()=>fixture(async(api,_dir,_observations,setCodex)=>{
+ const screens:string[]=[],details:string[]=[];let historyJobs=0,polls=0;
+ const ui:SetupUi={signal:new AbortController().signal,welcome:async()=>true,hosting:async()=>'cloud',workspace:async()=>null,native:async run=>run(),close:()=>{},
+  choose:async screen=>{screens.push(screen.title);return screen.items.map(row=>({...row,selected:screen.phase===1&&['codex','cursor'].includes(row.id)||screen.phase===2&&row.id==='codex'}));},
+  progress:(title,_description,lines)=>{screens.push(title);details.push(...lines??[]);},
+  action:async screen=>{screens.push(screen.title);details.push(screen.description,...screen.details??[]);return 'done';}
+ };
+ const failure={client:'cursor' as const,status:'error' as const,message:'Installer no longer available.'};
+ const code=await runInteractiveSetup({values:{},readDestination:()=>({api}),withOrigin:(_origin,run)=>run(),login:async()=>{}},{
+  createUi:()=>ui,which:()=>null,pause:async()=>{expect(++polls).toBe(1);setCodex({installed:true,mcp:{state:'authenticated'},proof:{state:'verified'}});},
+  setup:(action,origin,values,deps)=>setupCommand(action,origin,values,{...deps,
+   installPlugins:async()=>({results:[failure,{client:'codex',status:'installed'}],humanTasks:[{client:'cursor',id:'repair',kind:'plugin_install',title:'Resolve Cursor plugin installation',instruction:'Retry installation'}]}),
+   launchHistory:()=>{historyJobs++;return {state:'queued'};}
+  })
+ });
+ expect(code).toBe(0);expect(polls).toBe(1);expect(historyJobs).toBe(1);
+ expect(screens).toContain('Import past sessions');expect(screens.at(-1)).toBe('Setup saved');
+ expect([...screens,...details]).not.toContain('Resolve Cursor plugin installation');
+ expect(details).toContain('Recording setup is pending for Cursor.');expect(details).toContain('Past sessions are importing in the background.');
+ expect(await needsFirstRunSetup(api)).toBe(false);
+ expect(await setupCommand('next',api,{})).toMatchObject({nextAction:{kind:'repair_plugin',client:'cursor'}});
+ expect(await setupCommand('status',api,{local:true})).toMatchObject({pluginResults:expect.arrayContaining([failure])});
+ const resumed=await setupCommand('resume',api,{}, {installPlugins:async(_api,clients)=>{
+  expect(clients).toEqual(['codex','cursor']);return {results:[{client:'codex',status:'unchanged'},{client:'cursor',status:'prepared'}],humanTasks:[]};
+ },launchHistory:()=>({state:'queued'})});
+ expect(resumed).toMatchObject({nextAction:{kind:'native_tool',arguments:{client:'cursor'}}});
+}));
+
+test('an interactive resume with only a failed plugin finishes without a repair prompt',()=>fixture(async api=>{
+ const failure={results:[{client:'cursor' as const,status:'pending' as const}],humanTasks:[]};
+ await setupCommand('apply',api,{yes:true,plugins:'cursor',forward:'cursor',history:'none'},{installPlugins:async()=>failure});
+ const unexpected=async():Promise<never>=>{throw Error('Unexpected setup question');};
+ const actions:string[]=[];
+ const ui:SetupUi={signal:new AbortController().signal,welcome:unexpected,hosting:unexpected,workspace:unexpected,choose:unexpected,native:unexpected,close:()=>{},progress:()=>{},
+  action:async screen=>{actions.push(screen.title);expect(screen.actions?.map(action=>action.label)).toEqual(['Done']);return 'done';}
  };
  const code=await runInteractiveSetup({action:'resume',values:{},readDestination:()=>({api}),withOrigin:(_origin,run)=>run(),login:unexpected},{
-  createUi:()=>ui,which:()=>null,pause:unexpected,setup:(action,origin,values,deps)=>setupCommand(action,origin,values,{...deps,
-   inspectHooks:async()=>({state:'unknown',total:0,pending:null,disabled:null}),
-   installPlugins:async(_api,_clients,options)=>{
-    attempts++;
-    options?.onProgress?.('Reading the Codex plugin inventory.');
-    if(attempts===1)return failure;
-    setCodex({installed:true,mcp:{state:'authenticated'},proof:{state:'verified'}});
-    return {results:[{client:'codex',status:'installed'}],humanTasks:[]};
-   },
-  }),
+  createUi:()=>ui,pause:unexpected,setup:(action,origin,values,deps)=>setupCommand(action,origin,values,{...deps,installPlugins:async()=>failure})
  });
- expect(code).toBe(0);expect(attempts).toBe(2);expect(actions).toEqual(['Repair Codex installation','Setup complete']);
- expect(screens[0]).toBe('Resuming setup');expect(screens).toContain('Reading the Codex plugin inventory.');
- expect(readSetupState(scope)?.installationId).toBe(before.installationId);expect(readSetupState(scope)?.selections).toEqual(before.selections);
+ expect(code).toBe(0);expect(actions).toEqual(['Setup saved']);expect(await needsFirstRunSetup(api)).toBe(false);
 }));
 
 test('TUI service retry preserves selections and does not ask for native verification first',async()=>fixture(async(api,_dir,_observations,setCodex)=>{
