@@ -3,7 +3,8 @@ on:
   workflow_dispatch:
   push:
     branches: [main, codex/helm-v1]
-    paths: ['src/**', 'web/**', 'web-v2/**', 'connectors/**', 'deploy/**', 'tools/**', 'package*.json', 'tsconfig.json', '.github/workflows/selfhost-images.yml']
+    # Stable installer releases also need both public images pinned to their source SHA.
+    paths: ['src/**', 'web/**', 'web-v2/**', 'connectors/**', 'deploy/**', 'dev/**', '!dev/README.md', 'tools/**', 'package*.json', 'tsconfig.json', '.github/workflows/selfhost-images.yml']
 permissions:
   contents: read
   packages: write
