@@ -127,7 +127,10 @@ export function selfhostApplication({settings,store,boardState,setupState,eventI
   const contextCheck=createContextCheckHandler({authenticate,check:createContextCheck({search:authorizedSearch,judge:contextSuggestions.judgment??lexicalCheckJudgment,authorize})});
   const suggestionEvents=createContextCheckHandler({authenticate,check:createSuggestionEvents({authorize,observe:contextSuggestions.observe})});
   const setup=setupState?createSetupStatus({state:{setup:setupState},search:authorizedSearch}):undefined;
-  const setupHandler=setup?createSetupHandler({setup,authenticate}):undefined;
+  const setupHandler=setup?createSetupHandler({setup,authenticate,invitations:{
+    identifyHuman:authorization=>identifyCli(authorization,{cliOnly:true}),
+    organization:id=>directory.organizations.getOrganization(id),team:organizations,delivery:'link',
+  }}):undefined;
   const setupObserver=createOnboardingObserver(setup?{cli:onboarding.cli,session:setup.session}:null);
   const query=createWorkspaceSearchHandler({search:authorizedSearch,authenticate});
   const fetchPassage=createWorkspaceSearchHandler({search:authorizedSearch,authenticate,operation:'fetch'});

@@ -2,6 +2,8 @@ import {render,useApp,type Instance} from 'ink';
 import {useEffect,type ReactElement} from 'react';
 import {stripVTControlCharacters} from 'node:util';
 import {WelcomeScreen,HostingScreen,WorkspaceScreen,NoticeScreen,type Notice,type Hosting,type WorkspaceAnswer} from './tui-view.tsx';
+import {InviteScreen} from './invite-view.tsx';
+import type {InviteOptions} from './invites.ts';
 import {SetupSelection} from './select-view.tsx';
 import type {SelectionScreen,SelectionItem} from './select.ts';
 
@@ -31,6 +33,7 @@ export function createSetupUi(){
   welcome:()=>new Promise<boolean>(resolve=>show(<WelcomeScreen key={++serial} onComplete={resolve}/>)),
   hosting:()=>new Promise<Hosting|null>(resolve=>show(<HostingScreen key={++serial} onComplete={resolve}/>)),
   workspace:()=>new Promise<WorkspaceAnswer>(resolve=>show(<WorkspaceScreen key={++serial} onComplete={resolve}/>)),
+  invite:(props:InviteOptions)=>new Promise<void>(resolve=>show(<InviteScreen key={++serial} {...props} workspace={clean(props.workspace).replace(/\s+/g,' ').trim()} onContinue={resolve} onCancel={()=>{controller.abort();resolve();}}/>)),
   choose:async(screen:SelectionScreen):Promise<SelectionItem[]|null>=>{
    controller.signal.throwIfAborted();
    if(!screen.items.length)return [];

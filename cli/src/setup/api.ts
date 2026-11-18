@@ -3,12 +3,20 @@ import {accessToken} from '../session.ts';
 import {configuredToken,workspaceIdentityEnabled} from '../workspace-identity.ts';
 import type {SetupHumanTask,SetupScope,SetupState} from './state.ts';
 export type SetupServerStatus={scope:{tenantId:string;userId:string};pluginStateSupported?:boolean;firstWin:unknown;installations:{installationId:string;clients:{client:string;installed?:boolean;captureObservedAt?:string;mcp?:{state:string};proof?:{state:string};humanTasks:SetupHumanTask[]}[]}[]};
-export async function setupRequest(api:string,path:string,input?:unknown,fetcher=fetch):Promise<unknown>{
+export async function setupRequest(api:string,path:string,input?:unknown,fetcher=fetch,timeoutMs=30000):Promise<unknown>{
   const configured=await configuredToken('OPENCRAWL_TOKEN',api);let token=configured||await accessToken(api,undefined,fetcher);
-  const send=()=>jsonRequest(api+path,{method:input===undefined?'GET':'POST',headers:{authorization:'Bearer '+token,...(input===undefined?{}:{'content-type':'application/json'})},...(input===undefined?{}:{body:JSON.stringify(input)}),signal:AbortSignal.timeout(30000)},fetcher);
+  const send=()=>jsonRequest(api+path,{method:input===undefined?'GET':'POST',headers:{authorization:'Bearer '+token,...(input===undefined?{}:{'content-type':'application/json'})},...(input===undefined?{}:{body:JSON.stringify(input)}),signal:AbortSignal.timeout(timeoutMs)},fetcher);
   let result=await send();
   if(result.response.status===401&&(!configured||workspaceIdentityEnabled())){token=await configuredToken('OPENCRAWL_TOKEN',api,token)||await accessToken(api,token,fetcher);result=await send();}
   if(result.response.status===401)throw new CliError('AUTH_REQUIRED',workspaceIdentityEnabled()?'The cloud identity could not be verified. Repair its provider helper and organization connection; do not use a human sign-in.':'Sign in with opencrawl login before setup.',2);
+  if(path==='/api/setup/invitations' && input!==undefined){
+    const message=({
+      400:'Enter a valid email address for someone other than yourself.',
+      403:'Your workspace or admin access changed. Continue setup and check Team settings.',
+      409:'That person may already be a member or have a pending invitation.',
+    } as Record<number,string>)[result.response.status];
+    if(message)throw new CliError('INVITATION_REJECTED',message);
+  }
   if(result.response.status===403)throw new CliError('SETUP_FORBIDDEN','This account cannot configure setup in the selected workspace.',2);
   if(result.response.status===404)throw new CliError('SETUP_UNAVAILABLE','This deployment does not support CLI setup yet. Upgrade the self-hosted server or use the existing capture commands.');
   if(!result.response.ok||result.body.schemaVersion!==1||!result.body.data)throw new CliError('SETUP_UNAVAILABLE','Setup could not reach the deployment. Your saved choices are retained; retry.');

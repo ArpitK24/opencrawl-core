@@ -4,7 +4,7 @@ import type {SetupUi} from '../src/setup/tui.tsx';
 import {DEFAULT_API_ORIGIN} from '../src/oauth.ts';
 
 const unexpected=async():Promise<never>=>{throw Error('Unexpected question');};
-const ui=(override:Partial<SetupUi>):SetupUi=>({signal:new AbortController().signal,welcome:async()=>true,hosting:unexpected,workspace:unexpected,progress:()=>{},choose:unexpected,action:unexpected,close:()=>{},native:async run=>run(),...override});
+const ui=(override:Partial<SetupUi>):SetupUi=>({signal:new AbortController().signal,welcome:async()=>true,hosting:unexpected,workspace:unexpected,invite:unexpected,progress:()=>{},choose:unexpected,action:unexpected,close:()=>{},native:async run=>run(),...override});
 
 test('Cloud skips address entry, and saved destinations skip both questions without becoming explicit',async()=>{
  for(const saved of [false,true]){
