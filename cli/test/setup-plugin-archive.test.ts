@@ -147,7 +147,7 @@ test('Codex native version prefix is recognized while old or unknown clients sto
    const calls:string[][]=[];
    const result=await installSetupPlugins('https://selfhost.example',['codex'],{home,env:{OPENCRAWL_CONFIG_HOME:configHome},command:['/fixture/opencrawl'],which:()=>'/fixture/codex',bundles:{codex:source},runner:async(_command,args)=>{calls.push(args);return {code:0,stdout:args[0]==='--version'?version:'native listing unavailable'};}});
    const supported=['codex-cli 0.166.0','codex-cli 0.167.0'].includes(version);
-   expect(calls).toEqual(supported?[['--version'],['plugin','list','--json']]:[['--version']]);
+   expect(calls).toEqual(supported?[['--version'],['plugin','list','--marketplace',setupPluginIdentity('https://selfhost.example').marketplace,'--json']]:[['--version']]);
    expect(result.results[0]?.status).toBe('pending');
    expect(result.results[0]?.message).toContain(supported?'could not report':'0.166.0 or later');
    expect(existsSync(join(configHome,'opencrawl/setup-plugins'))).toBe(false);
