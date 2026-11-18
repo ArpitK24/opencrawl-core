@@ -278,10 +278,11 @@ the initial onboarding flow.
 Auth forms use a centered 480px Night panel and shared fields and actions. Device approval shows a read-only code when the browser link supplies it. Consent shows the workspace and requested scopes.
 
 The CLI-first self-host capability replaces that initial gate with a `/setup`
-workspace Page. Keep the terminal command and its guidance together. Group live
-progress by installation, with a machine heading and one row per client. On compact
-surfaces, stack each client’s labeled checks beneath its name and status. Recording
-and history choices live in the CLI. All workspace navigation remains
+workspace Page. Show its navigation item from the first workspace paint. With no
+machines, show the native Mac install-and-setup command inline. With existing
+machines, Add machine opens those instructions. Each installation has one
+expandable summary with its agent names and readiness. Expansion reveals the
+individual checks and history progress. Recording and history choices live in the CLI. All workspace navigation remains
 available before setup completes. See `docs/CLI-FIRST-ONBOARDING.md` for the
 isolated Claude Code slice and its proof requirements.
 Use the existing self-hosted fonts, OC marks, provider logos and shared SVG icons.
