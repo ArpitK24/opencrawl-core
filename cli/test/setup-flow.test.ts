@@ -125,10 +125,10 @@ test('full human TUI keeps installation, history and pending verification in its
   return 'done';
  },close:()=>{closed=true;},native:async run=>run()};
  const result=await runInteractiveSetup({values:{},readDestination:()=>({}),withOrigin:async(origin,run)=>{expect(origin).toBe(api);return run();},login:async()=>{throw Error('Unexpected sign-in');}},{createUi:()=>ui,which:()=>null,pause:async()=>{
-  expect(screens.at(-1)).toBe('Finish connecting your agents');
+  expect(screens.at(-1)).toBe('Open Codex');
   if(++polls===3)setCodex({installed:true,mcp:{state:'authenticated'},proof:{state:'verified'}});
  },setup:(action,origin,values,dependencies)=>setupCommand(action,origin,values,{...dependencies,installPlugins:async()=>({results:[{client:'codex',status:'installed'}],humanTasks:[]}),launchHistory:()=>({state:'not_started'})})});
- expect(result).toBe(0);expect(closed).toBe(true);expect(screens).toContain('Installing session capture tooling');expect(polls).toBe(3);expect(screens.indexOf('Invite Example Team')).toBeGreaterThan(screens.indexOf('Installing session capture tooling'));expect(screens.indexOf('Invite Example Team')).toBeLessThan(screens.indexOf('Checking setup'));expect(_observations).toContainEqual({tenantId:'tenant',userId:'user',email:'teammate@example.test'});expect(screens.slice(screens.indexOf('Checking setup'))).toEqual(['Checking setup','Finish connecting your agents','Setup complete']);
+ expect(result).toBe(0);expect(closed).toBe(true);expect(screens).toContain('Installing session capture tooling');expect(polls).toBe(3);expect(screens.indexOf('Invite Example Team')).toBeGreaterThan(screens.indexOf('Installing session capture tooling'));expect(screens.indexOf('Invite Example Team')).toBeLessThan(screens.indexOf('Checking setup'));expect(_observations).toContainEqual({tenantId:'tenant',userId:'user',email:'teammate@example.test'});expect(screens.slice(screens.indexOf('Checking setup'))).toEqual(['Checking setup','Open Codex','Setup complete']);
  expect(readCaptureConfig()?.harnesses).toEqual(['codex']);expect(readSetupState({api,tenantId:'tenant',userId:'user'})?.selections.history.codex).toBe(false);
 },false,'codex',true));
 
@@ -244,14 +244,14 @@ test('failed supervision stops before launching Claude native sign-in',async()=>
 
 test('Codex setup sends no task until native hook review completes, then starts a fresh task automatically',async()=>fixture(async(api,_dir,_observations,setCodex)=>{
  let trusted=false,choices=0;const calls:string[][]=[],screens:string[]=[];
- const ui:SetupUi={invite:async()=>{throw Error("Unexpected invite prompt");},signal:new AbortController().signal,welcome:async()=>true,hosting:async()=>'self-hosted',workspace:async()=>({kind:'address',api}),progress:()=>{},choose:async screen=>{choices++;return screen.items.map(item=>({...item,selected:screen.phase===1&&item.id==='codex'}));},action:async screen=>{screens.push(screen.title);return screen.title==='Review Codex hooks'?'review':'done';},close:()=>{},native:async run=>run()};
+ const ui:SetupUi={invite:async()=>{throw Error("Unexpected invite prompt");},signal:new AbortController().signal,welcome:async()=>true,hosting:async()=>'self-hosted',workspace:async()=>({kind:'address',api}),progress:()=>{},choose:async screen=>{choices++;return screen.items.map(item=>({...item,selected:screen.phase===1&&item.id==='codex'}));},action:async screen=>{screens.push(screen.title);return screen.title==='Review Codex hooks'?'review':screen.title==='Connect Codex to OpenCrawl'?'connect':'done';},close:()=>{},native:async run=>run()};
  const code=await runInteractiveSetup({values:{},readDestination:()=>({api}),withOrigin:async(_origin,run)=>run(),login:async()=>{}},{createUi:()=>ui,which:()=>'/native/codex',inspectCodex:async()=>({state:'observed',total:12,pending:trusted?0:12,disabled:0}),native:async(command,args)=>{
   calls.push([command,...args]);
   if(!args.length){expect(trusted).toBe(false);trusted=true;}
   else{expect(trusted).toBe(true);if(args[0]!=='mcp')setCodex({installed:true,mcp:{state:'authenticated'},proof:{state:'verified'}});}
   return 0;
  },pause:async()=>{throw Error('Unexpected polling');},setup:(action,origin,values,dependencies)=>setupCommand(action,origin,values,{...dependencies,installPlugins:async()=>({results:[{client:'codex',status:'installed',captureAvailable:true}],humanTasks:[]}),launchHistory:()=>({state:'not_started'})})});
- expect(code).toBe(0);expect(choices).toBe(2);expect(calls[0]).toEqual(['/native/codex']);expect(calls[1]).toEqual(['/native/codex','mcp','login',setupPluginIdentity(api).name]);expect(calls[2][1]).toContain('Finish OpenCrawl setup in this conversation');expect(calls).toHaveLength(3);expect(screens).toEqual(['Review Codex hooks','Setup complete']);
+ expect(code).toBe(0);expect(choices).toBe(2);expect(calls[0]).toEqual(['/native/codex']);expect(calls[1]).toEqual(['/native/codex','mcp','login',setupPluginIdentity(api).name]);expect(calls[2][1]).toContain('Finish OpenCrawl setup in this conversation');expect(calls).toHaveLength(3);expect(screens).toEqual(['Review Codex hooks','Connect Codex to OpenCrawl','Setup complete']);
 }));
 
 test('unknown or disabled Codex hooks can close without OAuth, model task, or changed recording choices',async()=>{
@@ -304,6 +304,55 @@ async function fixture(run:(api:string,dir:string,observations:unknown[],setClie
   await run(api,dir,observations,patch=>{clientPatch=patch;},calls);
  }finally{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));for(const key of Object.keys(process.env))if(!(key in saved))delete process.env[key];Object.assign(process.env,saved);rmSync(dir,{recursive:true,force:true});}
 }
+test('multi-agent setup resumes the approved browser action and advances to the next client',()=>fixture(async(api,dir,_observations,setClaude)=>{
+ mkdirSync(join(dir,'claude','projects'),{recursive:true});
+ const unexpected=async():Promise<never>=>{throw Error('Unexpected setup action');};
+ const calls:string[][]=[],screens:string[]=[];
+ let later=true;
+ const ui:SetupUi={
+  signal:new AbortController().signal,welcome:async()=>true,hosting:unexpected,workspace:unexpected,
+  invite:unexpected,native:unexpected,progress:()=>{},close:()=>{},
+  choose:async screen=>screen.items.map(item=>({...item,selected:screen.phase===1&&['claude-code','codex'].includes(item.id)})),
+  action:async screen=>{
+   screens.push(screen.title);
+   expect(JSON.stringify(screen)).not.toMatch(/installationId|proofId|verify_installation/);
+   if(screen.title==='Connect Claude Code to OpenCrawl'){
+    expect(screen.description).toBe('Press Enter to open the sign-in page in your browser.');
+    expect(screen.actions?.map(action=>action.label)).toEqual(['Open browser','Finish later']);
+    expect(screen.details).toContain('When Claude Code says it’s connected, type /exit to return to setup.');
+    return later?'later':'connect';
+   }
+   expect(screen.title).toBe('Connect Codex to OpenCrawl');
+   return 'later';
+  }
+ };
+ const run=(action:'run'|'resume')=>runInteractiveSetup({action,values:{},readDestination:()=>({api}),withOrigin:(_origin,run)=>run(),login:unexpected},{
+  createUi:()=>ui,which:name=>'/native/'+name,
+  inspectCodex:async()=>({state:'observed',total:1,pending:0,disabled:0}),
+  native:async(command,args)=>{
+   calls.push([command,...args]);
+   if(args[0]!=='mcp')setClaude({installed:true,mcp:{state:'authenticated'},proof:{state:'verified'}});
+   return 0;
+  },
+  setup:(action,origin,values,deps)=>setupCommand(action,origin,values,{...deps,installPlugins:async(_api,clients)=>{expect(clients.sort()).toEqual(['claude-code','codex']);return {results:[{client:'claude-code',status:'installed'},{client:'codex',status:'installed'}],humanTasks:[]};}}),
+  pause:unexpected
+ });
+ expect(await run('run')).toBe(0);
+ expect(calls).toEqual([]);
+ const scope={api,tenantId:'tenant',userId:'user'};
+ const saved=readSetupState(scope)!;
+ expect(saved.firstRun).toBe('ready');
+ expect(saved.selections.forward).toMatchObject({'claude-code':true,codex:true});
+ later=false;ui.choose=unexpected;
+ expect(await run('resume')).toBe(0);
+ expect(screens).toEqual(['Connect Claude Code to OpenCrawl','Connect Claude Code to OpenCrawl','Connect Codex to OpenCrawl']);
+ expect(calls).toHaveLength(2);
+ expect(calls[0]).toEqual(['/native/claude','mcp','login','plugin:'+setupPluginIdentity(api).name+':opencrawl']);
+ expect(calls[1][0]).toBe('/native/claude');
+ expect(calls[1][1]).toContain('setup next --api '+api);
+ expect(readSetupState(scope)?.selections).toEqual(saved.selections);
+},false,'claude-code'));
+
 test('Antigravity opens native consent first and resumes its saved task after an incomplete attempt', async () => {
  await fixture(async (api, dir, _observations, setClient) => {
   mkdirSync(join(dir, 'agy', 'antigravity-cli'), {recursive: true});
