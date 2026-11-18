@@ -12,6 +12,14 @@ import {normalizeHarness} from './capture/parse.ts';
 
 export type BoardRequestOptions = {signal?: AbortSignal; refresh?: boolean; expectedOwner?: {tenantId:string;userId:string}; validateBinding?:()=>void};
 export async function boardRequest(api: string, operation: string, input: Record<string, unknown>, fetcher = fetch, options: BoardRequestOptions = {}) {
+  if(['publish','v2/post','profile','register','v2/presence'].includes(operation)){
+    const {readCaptureConfig}=await import('./capture/runtime.ts');
+    const {sessionPrivate}=await import('./incognito-state.ts');
+    const config=readCaptureConfig();
+    const ids=[input.session,process.env.CODEX_THREAD_ID,process.env.OPENCRAWL_SESSION_ID];
+    if(config?.api===api&&ids.some(id=>typeof id==='string'&&['codex','claude-code','cursor','antigravity','devin'].some(harness=>sessionPrivate(config,{harness,sessionId:id}))))
+      throw new CliError('SESSION_INCOGNITO','This session is incognito and cannot publish to the board.');
+  }
   const guard=()=>{options.signal?.throwIfAborted();options.validateBinding?.();};
   guard();
   const configured = await configuredToken('OPENCRAWL_TOKEN', api, undefined, options.signal);

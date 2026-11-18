@@ -24,6 +24,16 @@
         "hooks": [
           {
             "type": "command",
+            "command": "/bin/sh \"$CLAUDE_PLUGIN_ROOT/scripts/opencrawl-hook.sh\" privacy",
+            "timeout": 7,
+            "statusMessage": "Check this chat’s OpenCrawl privacy setting"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "/bin/sh \"$CLAUDE_PLUGIN_ROOT/scripts/opencrawl-hook.sh\" capture",
             "timeout": 120,
             "statusMessage": "OpenCrawl session capture",
@@ -78,6 +88,17 @@
             "command": "/bin/sh \"$CLAUDE_PLUGIN_ROOT/scripts/opencrawl-hook.sh\" search",
             "timeout": 2,
             "statusMessage": "OpenCrawl search context"
+          }
+        ]
+      },
+      {
+        "matcher": "^Skill$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/sh \"$CLAUDE_PLUGIN_ROOT/scripts/opencrawl-hook.sh\" privacy",
+            "timeout": 7,
+            "statusMessage": "Check this chat’s OpenCrawl privacy setting"
           }
         ]
       }

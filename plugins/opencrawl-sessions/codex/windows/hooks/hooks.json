@@ -24,6 +24,16 @@
         "hooks": [
           {
             "type": "command",
+            "command": "& \"$env:PLUGIN_ROOT\\scripts\\opencrawl-hook.cmd\" privacy",
+            "timeout": 7,
+            "statusMessage": "Check this chat’s OpenCrawl privacy setting"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "& \"$env:PLUGIN_ROOT\\scripts\\opencrawl-hook.cmd\" capture",
             "timeout": 120,
             "statusMessage": "Save your prompt to OpenCrawl",

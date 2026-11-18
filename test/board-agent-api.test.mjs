@@ -137,3 +137,20 @@ test('online transitions deliver status once per online peer and resolve the fir
  await api.presence(alice,{...user(alice),leave:true});await join(alice,{announce:true});
  assert.deepEqual((await api.inbox(bob,{...user(bob),acknowledge:first.cursor})).messages.map(m=>m.id),[2]);
 });
+
+test('incognito stops a prompt already being fetched and suppresses replays while erasure is pending',async t=>{
+ const f=await boardStateFixture(t),started=Promise.withResolvers(),finish=Promise.withResolvers();
+ let fetches=0;
+ const board=f.make({requestCaptureErasure:async()=>({deleted:false,pending:true}),recentSessions:{
+   async fetch(){fetches++;started.resolve();await finish.promise;return {firstUserMessage:{text:'held capture'}};}
+ }});
+ await board.agent.presence(bob,{session:'bob',name:'codex:bob',task:'Read'});
+ const currentSession={harness:'codex',sessionId:'alice'};
+ await board.agent.presence(alice,{currentSession,name:'codex:alice',task:'Write',announce:true,installationId:'machine'});
+ const reading=board.agent.inbox(bob,user(bob));await started.promise;
+ const result=await board.participate(alice,'incognito',{currentSession});
+ assert.equal(result.boardBlocked,true);finish.resolve();
+ const page=await reading;assert.equal(page.messages.length,1);assert.equal('firstUserPrompt' in page.messages[0],false);
+ assert.deepEqual(await board.agent.inbox(bob,user(bob)),page);
+ assert.equal(fetches,1);
+});

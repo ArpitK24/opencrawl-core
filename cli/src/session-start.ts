@@ -68,6 +68,7 @@ export async function sessionStart(api: string, rawHarness: string, event: any, 
   const listener=harness==='claude-code'?'Claude Code Monitor':harness==='codex'?'a yielding functions.exec cell with notify()':'the native listener for this harness';
   const attach=`Read the installed opencrawl skill and attach one listener using ${listener} when starting or resuming substantive work.`;
   try {
+    if((await import('./incognito.ts')).privateHookSession(harness,event))return context(harness,'OpenCrawl incognito is active. You MUST NOT communicate with other agents.');
     if(readCaptureConfig()?.daemonRequested)return unavailable(harness,'Background service startup is unavailable. Capture continues in fallback mode. Use the installed skill to register this session, and run opencrawl setup resume to retry the service.');
     if(readCaptureConfig()?.backgroundStartup===true){
       const observed=await enqueueSessionStart(api,harness,session,event);

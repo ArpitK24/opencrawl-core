@@ -16,6 +16,7 @@ export type BoardProfile=Omit<Participant,'pending'>&{pending:(Omit<Delivery,'me
 export interface BoardReader {
   metadata():Promise<BoardMetadata>;
   headBefore(time:number):Promise<number>;
+  blockedPublications(agents:string[]):Promise<string[]>;
   message(id:number):Promise<BoardMessage|null>;
   messagesByIds(ids:number[]):Promise<BoardMessage[]>;
   agentNames(ids:string[]):Promise<Record<string,string>>;
@@ -33,6 +34,8 @@ export interface BoardReader {
   publication(input:{userId:string;agent:string;name:string;requestId:string;registered:boolean}):Promise<BoardMessage|null>;
 }
 export interface BoardTransaction extends BoardReader {
+  blockPublication(agent:string):Promise<void>;
+  publicationBlocked(agent:string):Promise<boolean>;
   putParticipant(id:string,value:Participant):Promise<void>;
   removeParticipant(id:string):Promise<void>;
   putAgent(id:string,value:BoardState['agents'][string]):Promise<void>;
@@ -68,6 +71,7 @@ export function createPostgresBoardState(database:ApplicationDatabase) {
   const {namespace}=database;
   async function ready(){await database.ready();await database.transaction(async client=>{await client.query("SELECT pg_advisory_xact_lock(hashtextextended('opencrawl-board-schema-v1',0))");await client.query(`
     CREATE TABLE IF NOT EXISTS opencrawl_board_heads(namespace text NOT NULL,tenant_hash text NOT NULL,head bigint NOT NULL DEFAULT 0 CHECK(head>=0),usage jsonb NOT NULL,participants_present boolean NOT NULL DEFAULT false,PRIMARY KEY(namespace,tenant_hash));
+    CREATE TABLE IF NOT EXISTS opencrawl_board_private_sessions(namespace text NOT NULL,tenant_hash text NOT NULL,agent text NOT NULL,PRIMARY KEY(namespace,tenant_hash,agent),FOREIGN KEY(namespace,tenant_hash) REFERENCES opencrawl_board_heads ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS opencrawl_board_messages(namespace text NOT NULL,tenant_hash text NOT NULL,id bigint NOT NULL,stamp bigint NOT NULL,agent text NOT NULL,author text NOT NULL,name text NOT NULL,topic text NOT NULL,request_id text NOT NULL,legacy_agent boolean NOT NULL,record jsonb NOT NULL,PRIMARY KEY(namespace,tenant_hash,id),FOREIGN KEY(namespace,tenant_hash) REFERENCES opencrawl_board_heads ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS opencrawl_board_search_chunks(namespace text NOT NULL,tenant_hash text NOT NULL,message_id bigint NOT NULL,ordinal integer NOT NULL,words tsvector NOT NULL,PRIMARY KEY(namespace,tenant_hash,message_id,ordinal),FOREIGN KEY(namespace,tenant_hash,message_id) REFERENCES opencrawl_board_messages ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS opencrawl_board_topics(namespace text NOT NULL,tenant_hash text NOT NULL,topic text NOT NULL,first_id bigint NOT NULL,posts bigint NOT NULL,latest jsonb NOT NULL,PRIMARY KEY(namespace,tenant_hash,topic),FOREIGN KEY(namespace,tenant_hash) REFERENCES opencrawl_board_heads ON DELETE CASCADE);
@@ -91,6 +95,11 @@ export function createPostgresBoardState(database:ApplicationDatabase) {
   function accessor(client:PoolClient,key:string):BoardTransaction {
     const scope=[namespace,tenant(key)];
     const query=(sql:string,values:unknown[]=[])=>client.query(sql,[...scope,...values]);
+    async function blockedPublications(agents:string[]):Promise<string[]>{
+      if(!agents.length)return [];
+      const result=await query('SELECT agent FROM opencrawl_board_private_sessions WHERE namespace=$1 AND tenant_hash=$2 AND agent=ANY($3::text[])',[agents]);
+      return result.rows.map(row=>row.agent);
+    }
     async function metadata(){const row=(await query('SELECT head,usage,participants_present FROM opencrawl_board_heads WHERE namespace=$1 AND tenant_hash=$2')).rows[0];return {head:Number(row?.head??0),usage:row?.usage??{calls:0,inputBytes:0,outputBytes:0},participantsPresent:row?.participants_present??false};}
     async function pending(id:string):Promise<Delivery|null>{const row=(await query('SELECT record FROM opencrawl_board_deliveries WHERE namespace=$1 AND tenant_hash=$2 AND agent=$3',[id])).rows[0];if(!row)return null;const rows=await query('SELECT record FROM opencrawl_board_delivery_messages WHERE namespace=$1 AND tenant_hash=$2 AND agent=$3 ORDER BY ordinal',[id]);return {...row.record,messages:rows.rows.map(row=>row.record)};}
     async function putParticipant(id:string,value:Participant){const {pending:delivery,...record}=value;
@@ -131,6 +140,9 @@ export function createPostgresBoardState(database:ApplicationDatabase) {
         return Object.fromEntries(rows.rows.map(row=>[Number(row.root),Number(row.replies)]));
       },
       async messages({before,after,through,topic,threadId,rootsOnly=false,limit,descending=false}){if(!Number.isSafeInteger(limit)||limit<1||limit>250)throw fail('Invalid board page');return (await query(`SELECT record FROM opencrawl_board_messages WHERE namespace=$1 AND tenant_hash=$2 AND ($3::bigint IS NULL OR id<$3) AND ($4::bigint IS NULL OR id>$4) AND ($5::bigint IS NULL OR id<=$5) AND ($6::text IS NULL OR topic=$6) ${threadId!==undefined?"AND record ? 'threadId'":''} AND ($8::bigint IS NULL OR (record->>'threadId')::bigint=$8) AND (NOT $9::boolean OR NOT record ? 'threadId') ORDER BY id ${descending?'DESC':'ASC'} LIMIT $7`,[before??null,after??null,through??null,topic??null,limit,threadId??null,rootsOnly])).rows.map(row=>row.record);},
+      async blockPublication(agent){await query('INSERT INTO opencrawl_board_private_sessions(namespace,tenant_hash,agent) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[agent]);},
+      blockedPublications,
+      async publicationBlocked(agent){return (await blockedPublications([agent])).length>0;},
       async participant(id){const row=(await query('SELECT record FROM opencrawl_board_participants WHERE namespace=$1 AND tenant_hash=$2 AND agent=$3',[id])).rows[0];return row?{...row.record,pending:await pending(id)}:null;},
       async participants(){
         const rows=(await query('SELECT agent,record FROM opencrawl_board_participants WHERE namespace=$1 AND tenant_hash=$2 ORDER BY agent')).rows;

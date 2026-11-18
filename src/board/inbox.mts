@@ -73,5 +73,7 @@ export async function readInbox(tx:BoardTransaction, scope:string, id:string, us
 
 export async function inboxMessages(tx:BoardReader, rows:BoardMessage[]){
   const names=await tx.agentNames([...new Set(rows.flatMap(m=>m.mentionNames?[]:m.mentions??[]))]);
-  return rows.map(row=>({message:agentMessage(row,names),captureRef:row.captureRef}));
+  const authors=[...new Set(rows.filter(row=>row.captureRef).map(row=>row.agent))];
+  const blocked=new Set(await tx.blockedPublications(authors));
+  return rows.map(row=>({message:agentMessage(row,names),agent:row.agent,captureRef:blocked.has(row.agent)?undefined:row.captureRef}));
 }
