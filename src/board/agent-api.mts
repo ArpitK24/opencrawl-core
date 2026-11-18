@@ -94,18 +94,18 @@ export function createAgentBoard({repository,scope,now,recentSessions,sessionTim
       if(args.noticeOnly&&args.acknowledge)throw fail('A notification cannot acknowledge messages');
       const page=await repository.transaction(key,async tx=>{
         const identity=await resolveIdentity(tx,principal.userId,args);
-        const {rows,...state}=await readInbox(tx,key,identity.agent,identity.participant,args.acknowledge,now());
-        if(args.noticeOnly)return {...state,items:[],ids:rows.map(m=>m.id)};
-        return {...state,items:await inboxMessages(tx,rows),ids:rows.map(m=>m.id)};
+        const {rows,...state}=await readInbox(tx,key,identity.agent,principal.userId,identity.participant,args.acknowledge,args.noticeOnly,now());
+        if(args.noticeOnly)return {...state,items:[]};
+        return {...state,items:await inboxMessages(tx,rows)};
       });
-      if(args.noticeOnly)return {ids:page.ids,cursor:page.cursor,more:page.more,...page.left?{left:true}:{}};
+      if(args.noticeOnly)return {ids:page.ids,more:page.more,...page.left?{left:true}:{}};
       const messages=await Promise.all(page.items.map(async({message,captureRef})=>{
         if(!captureRef||!recentSessions)return message;
         try{
           const record=await recentSessions.fetch(principal,captureRef,{field:'firstUserMessage',signal:AbortSignal.timeout(sessionTimeoutMs)});
           const prompt=record.firstUserMessage?.text;
-          if(prompt)return {...message,firstUserPrompt:Array.from(prompt).slice(0,1000).join('')};
-        }catch(error){if(![403,404].includes((error as {status:number}).status))throw error;}
+          if(prompt)return {...message,firstUserPrompt:Array.from(prompt.slice(0,2000)).slice(0,1000).join('')};
+        }catch{ /* Capture is optional. Keep delivering the board page if it is unavailable. */ }
         return message;
       }));
       return {messages,cursor:page.cursor,more:page.more,...page.left?{left:true}:{}};

@@ -30,8 +30,8 @@ export async function announceOnline(tx:BoardTransaction, id:string, participant
 /** The model-facing checkpoint is independent of the CLI stdout receipt. Only
  * the exact previously offered page can be confirmed. Concurrent readers replay
  * that page even when subscriptions change or another message arrives. */
-export async function readInbox(tx:BoardTransaction, scope:string, id:string, p:Participant, acknowledge:string|undefined, time:number) {
-  if(p.left)return {rows:[],cursor:null,more:false,left:true};
+export async function readInbox(tx:BoardTransaction, scope:string, id:string, userId:string, p:Participant, acknowledge:string|undefined, noticeOnly:boolean, time:number) {
+  if(p.left)return {rows:[],ids:[],cursor:null,more:false,left:true};
   let dirty=false;
   if(acknowledge && acknowledge!==p.inboxLastReceipt){
     if(p.inboxPending?.cursor!==acknowledge)throw fail('Cursor does not match this session’s pending inbox page',409);
@@ -45,13 +45,17 @@ export async function readInbox(tx:BoardTransaction, scope:string, id:string, p:
     dirty=true;
   }
   const {head}=await tx.metadata();
-  let rows:BoardMessage[];
-  if(p.inboxPending){
+  let rows:BoardMessage[]=[];
+  if(p.inboxPending && !noticeOnly){
     const fetched=await tx.messagesByIds(p.inboxPending.ids);
-    const byId=new Map(fetched.map(m=>[m.id,m]));
-    rows=p.inboxPending.ids.map(key=>{const m=byId.get(key);if(!m)throw fail('Inbox message unavailable',503);return m;});
-  }else{
-    const candidates=await tx.unread({after:p.inboxAfter,through:head,topics:p.topics,mention:id,userId:p.userId!,agent:id,name:p.name,limit:6});
+    const byId=new Map(fetched.map(message=>[message.id,message]));
+    rows=p.inboxPending.ids.map(id=>{
+      const message=byId.get(id);
+      if(!message)throw fail('Inbox message unavailable',503);
+      return message;
+    });
+  }else if(!p.inboxPending){
+    const candidates=await tx.unread({after:p.inboxAfter,through:head,topics:p.topics,mention:id,userId,agent:id,name:p.name,limit:6});
     rows=messagePage(candidates,5);
     if(rows.length){
       const ids=rows.map(m=>m.id),through=rows.length<candidates.length?ids[ids.length-1]:head;
@@ -64,7 +68,7 @@ export async function readInbox(tx:BoardTransaction, scope:string, id:string, p:
   }
   if(!p.lastPoll||time-p.lastPoll>=60_000){p.lastPoll=p.seen=time;dirty=true;}
   if(dirty)await tx.putParticipant(id,p);
-  return {rows,cursor:p.inboxPending?.cursor??null,more:!!p.inboxPending&&p.inboxPending.through<head};
+  return {rows,ids:p.inboxPending?.ids??[],cursor:p.inboxPending?.cursor??null,more:!!p.inboxPending&&p.inboxPending.through<head};
 }
 
 export async function inboxMessages(tx:BoardReader, rows:BoardMessage[]){

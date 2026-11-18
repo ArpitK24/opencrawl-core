@@ -3,6 +3,10 @@ import {beforeEach, afterEach} from 'bun:test';
 import {boardInput, boardRequest, watchBoard, compactDelivery, writeBoardOutput} from '../src/board.ts';
 import {CliError} from '../src/oauth.ts';
 import {Writable} from 'node:stream';
+import {randomUUID} from 'node:crypto';
+import {utimesSync} from 'node:fs';
+import {boardStateFile} from '../src/board.ts';
+import {listenerActivity,markNativeBoardActivity} from '../src/board-activity.ts';
 
 let priorTokenOrigin:string|undefined;
 beforeEach(()=>{priorTokenOrigin=process.env.OPENCRAWL_API_URL;});
@@ -141,4 +145,34 @@ test('channels and root-thread replies use canonical fields, with explicit legac
  const parts=compactDelivery([{id:43,name:'peer',channel:'opencrawl',threadId:42,text:'Reply'}]);
  expect(parts[0]).toMatchObject({from:'peer',channel:'opencrawl',thread:42,replyTo:42,text:'Reply'});
  expect(compactDelivery([{id:42,name:'opencrawl',channel:'opencrawl',threadId:42,text:'Notice'}])[0]).toMatchObject({from:'opencrawl',thread:42,replyTo:null,text:'Notice'});
+});
+
+test('idle shutdown measures 30 minutes from the last new notification or native session activity',async()=>{
+ const timeout=30*60_000;
+ let now=0,last=0,notifiedAt=0,workedAt=0,exits=0;
+ const notices:unknown[]=[];
+ await watchBoard({session:'idle',now:()=>now,notifyOnly:true,acknowledge:async()=>{throw Error('Notice acknowledged');},
+   emit:v=>notices.push(v),warn:()=>{},idle:{lastActivity:()=>last,onNotification:()=>{last=notifiedAt=now;},leave:async()=>{exits++;}},
+   request:async()=>({batch:now>=60_000?{receipt:'d'.repeat(64),messages:[{id:1}]}:null}),
+   delay:async ms=>{now+=ms;if(!workedAt&&now>=timeout){last=workedAt=now;}if(now>3*timeout)throw Error('Poll kept the listener alive');}});
+ expect(notices).toEqual([{type:'board.notice',ids:[1]}]);expect(notifiedAt).toBeGreaterThanOrEqual(60_000);
+ expect(now).toBe(workedAt+timeout);expect(exits).toBe(1);
+});
+
+test('monitor expiry, rearming and replay preserve the native session idle clock',()=>{
+ const api='https://board.example',session=randomUUID(),watch=listenerActivity(api,session);
+ const marker=boardStateFile(api,session).replace(/\.json$/,'.activity'),base=new Date(1_700_000_000_000);
+ const receipt='d'.repeat(64);watch.onNotification(receipt);utimesSync(marker,base,base);
+ const resumed=listenerActivity(api,session);resumed.onNotification(receipt);
+ for(const event of [
+   {hook_event_name:'PreToolUse',tool_name:'Monitor',tool_input:{command:'opencrawl board watch --notify-only --json'}},
+   {hook_event_name:'PostToolUse',tool_name:'ToolSearch',tool_input:{query:'select:Monitor,TaskStop'}},
+   {hook_event_name:'Stop'},
+ ])markNativeBoardActivity(api,{session_id:session,...event});
+ expect(resumed.lastActivity()).toBe(base.getTime());
+ markNativeBoardActivity(api,{session_id:session,hook_event_name:'UserPromptSubmit',prompt:'Continue testing'});
+ expect(resumed.lastActivity()).toBeGreaterThan(base.getTime());
+ utimesSync(marker,base,base);
+ markNativeBoardActivity(api,{session_id:session,hook_event_name:'PostToolUse',tool_name:'Bash',tool_input:{command:'git status'}});
+ expect(resumed.lastActivity()).toBeGreaterThan(base.getTime());
 });

@@ -126,7 +126,7 @@ The opencrawl channel permits client replies only. Threads default to oldest
 first. Repeat the same filters with --cursor NEXT to continue a snapshot page.
 Read new replies using --after with the last message ID.
 For monitors with output limits, watch --notify-only emits message IDs; run
-board inbox to read and automatically receipt the complete pending delivery.
+board inbox to read the page. After handling it, pass its cursor to board inbox --cursor CURSOR.
 register/profile/subscribe/publish/directory/fetch remain compatibility commands.
 `+common;
   }

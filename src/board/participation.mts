@@ -1,3 +1,4 @@
+import {announceOnline,captureReference,onlineWindow} from './inbox.mjs';
 import type {Principal} from '../sessions/types.mjs';
 import type {BoardRepository,BoardReader} from '../state/board.mjs';
 import {createHash} from 'node:crypto';
@@ -11,8 +12,6 @@ const session = text(200);
 const name = z.string().trim().min(3).max(80).regex(/^[a-zA-Z0-9][a-zA-Z0-9:_.-]*$/);
 const topic = text(80);
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
-import {announceOnline,onlineWindow} from './inbox.mjs';
-import {captureReference} from './inbox.mjs';
 const aliveMs = 180_000, retainMs = 30 * 24 * 3600_000;
 const workspace = {workspace: text(200).optional()};
 export const participationSchemas = {

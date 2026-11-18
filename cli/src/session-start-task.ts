@@ -142,7 +142,7 @@ export async function processSessionStartTask(config:CaptureConfig,task:unknown,
   await withSessionLock('startup:'+key(binding),async()=>{
     guard();const state=readState(binding);
     const confirmed:StartupObservation={observedAt:Date.now(),registration:{workspace:result.workspace,agent:result.agent,session:result.session,name:result.name,task:result.task}};
-    saveBoardRegistration(task.api,task.sessionId,confirmed.registration);
+    saveBoardRegistration(task.api,task.sessionId,result);
     atomicJson(stateFile(binding),{schemaVersion:1,binding,...(state.pending&&state.pending.id!==task.id?{pending:state.pending}:{}),confirmed});
   });
   guard();

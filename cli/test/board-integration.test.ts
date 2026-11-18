@@ -33,26 +33,33 @@ test('real CLI processes register, deliver, acknowledge, exclude duplicate liste
     await command(['register','--session','receiver','--name','codex:receiver','--task','Read updates']);
     await command(['register','--session','sender','--name','claude:sender','--task','Send updates']);
     await command(['subscribe','--session','receiver','--topic','testing']);
-    await command(['publish','--session','sender','--id','one','--topic','testing','--text','@codex:receiver test update']);
-    const content = await command(['fetch', '--id', 'message:1']);
+    const publication=await command(['publish','--session','sender','--id','one','--topic','testing','--text','@codex:receiver test update']);
+    const id=publication.accepted[0], target='message:'+id;
+    const content = await command(['fetch', '--id', target]);
     expect(content.text).toBe('@codex:receiver test update');
-    const multiple=await command(['fetch','message:1','message:1','--concurrency','2']);
+    const multiple=await command(['fetch',target,target,'--concurrency','2']);
     expect(multiple.partial).toBe(false);expect(multiple.results).toHaveLength(2);
     expect(multiple.results[0].data.text).toBe(content.text);
-    expect((await command(['fetch','message:1','--workspace','fixture'])).text).toBe(content.text);
+    expect((await command(['fetch',target,'--workspace','fixture'])).text).toBe(content.text);
     for(const workspace of ['other-tenant','']){
-      const denied=Bun.spawn(args(['fetch','message:1','--workspace',workspace]),{env,stdout:'pipe',stderr:'pipe'});
+      const denied=Bun.spawn(args(['fetch',target,'--workspace',workspace]),{env,stdout:'pipe',stderr:'pipe'});
       const output=await new Response(denied.stdout).text();
       expect(await denied.exited).not.toBe(0);expect(output).not.toContain(content.text);
     }
-    const failed=Bun.spawn(args(['fetch','message:1','message:999']),{env,stdout:'pipe',stderr:'pipe'});
+    const failed=Bun.spawn(args(['fetch',target,'message:999']),{env,stdout:'pipe',stderr:'pipe'});
     const partial=JSON.parse(await new Response(failed.stdout).text());
     expect(await failed.exited).toBe(1);expect(partial.data.partial).toBe(true);
     expect(partial.data.results[0].data.text).toBe(content.text);
     expect(partial.data.results[1].error.code).toBe('BOARD_NOT_FOUND');
     const watch=Bun.spawn(args(['watch','--session','receiver']),{env,stdout:'pipe',stderr:'pipe'});listeners.push(watch);
-    const watchReader=watch.stdout.getReader();const delivery=JSON.parse(new TextDecoder().decode((await watchReader.read()).value));
-    expect(delivery).toMatchObject({id:1,from:'claude:sender',channel:'testing',text:'@codex:receiver test update',mentions:['codex:receiver']});
+    const watchReader=watch.stdout.getReader();
+    let output='';
+    while(!output.includes('test update')) {
+      const chunk=await watchReader.read();if(chunk.done)throw Error('Listener closed before the mention');
+      output+=new TextDecoder().decode(chunk.value);
+    }
+    const delivery=output.trim().split('\n').map(line=>JSON.parse(line)).find(message=>message.id===id);
+    expect(delivery).toMatchObject({id,from:'claude:sender',channel:'testing',text:'@codex:receiver test update',mentions:['codex:receiver']});
     const duplicate=Bun.spawn(args(['watch','--session','receiver','--timeout-ms','50']),{env,stdout:'pipe',stderr:'pipe'});
     expect(await duplicate.exited).not.toBe(0);expect(await new Response(duplicate.stdout).text()).toContain('SESSION_BUSY');
     // No model-managed ack: the running listener advances delivery by itself.
@@ -68,8 +75,8 @@ test('real CLI processes register, deliver, acknowledge, exclude duplicate liste
     const directory=await command(['directory']);
     expect(directory.agents.find((a:any)=>a.name==='codex:receiver').acknowledgedBatches).toBe(1);
     const channels=await command(['channels']);expect(channels.channels[0].channel).toBe('opencrawl');
-    await command(['reply','--session','sender','--id','thread-reply','--channel','testing','--thread','1','--text','Thread follow-up']);
-    const thread=await command(['thread','--thread','1']);expect(thread.messages.map((m:{id:number})=>m.id)).toEqual([1,2]);expect(thread.messages[1].text).toBe('Thread follow-up');
+    const reply=await command(['reply','--session','sender','--id','thread-reply','--channel','testing','--thread',String(id),'--text','Thread follow-up']);
+    const thread=await command(['thread','--thread',String(id)]);expect(thread.messages.map((m:{id:number})=>m.id)).toEqual([id,reply.messages[0].id]);expect(thread.messages[1].text).toBe('Thread follow-up');
     await command(['leave','--session','receiver']);
   } finally {
     for(const proc of listeners)if(proc.exitCode===null)proc.kill();

@@ -1,6 +1,7 @@
 import {readFileSync} from 'node:fs';
+import {markBoardActivity} from './board-activity.ts';
 import {randomUUID} from 'node:crypto';
-import {boardRequest} from './board.ts';
+import {boardRequest,onlineAnnouncement,supportsInbox} from './board.ts';
 import {CliError} from './oauth.ts';
 
 type Values=Record<string,unknown>;
@@ -70,6 +71,8 @@ export function renderBoard(data:Record<string,unknown>,values:Values,stdout:Pic
 export async function agentBoardCommand(operation:string,api:string,values:Values,positionals:string[]){
   const input=agentBoardInput(operation,values,positionals);
   const remote=operation==='reply'?'post':operation==='unfollow'?'follow':operation;
+  if(operation==='presence'&&!input.leave&&(input.name||input.task)&&supportsInbox(api))Object.assign(input,await onlineAnnouncement(api));
   const data=await boardRequest(api,'v2/'+remote,input);
+  if(operation==='presence'&&!input.leave)markBoardActivity(api,input.session);
   renderBoard(data,values);
 }
