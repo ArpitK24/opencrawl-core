@@ -1,6 +1,6 @@
 import {test,expect} from 'bun:test';
 import {render} from 'ink-testing-library';
-import {pressAndRead} from './setup-ink.ts';
+import {pressAndRead,renderReady,waitForFrame} from './setup-ink.ts';
 import {HostingScreen,WorkspaceScreen,NoticeScreen,type Hosting,type WorkspaceAnswer} from '../src/setup/tui-view.tsx';
 
 const tick=()=>new Promise(resolve=>setTimeout(resolve,25));
@@ -39,10 +39,11 @@ test('hosting is a single choice selected with arrows and Enter, with cancellati
 });
 test('workspace entry pastes and edits an origin, validates in place, then submits',async()=>{
  let answer:WorkspaceAnswer|undefined;
- const app=render(<WorkspaceScreen onComplete={value=>{answer=value;}}/>);
+ const app=await renderReady(<WorkspaceScreen onComplete={value=>{answer=value;}}/>);
  try{
-  await tick();const address='https://example.test/setup';
-  await pressAndRead(app,address,address);
+  await waitForFrame(app,'↓ Buttons');
+  const address='https://example.test/setup';
+  await pressAndRead(app,'\u001b[200~'+address+'\u001b[201~',address);
   await pressAndRead(app,enter,'without a path');expect(answer).toBeUndefined();
   for(let length=address.length-1;length>='https://example.test'.length;length--){
    await pressAndRead(app,'\u007f',address.slice(0,length)+' ');
