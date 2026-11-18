@@ -38,7 +38,7 @@ test.afterEach(async()=>{
 async function signup(page:Page){
   await page.goto(origin+'/auth/signup?setup='+setup);
   await page.getByLabel('Workspace name').fill('Browser test');await page.getByLabel('Your name').fill('Browser Admin');
-  await page.getByLabel('Email',{exact:true}).fill(email);await page.getByLabel('Password (10+ characters)').fill(password);
+  await page.getByLabel('Email',{exact:true}).fill(email);await page.getByLabel('Password',{exact:true}).fill(password);
   await page.getByRole('button',{name:'Create workspace'}).click();await page.waitForURL('**/onboarding');
 }
 const form=(path:string,fields:Record<string,string>)=>fetch(origin+path,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams(fields)});
@@ -60,7 +60,7 @@ test('first-user session persists through CLI approval, return to onboarding, MC
   const device=await(await form('/api/cli/device',{client_id:'opencrawl-cli'})).json() as {device_code:string;verification_uri_complete:string};
   const approval=await context.newPage();await approval.goto(device.verification_uri_complete);
   await expect(approval.getByRole('heading',{name:'Connect the OpenCrawl CLI'})).toBeVisible();
-  await approval.getByRole('button',{name:'Connect',exact:true}).click();
+  await approval.getByRole('button',{name:'Connect CLI',exact:true}).click();
   await expect(approval.getByRole('heading',{name:'CLI connected'})).toBeVisible();
   await expect(approval.getByRole('link',{name:'Sign in',exact:true})).toHaveCount(0);
   await approval.screenshot({path:testInfo.outputPath('cli-connected.png')});
@@ -74,8 +74,8 @@ test('first-user session persists through CLI approval, return to onboarding, MC
   await expect(approval.getByLabel('Password',{exact:true})).toHaveCount(0);
   const oauth=await authorization();await approval.route(oauth.callback+'**',route=>route.fulfill({contentType:'text/plain',body:'Client callback'}));
   await approval.goto(oauth.url);
-  await expect(approval.getByRole('heading',{name:'Allow Claude Code browser test to use OpenCrawl?'})).toBeVisible();
-  await approval.getByRole('button',{name:'Allow',exact:true}).click();await approval.waitForURL(oauth.callback+'**');
+  await expect(approval.getByRole('heading',{name:'Connect Claude Code browser test'})).toBeVisible();
+  await approval.getByRole('button',{name:'Allow connection',exact:true}).click();await approval.waitForURL(oauth.callback+'**');
   const callback=new URL(approval.url());expect(callback.searchParams.get('state')).toBe('browser-test');
   const code=callback.searchParams.get('code');expect(code).toBeTruthy();
   const exchanged=await form('/api/auth/oauth2/token',{grant_type:'authorization_code',code:code!,redirect_uri:oauth.callback,client_id:oauth.clientId,code_verifier:oauth.verifier,resource:origin+'/mcp'});
@@ -100,5 +100,5 @@ test('an OAuth client can still explicitly require a fresh sign-in',async({page}
   await expect(page.getByRole('heading',{name:'Sign in to OpenCrawl'})).toBeVisible();
   await page.getByLabel('Email',{exact:true}).fill(email);await page.getByLabel('Password',{exact:true}).fill(password);
   await page.getByRole('button',{name:'Sign in',exact:true}).click();
-  await expect(page.getByRole('heading',{name:'Allow Claude Code browser test to use OpenCrawl?'})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Connect Claude Code browser test'})).toBeVisible();
 });

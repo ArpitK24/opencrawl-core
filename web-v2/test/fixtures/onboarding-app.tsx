@@ -86,6 +86,10 @@ function Fixture() {
     <Route path="/signed-out" element={<DocumentFrame signedIn={false}><ProductDocument page={{kind:'message',heading:'You’re signed out',detail:'You have signed out of OpenCrawl.',href:'/auth/login',action:'Sign in'}}/></DocumentFrame>}/>
     <Route path="/team-fixture" element={<ConsoleDataProvider scopeKey="team-fixture" onAccessFailure={() => {}}><TeamPage adapter={teamAdapter}/></ConsoleDataProvider>} />
     <Route path="/auth-fixture/claude-return" element={<DocumentFrame signedIn><ProductDocument page={{kind:'oauth-return',url:'claude://claude.ai/mcp-auth-callback/sdk?code=example&state=bound'}}/></DocumentFrame>}/>
+    <Route path="/auth-fixture/login" element={<DocumentFrame signedIn={false}><ProductDocument page={{kind:'auth',view:'login',next:'/device?user_code=TEST-1234'}}/></DocumentFrame>}/>
+    <Route path="/auth-fixture/login-error" element={<DocumentFrame signedIn={false}><ProductDocument page={{kind:'auth',view:'login',error:'The email or password is incorrect. Try again.'}}/></DocumentFrame>}/>
+    <Route path="/auth-fixture/join" element={<DocumentFrame signedIn={false}><ProductDocument page={{kind:'auth',view:'join',email:'alex@example.com',invitation:'private-invitation'}}/></DocumentFrame>}/>
+    <Route path="/auth-fixture/device" element={<DocumentFrame signedIn><ProductDocument page={{kind:'auth',view:'device',code:'TEST-1234'}}/></DocumentFrame>}/>
     <Route path="/auth-fixture/setup" element={<DocumentFrame signedIn={false}><ProductDocument page={{kind:'auth',view:'setup',setup:'private-once-only'}}/></DocumentFrame>}/>
     <Route path="/auth-fixture/consent" element={<DocumentFrame signedIn><ProductDocument page={{kind:'auth',view:'consent',clientName:'Example MCP client',oauthQuery:'signed-consent-query',resource:'https://oss.example/mcp',scopes:['openid','offline_access']}}/></DocumentFrame>}/>
 

@@ -476,12 +476,12 @@ test('mobile account disclosure closes before the drawer and hidden actions leav
 test('local account setup uses the shared React form and submits the private bootstrap grant',async({page})=>{
   await page.setViewportSize({width:390,height:780});
   await page.goto('/auth-fixture/setup');
-  await expect(page.getByRole('heading',{name:'Set up OpenCrawl'})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Create your workspace'})).toBeVisible();
   await page.getByLabel('Workspace name').fill('Local team');
   await page.getByLabel('Your name').fill('Local admin');
   await page.getByLabel('Email',{exact:true}).fill('local@example.com');
-  await page.getByLabel('Password (10+ characters)').fill('a private password');
-  await expect(page.getByLabel('Password (10+ characters)')).toHaveAttribute('type','password');
+  await page.getByLabel('Password',{exact:true}).fill('a private password');
+  await expect(page.getByLabel('Password',{exact:true})).toHaveAttribute('type','password');
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
   await page.route('**/auth/signup',route=>route.fulfill({status:200,contentType:'text/plain',body:'Submitted'}));
   const posted=page.waitForRequest(request=>new URL(request.url()).pathname==='/auth/signup');
@@ -492,7 +492,7 @@ test('local account setup uses the shared React form and submits the private boo
 
 test('React OAuth consent identifies the client, resource and scopes and submits an explicit denial',async({page})=>{
   await page.goto('/auth-fixture/consent');
-  await expect(page.getByRole('heading',{name:'Allow Example MCP client to use OpenCrawl?'})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Connect Example MCP client'})).toBeVisible();
   await expect(page.getByText('https://oss.example/mcp')).toBeVisible();
   await expect(page.getByText('openid, offline_access')).toBeVisible();
   await page.route('**/auth/consent',route=>route.fulfill({status:200,contentType:'text/plain',body:'Denied'}));

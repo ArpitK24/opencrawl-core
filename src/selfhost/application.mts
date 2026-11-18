@@ -38,6 +38,10 @@ import {integrationRequest} from '../application/integration-http.mjs';
 import {securityHeaders,document} from '../application/presentation.mjs';
 import {authorizedBoard} from '../application/board.mjs';
 import type {ApplicationState} from '../state/types.mjs';
+import type {SetupState} from '../state/setup.mjs';
+import {createSetupStatus} from '../setup/status.mjs';
+import {createSetupHandler} from '../setup/http.mjs';
+import {registerSetupTools} from '../setup/mcp.mjs';
 import {createBoardHandler} from '../board/http.mjs';
 import {createOpenCrawlMcp} from '../mcp/server.mjs';
 import {createSessionSearch} from '../sessions/search.mjs';
@@ -61,6 +65,7 @@ export interface SelfhostApplicationOptions {
   log?: Log;
   contextSuggestions?:ContextSuggestionsExtension;
   settings:SelfhostSettings;boardState:ApplicationState;store:Store;eventIdentities?:EventIdentityStore;prefix:string;identity:LocalIdentity;
+  setupState?:SetupState;
   integrations?:Integrations;providers?:ProviderCatalog;connectors?:ReturnType<typeof createConnectorResolver>;
   oauth?:ReturnType<typeof createSlackOAuth>;sourceCredentials?:SourceCredentialProxy;
   /** Lets an admin store an operator connector credential from the product. */
@@ -72,7 +77,7 @@ export interface SelfhostApplicationOptions {
   readAsset?:(file:string)=>Promise<string|Buffer>;
 }
 /** Full product composition for one self-hosted organization with its own accounts. */
-export function selfhostApplication({settings,store,boardState,eventIdentities,prefix,identity,integrations,replicasImport,providers={},connectors,oauth,sourceCredentials=oauth,connectorSettings,scheduleSessionDeletion,scheduleSessionIndexing,workloadIdentity,workloadIdentityKey,
+export function selfhostApplication({settings,store,boardState,setupState,eventIdentities,prefix,identity,integrations,replicasImport,providers={},connectors,oauth,sourceCredentials=oauth,connectorSettings,scheduleSessionDeletion,scheduleSessionIndexing,workloadIdentity,workloadIdentityKey,
   contextSuggestions={},
   readAsset=file=>readFile(new URL('../../../'+file,import.meta.url)),
   log=(event, detail)=>console.error(JSON.stringify({event, ...detail, message:String(detail.message || '').slice(0,300)})),
@@ -120,16 +125,19 @@ export function selfhostApplication({settings,store,boardState,eventIdentities,p
   const authenticate=async(req:IncomingMessage)=>{const identity=await identifyAgent(req);if(identity.status!==200)throw Object.assign(new Error('Sign in required'),{status:identity.status});return identity.principal;};
   const contextCheck=createContextCheckHandler({authenticate,check:createContextCheck({search:authorizedSearch,judge:contextSuggestions.judgment??lexicalCheckJudgment,authorize})});
   const suggestionEvents=createContextCheckHandler({authenticate,check:createSuggestionEvents({authorize,observe:contextSuggestions.observe})});
+  const setup=setupState?createSetupStatus({state:{setup:setupState},search:authorizedSearch}):undefined;
+  const setupHandler=setup?createSetupHandler({setup,authenticate}):undefined;
+  const setupObserver=createOnboardingObserver(setup?{cli:onboarding.cli,session:setup.session}:null);
   const query=createWorkspaceSearchHandler({search:authorizedSearch,authenticate});
   const fetchPassage=createWorkspaceSearchHandler({search:authorizedSearch,authenticate,operation:'fetch'});
   const boardHandler=createBoardHandler({board,authenticate});
-  const mcp=createOpenCrawlMcp({origin:settings.url,revision:settings.revision,search:authorizedSearch,board,authenticate:async(req,res)=>{
+  const mcp=createOpenCrawlMcp({origin:settings.url,revision:settings.revision,search:authorizedSearch,board,...(setup?{registerTools:(server,principal)=>registerSetupTools(server,principal,setup)}:{}),authenticate:async(req,res)=>{
     const token=/^Bearer (.+)$/i.exec(req.headers.authorization||'')?.[1];
     if(!isReplicasToken(token))return accounts.mcpIdentity(req,res);
     const result=await workloads.identify(token);if(result.status===200)return result.principal;
     res.writeHead(result.status,{'Content-Type':'application/json'});res.end(JSON.stringify({error:'invalid_workload'}));return null;
   },onConnectionTest:async p=>{await onboarding.mcpTest(p);},onAuthenticated:async(p,info)=>{await onboarding.mcp(p,info);}});
-  const capture=createCaptureHandler({credentials,search,ingest:createSessionIngest({store,eventIdentities,prefix,scheduleIndexing:scheduleSessionIndexing,onStored:observe.session}),authenticate:async req=>{
+  const capture=createCaptureHandler({credentials,search,ingest:createSessionIngest({store,eventIdentities,prefix,scheduleIndexing:scheduleSessionIndexing,onStored:async(principal,batch)=>{await Promise.all([observe.session(principal,batch),setupObserver.session(principal,batch)]);}}),authenticate:async req=>{
     const token=/^Bearer (.+)$/.exec(req.headers.authorization||'')?.[1];
     if(isReplicasToken(token)){const result=await workloads.identify(token);if(result.status!==200)throw Object.assign(new Error('Workload authentication required'),{status:result.status});return {...result.principal,captureAccess:'write'};}
     if(isCaptureCredential(token)) {
@@ -176,6 +184,7 @@ export function selfhostApplication({settings,store,boardState,eventIdentities,p
       if(url.pathname==='/api/context/suggestions')return contextCheck(req,res);
       if(url.pathname==='/api/search')return await query(req,res);
       if(url.pathname==='/api/search/fetch')return await fetchPassage(req,res);
+      if(url.pathname==='/api/setup'||url.pathname.startsWith('/api/setup/'))return setupHandler?await setupHandler(req,res):respond(404,'Setup unavailable');
       if(url.pathname.startsWith('/api/board/')){if(req.headers.origin)return respond(403,'Browser request denied');return await boardHandler(req,res);}
       if(url.pathname==='/api/cli/me'){
         if(req.method!=='GET')return respond(405,'Method not allowed');
@@ -207,17 +216,17 @@ export function selfhostApplication({settings,store,boardState,eventIdentities,p
       const sources=async(p:Principal)=>[...await (integrations?.list(p)??Promise.resolve([])),...replicasImport?[await replicasImport.source(p)]:[]];
       const consoleApi=createConsoleApi({log,replicas,invitationPolicy:{delivery:'link',beforeAgentSetup:true},url:settings.url,setupPrompt:captureSetupPrompt(settings.url),organization:id=>directory.organizations.getOrganization(id),members,user:id=>directory.userManagement.getUser(id),
         invitations:(u,id,known)=>organizations.pendingInvitations(u,id,known),invite:(u,id,email)=>organizations.invite(u,id,email),changeRole:(u,id,target,role)=>organizations.changeRole(u,id,target,role),removeMember:(u,id,target)=>organizations.removeMember(u,id,target),renameOrganization:(u,id,name)=>organizations.rename(u,id,name),sources,
-        usage:p=>usageReport({principal:p,directory,integrations,search,connectors,onboarding,values,log}),progress:guided.progress,next:guided.next,library,libraryFailure});
+        usage:p=>usageReport({principal:p,directory,integrations,search,connectors,onboarding,values,log}),progress:guided.progress,next:guided.next,library,libraryFailure},setup?{bootstrap:async context=>({setup:await setup.read(context.principal)})}:{});
       const execute=async(request:IncomingMessage,target:URL,selected:Route,reply:typeof respond,rpc=false)=>{
         if(selected.name.startsWith('/api/console/')){
-          if(!['/api/console/bootstrap','/api/console/replicas/setup'].includes(selected.name)&&!hasCompletedOnboarding(await guided.progress(principal)))return reply(409,JSON.stringify({error:'Complete onboarding before opening the workspace.',onboardingUrl:await guided.next(principal)}),'application/json');
+          if(!setup&&!['/api/console/bootstrap','/api/console/replicas/setup'].includes(selected.name)&&!hasCompletedOnboarding(await guided.progress(principal)))return reply(409,JSON.stringify({error:'Complete onboarding before opening the workspace.',onboardingUrl:await guided.next(principal)}),'application/json');
           const result=await consoleApi(request,selected.name,{principal,user,member,cacheScope,admitted:true,revalidate:rpc?async()=>true:revalidate});return reply(result.status,JSON.stringify(result.body),'application/json');
         }
         if(request.method==='GET'&&consolePages.has(target.pathname)){
           const progress=await guided.progress(principal);
-          if(!target.pathname.startsWith('/onboarding')&&!hasCompletedOnboarding(progress))return redirect(await guided.next(principal));
+          if(!setup&&!target.pathname.startsWith('/onboarding')&&!hasCompletedOnboarding(progress))return redirect(await guided.next(principal));
           // An admin can invite teammates while connecting their own agent. Other setup and workspace gates remain receipt-based.
-          if(target.pathname.startsWith('/onboarding/')&&!(target.pathname==='/onboarding/invite'&&isAdmin(member))&&!hasCompletedOnboarding(progress)&&!(progress&&deriveOnboarding(progress).complete))return redirect('/onboarding');
+          if(!setup&&target.pathname.startsWith('/onboarding/')&&!(target.pathname==='/onboarding/invite'&&isAdmin(member))&&!hasCompletedOnboarding(progress)&&!(progress&&deriveOnboarding(progress).complete))return redirect('/onboarding');
           return reply(200,consoleDocument(),'text/html; charset=utf-8');
         }
         if(guided.handles(selected.name))return guided.handle(request,{route:selected,principal,identity:{user},member,respond:reply});

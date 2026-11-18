@@ -773,3 +773,22 @@ img { max-width: 100%; }
 .oc-agent-identity-33{color:var(--agent-identity-33);}
 .oc-agent-identity-34{color:var(--agent-identity-34);}
 .oc-agent-identity-35{color:var(--agent-identity-35);}
+
+/* Focused authentication forms. */
+.oc-document:has(> .oc-auth-page) {flex:1; display:flex; align-items:flex-start; justify-content:center; padding-block:clamp(var(--space-6), 8vh, 88px)}
+.oc-auth-page {width:100%; max-width:480px; padding:var(--space-8); border:1px solid var(--line); border-radius:var(--radius-panel); background:var(--surface)}
+.oc-auth-page .oc-page-header {margin-bottom:var(--space-6)}
+.oc-auth-page .oc-page-header h1 {font-size:28px; line-height:1.2; letter-spacing:-.025em}
+.oc-auth-page .oc-page-body {display:grid; gap:var(--space-5)}
+.oc-auth-form {gap:var(--space-5)}
+.oc-auth-form .actions {padding-top:var(--space-2)}
+.oc-auth-form .actions > .primary {flex:1}
+.oc-auth-footer {font-size:var(--text-sm); color:var(--muted); border-top:1px solid var(--line); padding-top:var(--space-5)}
+.oc-device-code {text-align:center; font-family:var(--font-mono); font-size:24px; letter-spacing:.12em; padding:var(--space-4); min-height:64px}
+.oc-auth-page .oc-key-values {display:grid; gap:var(--space-2); margin-top:var(--space-4); font-size:var(--text-sm)}
+.oc-auth-page .oc-key-values dt {color:var(--muted)}
+.oc-auth-page .oc-key-values dd {margin:0 0 var(--space-3)}
+@media(max-width:600px) {
+  .oc-auth-page {padding:var(--space-6)}
+  .oc-document:has(> .oc-auth-page) {padding-top:var(--space-6)}
+}

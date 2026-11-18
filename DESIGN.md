@@ -274,6 +274,14 @@ React onboarding preserves its approved presentation in `web-v2/src/onboarding/o
 After onboarding, Agent setup reuses its prompt and live checklist inside the
 shared workspace Page. The sidebar remains available, and setup does not restart
 the initial onboarding flow.
+
+Auth forms use a centered 480px Night panel and shared fields and actions. Device approval shows a read-only code when the browser link supplies it. Consent shows the workspace and requested scopes.
+
+The CLI-first self-host capability replaces that initial gate with a `/setup`
+workspace Page. It shows one terminal command and live per-installation status;
+recording and history choices live in the CLI. All workspace navigation remains
+available before setup completes. See `docs/CLI-FIRST-ONBOARDING.md` for the
+isolated Claude Code slice and its proof requirements.
 Use the existing self-hosted fonts, OC marks, provider logos and shared SVG icons.
 The font license remains at `web/assets/Geist-OFL.txt`.
 
