@@ -435,7 +435,10 @@ export async function main(args = process.argv.slice(2)) {
   }
 }
 
-if (import.meta.main) {
+// Bun can report import.meta.main=false inside a compiled Windows executable.
+// Only the standalone build sets this flag. Importing the library stays inert.
+declare const OPENCRAWL_STANDALONE_ENTRY: boolean;
+if (import.meta.main || (typeof OPENCRAWL_STANDALONE_ENTRY !== 'undefined' && OPENCRAWL_STANDALONE_ENTRY)) {
   // Supervisor profile selection must precede native version delegation.
   try{applyDaemonEnvironment(process.argv.slice(2));}catch(error){process.stderr.write((error instanceof Error?error.message:'Invalid worker environment')+'\n');process.exit(64);}
   // Local inspection cannot delegate to a native child or run an update.

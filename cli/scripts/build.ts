@@ -25,7 +25,7 @@ for (const [os, arch, target] of selected) {
   const directory = join(dist, `${os}-${arch}`);
   mkdirSync(join(directory, 'bin'), {recursive: true});
   // Preserve the extensionless native entry identity used by generated hooks.
-  const result=await Bun.build({...bundleOptions,minify:true,naming:'[name]',compile:{...(process.argv.includes('--current')?{}:{target}),outfile:join(directory,'bin',os==='win32'?'opencrawl.exe':'opencrawl')}});
+  const result=await Bun.build({...bundleOptions,define:{...bundleOptions.define,OPENCRAWL_STANDALONE_ENTRY:'true'},minify:true,naming:'[name]',compile:{...(process.argv.includes('--current')?{}:{target}),outfile:join(directory,'bin',os==='win32'?'opencrawl.exe':'opencrawl')}});
   if(!result.success)throw new AggregateError(result.logs,`Build failed for ${target}`);
   if (os === 'darwin') {
     if (process.platform !== 'darwin') throw new Error('Build release macOS binaries on macOS so their signatures can be repaired.');
