@@ -29,7 +29,7 @@ export async function releasePayload(root: string, revision: string) {
   visit('dist');
   for (const name of readdirSync(join(root,'native'))) {
     if (name.endsWith('.tgz')) {
-      const archive = await new Bun.Archive(Bun.file(join(root,'native',name))).files();
+      const archive = await new Bun.Archive(readFileSync(join(root,'native',name))).files();
       for (const [path,file] of archive) add('native/'+name+'/'+path,new Uint8Array(await file.arrayBuffer()));
     } else if (name==='install.sh'||name==='install.ps1') add('native/'+name,readFileSync(join(root,'native',name)));
     else if (name!=='SHA256SUMS'&&name!=='release.json') throw new Error('Unexpected native file: '+name);

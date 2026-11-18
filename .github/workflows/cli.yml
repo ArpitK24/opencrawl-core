@@ -226,9 +226,11 @@ jobs:
           name: cli-dist-${{ github.sha }}
       - run: tar -xzf cli-dist.tgz -C cli
       - name: Capture ownership under non-reaping PID 1
+        env:
+          OPENCRAWL_TEST_STRESS: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
         run: |
           cc -std=c11 -O2 -Wall -Wextra -Werror cli/scripts/process-ownership-init.c -o "$RUNNER_TEMP/process-ownership-init"
-          sudo unshare --fork --pid --mount-proc "$RUNNER_TEMP/process-ownership-init" "$(command -v node)" "$PWD/cli/scripts/process-ownership.mts" "$PWD/cli/dist"
+          sudo env OPENCRAWL_TEST_STRESS="$OPENCRAWL_TEST_STRESS" unshare --fork --pid --mount-proc "$RUNNER_TEMP/process-ownership-init" "$(command -v node)" "$PWD/cli/scripts/process-ownership.mts" "$PWD/cli/dist"
   validation:
     name: CLI release validation
     needs: [build, unit, checks, process-ownership]
