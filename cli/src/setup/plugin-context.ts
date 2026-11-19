@@ -5,6 +5,7 @@ import {apiOrigin, CliError} from '../oauth.ts';
 import {atomicJson, configDir} from '../session.ts';
 import {readCaptureConfig, type CaptureConfig} from '../capture/runtime.ts';
 import {binaryPath,binaryBundleDigest,MAX_PLUGIN_BINARY,MAX_PLUGIN_TEXT,type BundleFiles} from './plugin-bundle.ts';
+import {setupPluginIdentity,scopedPluginIdentity} from './plugin-identity.ts';
 
 export type PluginHookClient = 'claude-code'|'codex'|'cursor'|'antigravity'|'devin';
 export type PluginBinding = {api:string;client:PluginHookClient;pluginName:string;configHome:string;nativeRoot:string};
@@ -42,15 +43,16 @@ export function verifyPluginBundle(binding:PluginBinding):VerifiedPluginBundle {
 
 // Only installation may reconstruct missing managed assets. Runtime activation
 // always reads every byte from disk. The profile marker and binding must exist.
-export function checkRepairablePluginBundle(binding:PluginBinding,replacements:BundleFiles):void {
-  inspectPluginBundle(binding,replacements);
+export function checkRepairablePluginBundle(binding:PluginBinding,replacements:BundleFiles):VerifiedPluginBundle {
+  return inspectPluginBundle(binding,replacements);
 }
 
 function inspectPluginBundle(binding:PluginBinding,replacements?:BundleFiles):VerifiedPluginBundle {
   try {
     if(!isClient(binding.client)||!isAbsolute(binding.nativeRoot)||!isAbsolute(binding.configHome))throw invalid();
     const api=apiOrigin(binding.api),root=realpathSync(binding.nativeRoot);
-    if(binding.pluginName!=='opencrawl-'+originKey(api)||!lstatSync(root).isDirectory())throw invalid();
+    if(binding.pluginName!==scopedPluginIdentity(api).name&&(binding.client==='devin'||binding.pluginName!==setupPluginIdentity(api).name))throw invalid();
+    if(!lstatSync(root).isDirectory())throw invalid();
     const marker=readJson(bundleFile(root,'.opencrawl-setup-plugin.json'));
     if(!object(marker)||(marker.schemaVersion!==2&&marker.schemaVersion!==3)||marker.api!==api||marker.client!==binding.client||marker.pluginName!==binding.pluginName||marker.configHome!==resolve(binding.configHome)||typeof marker.digest!=='string'||!object(marker.files))throw invalid();
     const executable=marker.schemaVersion===3?marker.executable:undefined;

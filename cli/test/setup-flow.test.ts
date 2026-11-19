@@ -41,11 +41,12 @@ test('first run stays open after interruption and remembers an explicit opt-out 
 test('interrupted setup repairs a deleted Codex hook with the saved choices and no history import',()=>fixture(async(api,dir)=>{
  const scope={api,tenantId:'tenant',userId:'user'},identity=setupPluginIdentity(api);
  const cache=join(dir,'native-cache',identity.name);
- const directory=join(dir,'config','opencrawl','setup-plugins','codex',identity.key,identity.name);
+ let directory:string;
  const hook=join(cache,'hooks','hooks.json');
  let nativeInstalled=false,installs=0;
  const installPlugins:typeof installSetupPlugins=(origin,ids,options)=>installSetupPlugins(origin,ids,{
   ...options,home:dir,which:()=>'/fixture/codex',runner:async(_command,args)=>{
+   if(args[1]==='marketplace'&&args[2]==='add')directory=join(args[3]!,identity.name);
    if(args[1]==='add'){cpSync(directory,cache,{recursive:true});nativeInstalled=true;installs++;}
    const rows=nativeInstalled?[{pluginId:identity.name+'@'+identity.marketplace,enabled:true,source:{source:'local',path:directory},installedPath:cache}]:[];
    return {code:0,stdout:JSON.stringify(args[1]==='list'?rows:{installedPath:cache})};
