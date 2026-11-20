@@ -24,6 +24,32 @@ export function bindPresenceSession(p: Participant, principal: Principal, sessio
 export function presencePreviews(repository: BoardRepository, recent: ReturnType<typeof createRecentSessions> | undefined, timeoutMs: number) {
   return (principal: Principal, key: string) => {
     const pending = new Map<string, {agent: string; apply: Array<(prompt: string) => void>}>();
+    const promptHeader = '\n\nOpening user prompt\n';
+    const sized: Array<object> = [];
+    let cap: number | undefined, total = 0;
+    const jsonBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+    // Prompts load after page budgets were measured; the enrichment must fit the
+    // remaining room so delivery counts, cursors and receipts stay untouched.
+    function boundedAppend(current: string, prompt: string) {
+      if (cap === undefined) return promptHeader + prompt;
+      const room = cap - total - (jsonBytes(promptHeader) - 2);
+      if (room <= 0) return undefined;
+      let text = prompt;
+      if (jsonBytes(prompt) - 2 > room) {
+        const points = Array.from(prompt), roomForText = room - 3;
+        let used = 0, count = 0;
+        for (const point of points) {
+          const cost = jsonBytes(point) - 2;
+          if (used + cost > roomForText) break;
+          used += cost; count++;
+        }
+        if (!count) return undefined;
+        text = points.slice(0, count).join('') + '…';
+      }
+      const append = promptHeader + text;
+      total += jsonBytes(current + append) - jsonBytes(current);
+      return append;
+    }
     function add(agent: string, ref: string | undefined, apply: (prompt: string) => void) {
       if (!ref || !recent) return;
       try {
@@ -42,13 +68,23 @@ export function presencePreviews(repository: BoardRepository, recent: ReturnType
       },
       message<T extends {text?: string; preview?: string}>(view: T, source: Pick<BoardMessage, 'agent' | 'captureRef' | 'onlineAudience'>) {
         if (source.onlineAudience && typeof view.text === 'string') {
-          add(source.agent, source.captureRef, prompt => { view.text += '\n\nOpening user prompt\n' + prompt; });
+          const target = view as {text: string};
+          sized.push(target);
+          add(source.agent, source.captureRef, prompt => {
+            const append = boundedAppend(target.text, prompt);
+            if (append !== undefined) target.text += append;
+          });
         } else if (source.onlineAudience && typeof view.preview === 'string') {
-          add(source.agent, source.captureRef, prompt => { view.preview += '\n\nOpening user prompt\n' + prompt; });
+          const target = view as {preview: string};
+          sized.push(target);
+          add(source.agent, source.captureRef, prompt => {
+            const append = boundedAppend(target.preview, prompt);
+            if (append !== undefined) target.preview += append;
+          });
         }
         return view;
       },
-      async finish<T>(operation: Promise<T>) {
+      async finish<T>(operation: Promise<T>, capBytes?: number) {
         const result = await operation;
         if (!recent || !pending.size) return result;
         const agents = [...new Set(Array.from(pending.values(), item => item.agent))];
@@ -79,6 +115,10 @@ export function presencePreviews(repository: BoardRepository, recent: ReturnType
           })]);
           if (found.size) {
             const hidden = await blockedAgents();
+            if (capBytes !== undefined) {
+              cap = capBytes;
+              total = sized.reduce((bytes, view) => bytes + jsonBytes(view), 0);
+            }
             for (const [ref, prompt] of found) {
               const item = pending.get(ref)!;
               if (!hidden.has(item.agent)) for (const apply of item.apply) apply(prompt);

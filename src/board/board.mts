@@ -155,7 +155,7 @@ export function createBoard({state,now=Date.now,recentSessions,requestCaptureEra
         for(const m of selected){const message={id:m.id,ref:'message:'+m.id,timestamp:m.timestamp,name:m.name,topic:m.topic,channel:m.topic,threadId:m.threadId??m.id,...m.system?{system:true}:{},preview:preview(m.text,160)},size=Buffer.byteLength(JSON.stringify(message));if(messages.length>=5||bytes+size>4096){cursor=m.id-1;break;}messages.push(introductions.message(message,m));bytes+=size;}
         const output={agent:agentId,cursor,more:cursor<head,messages,recentSessions:sessions,recentSessionsStatus:{state:sessionState,limit:10,order:'lastActivityAt_desc',source:'indexed_capture'}};
         return output;
-      }));
+      }),4096);
     },
   };
 }

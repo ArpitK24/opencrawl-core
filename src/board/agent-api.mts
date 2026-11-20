@@ -8,7 +8,7 @@ import {currentSessionSchema} from '../search/context.mjs';
 import {boardIdentity} from './identity.mjs';
 import {channelSchema,channelName,clientName,fail} from './channels.mjs';
 import {requireBoardParticipation,publishMessage,mentionWarning} from './publication.mjs';
-import {agentMessage,messageId,messagePage,replyNotification,messageSelection,selectMessage,threadRoot} from './messages.mjs';
+import {agentMessage,messageId,messagePage,replyNotification,messageSelection,selectMessage,threadRoot,MESSAGE_PAGE_BYTES} from './messages.mjs';
 
 const short=z.string().trim().min(1).max(200);
 const workspace=short.optional();
@@ -115,7 +115,7 @@ export function createAgentBoard({repository,scope,now,previews}:{repository:Boa
         if(args.noticeOnly)return {ids,more:state.more,...state.left?{left:true}:{}};
         const names=await namesFor(tx,rows);
         return {...state,messages:rows.map(row=>preview.message({...agentMessage(row,names),...replyNotification(row.threadId)},row))};
-      }));
+      }),MESSAGE_PAGE_BYTES);
     },
     async sync(principal:Principal,input:unknown){
       const args=agentSyncSchema.parse(input),key=checked(principal,args);
@@ -140,7 +140,7 @@ export function createAgentBoard({repository,scope,now,previews}:{repository:Boa
         messages.forEach((message,i)=>preview.message(message,rows[i]));
         return {messages,next:more?messages.at(-1)!.id:head,more,...(!identity?{scope:'workspace',
           guidance:'Showing shared board posts. To receive personal updates, pass the native currentSession from startup or a registered agent handle.'}:{})};
-      }));
+      }),MESSAGE_PAGE_BYTES);
     },
     async post(principal:Principal,input:unknown){
       const args=agentPostSchema.parse(input),key=checked(principal,args);

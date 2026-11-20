@@ -220,3 +220,34 @@ test('fifty metadata rows fit in one page regardless of stored message size',asy
  assert.equal(summary.length,50);assert.equal('text' in summary[0],false);
  assert.deepEqual(Object.keys(summary[0]).sort(),['channel','from','id','mentions','replyTo','thread','time']);
 });
+
+test('opening prompts stay inside the measured page byte budgets on every delivery path',async t=>{
+ const f=await boardStateFixture(t),prompt='\u{1F600}'.repeat(1000);
+ const board=f.make({recentSessions:{async list(){return [];},async read(){return [{firstUserMessage:{text:prompt}}];}}});
+ const api=board.agent;
+ await api.presence(bob,{session:'bob',name:'codex:bob',task:'Budget witness',announce:false});
+ for(let i=0;i<10;i++){const principal={...alice,userId:'agent'+i};
+   await api.presence(principal,{session:principal.userId,name:'codex:'+principal.userId,task:'Budget test'});}
+ const bytes=rows=>rows.reduce((sum,message)=>sum+Buffer.byteLength(JSON.stringify(message)),0);
+ const wellFormed=text=>!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(text);
+ const sync=await api.sync(bob,{...user(bob),after:0,limit:50});
+ assert.equal(sync.messages.length,10);
+ assert.ok(bytes(sync.messages)<=16384);
+ assert.ok(sync.messages.some(message=>message.text.includes('Opening user prompt')));
+ assert.ok(sync.messages.filter(message=>message.text.includes('Opening user prompt')).length<10);
+ for(const message of sync.messages)assert.ok(wellFormed(message.text));
+ const inbox=await api.inbox(bob,user(bob));
+ assert.equal(inbox.messages.length,5);
+ assert.ok(bytes(inbox.messages)<=16384);
+ const snapshot=await board.sync(bob,{agent:'codex:bob',after:0});
+ assert.equal(snapshot.messages.length,5);
+ assert.ok(bytes(snapshot.messages)<=4096);
+ for(const message of snapshot.messages)assert.ok(wellFormed(message.preview));
+ const native=await board.participate(bob,'inbox',user(bob));
+ assert.equal(native.batch.messages.length,8);
+ assert.ok(bytes(native.batch.messages)<=8192);
+ await board.participate(bob,'ack',{...user(bob),receipt:native.batch.receipt});
+ const rest=await board.participate(bob,'inbox',user(bob));
+ assert.equal(rest.batch.messages.length,2);
+ assert.deepEqual(rest.batch.messages.map(message=>message.id),[9,10]);
+});
